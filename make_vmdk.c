@@ -2,52 +2,67 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-int num_heads     = 16;
-int num_sectors   = 63;
-int num_cylinders = 104;
+#ifdef _MSC_VER
+#define fseek _fseeki64
+#define ftell _ftelli64
+#endif
 
-int main()
+const int num_heads        = 16;
+const int num_sectors      = 63;
+const int sector_size      = 512;
+
+void usage(const char* program_name)
 {
-    int total_sectors = num_cylinders * num_heads * num_sectors;
-    const char* const base_name = "test-vm";
-    char desc_filename[256], raw_filename[256];
-    snprintf(desc_filename, sizeof(desc_filename), "%s.vmdk", base_name);
-    snprintf(raw_filename, sizeof(raw_filename), "%s.raw", base_name);
+    printf("Usage: %s raw-name\n", program_name);
+    exit(1);
+}
 
-    FILE* fp = fopen(desc_filename, "wb");
+long long file_size(const char* filename)
+{
+    FILE* fp = fopen(filename, "rb");
     if (!fp) {
-        fprintf(stderr, "Error opening %s\n", desc_filename);
-        return 1;
+        fprintf(stderr, "Error opening '%s'\n", filename);
+        exit(2);
     }
-    fprintf(fp, "version=1\n");
-    fprintf(fp, "encoding=\"windows-1252\"\n");
-    fprintf(fp, "CID=fffffffe\n");
-    fprintf(fp, "parentCID=ffffffff\n");
-    fprintf(fp, "isNativeSnapshot=\"no\"\n");
-    fprintf(fp, "createType=\"monolithicFlat\"\n");
-    fprintf(fp, "\n");
-    fprintf(fp, "# Extent description\n");
-    fprintf(fp, "RW %d FLAT \"%s\" 0\n", total_sectors, raw_filename);
-    fprintf(fp, "\n");
-    fprintf(fp, "# The Disk Data Base \n");
-    fprintf(fp, "#DDB\n");
-    fprintf(fp, "\n");
-    fprintf(fp, "ddb.adapterType = \"ide\"\n");
-    fprintf(fp, "ddb.geometry.cylinders = \"%d\"\n", num_cylinders - 1); // XXX: This is an awful hack... what am I missing?
-    fprintf(fp, "ddb.geometry.heads = \"%d\"\n", num_heads);
-    fprintf(fp, "ddb.geometry.sectors = \"%d\"\n", num_sectors);
-    fprintf(fp, "ddb.longContentID = \"196de4c4cf1a20a8d755cd5dfffffffe\"\n");
-    fprintf(fp, "ddb.uuid = \"60 00 C2 99 fa 16 51 59-f4 7a f3 fa aa e1 e8 94\"\n"); // XXX: Don't have a hardcoded UUID
-    fprintf(fp, "ddb.virtualHWVersion = \"12\"\n");
+    fseek(fp, 0, SEEK_END);
+    long long size = ftell(fp);
     fclose(fp);
+    return size;
+}
 
-    fp = fopen(raw_filename, "r+b");
-    if (!fp) {
-        fprintf(stderr, "Error opening %s\n", raw_filename);
-        return 1;
+int main(int argc, char* argv[])
+{
+    if (argc != 2) {
+        usage(argv[0]);
     }
-    fseek(fp, total_sectors*512-1, SEEK_SET);
-    fputc(0, fp);
-    fclose(fp);
+    const char* raw_filename = argv[1];
+
+    long long total_size = file_size(raw_filename);
+    if (total_size % sector_size) {
+        long long pad = sector_size - (total_size % sector_size);
+        fprintf(stderr, "Warning: size padded by %lld bytes\n", pad);
+        total_size += pad;
+    }
+
+    fprintf(stdout, "version=1\n");
+    fprintf(stdout, "encoding=\"windows-1252\"\n");
+    fprintf(stdout, "CID=fffffffe\n");
+    fprintf(stdout, "parentCID=ffffffff\n");
+    fprintf(stdout, "isNativeSnapshot=\"no\"\n");
+    fprintf(stdout, "createType=\"monolithicFlat\"\n");
+    fprintf(stdout, "\n");
+    fprintf(stdout, "# Extent description\n");
+    fprintf(stdout, "RW %lld FLAT \"%s\" 0\n", total_size / sector_size, raw_filename);
+    fprintf(stdout, "\n");
+    fprintf(stdout, "# The Disk Data Base \n");
+    fprintf(stdout, "#DDB\n");
+    fprintf(stdout, "\n");
+    fprintf(stdout, "ddb.adapterType = \"ide\"\n");
+    fprintf(stdout, "ddb.geometry.cylinders = \"%lld\"\n", total_size / sector_size / num_heads / num_sectors);
+    fprintf(stdout, "ddb.geometry.heads = \"%d\"\n", num_heads);
+    fprintf(stdout, "ddb.geometry.sectors = \"%d\"\n", num_sectors);
+    //fprintf(stdout, "ddb.longContentID = \"196de4c4cf1a20a8d755cd5dfffffffe\"\n");
+    //fprintf(stdout, "ddb.uuid = \"60 00 C2 99 fa 16 51 59-f4 7a f3 fa aa e1 e8 94\"\n");
+    //fprintf(stdout, "ddb.virtualHWVersion = \"12\"\n");
     return 0;
 }

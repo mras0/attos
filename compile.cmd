@@ -1,2 +1,2 @@
-cl /W4 make_vmdk.c || exit /b 1
+cl /W4 /WX make_vmdk.c || exit /b 1
 nasm -f bin boot.asm || exit /b 1
