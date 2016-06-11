@@ -39,9 +39,8 @@ int main(int argc, char* argv[])
 
     long long total_size = file_size(raw_filename);
     if (total_size % sector_size) {
-        long long pad = sector_size - (total_size % sector_size);
-        fprintf(stderr, "Warning: size padded by %lld bytes\n", pad);
-        total_size += pad;
+        fprintf(stderr, "Error: size is not a multiple of sector size (%d)\n", sector_size);
+        exit(3);
     }
 
     fprintf(stdout, "version=1\n");

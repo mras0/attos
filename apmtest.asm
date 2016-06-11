@@ -93,4 +93,4 @@ hang:
     hlt
     jmp hang
 
-    times 512-($-$$) db 0 ; Pad to sector size
+    align 512,db 0 ; Pad to sector size
