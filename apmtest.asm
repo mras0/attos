@@ -28,4 +28,7 @@ hang:
 ;
 ; End
 ;
+
+    times (16*63*512)-($-$$) db 0 ; Make sure we fill at least one cylinder
+
     align 512, db 0 ; Pad to sector size

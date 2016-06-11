@@ -20,7 +20,7 @@ put_crlf:
 ; al - number
 put_hex8:
     push ax
-    shr al, 8
+    shr al, 4
     call put_digit
     pop ax
     call put_digit
