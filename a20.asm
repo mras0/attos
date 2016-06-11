@@ -1,13 +1,32 @@
 a20_test:
+    push ax
+
+    call check_a20
+    push ax
+
     call print_a20_status
+
     print_lit 'Enabling A20', 13, 10
     mov al, 1
     call set_a20_status
     call print_a20_status
+
     print_lit 'Disabling A20', 13, 10
     mov al, 0
     call set_a20_status
     call print_a20_status
+
+    print_lit 'Enabling A20', 13, 10
+    mov al, 1
+    call set_a20_status
+    call print_a20_status
+
+    print_lit 'Restoring A20 status', 13, 10
+    pop ax
+    call set_a20_status
+    call print_a20_status
+
+    pop ax
     ret
 
 print_a20_status:
@@ -132,7 +151,7 @@ ps2_a20_control:
 
 %macro is_a20_done 0
     call check_a20
-    cmp bx, ax
+    cmp bl, al
     je .done
 %endmacro
 
@@ -142,8 +161,8 @@ ps2_a20_control:
 
 ; al: 0 = disabled, 1 = enabled
 set_a20_status:
+    pushf
     pusha
-
     mov bx, ax ; save requested state in bx (needed for is_a20_done)
 
     ; Is the a20 line already as expected?
@@ -166,6 +185,7 @@ set_a20_status:
     jmp exit
 .done:
     popa
+    popf
     ret
 
 ; Adapted from http://wiki.osdev.org/A20_Line
