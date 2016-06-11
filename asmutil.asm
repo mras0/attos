@@ -1,3 +1,5 @@
+%define bochs_magic xchg bx, bx
+
 %macro print_lit 1+
         jmp %%skip
         %%str db %1, 0

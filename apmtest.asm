@@ -46,7 +46,7 @@ bits 16
     or al, 1
     mov cr0, eax
 
-    ; Long jump to protocted mode
+    ; Long jump to protected mode
     jmp 0x8:%1
 %endmacro
 
@@ -105,8 +105,6 @@ test_longmode:
     dec     ecx
     jnz     .initpage
 
-    xchg bx, bx
-
     ; Enable PAE (CR4.PAE=1)
     mov     eax, cr4
     bts     eax, 5
@@ -140,8 +138,41 @@ test_longmode:
     mov ecx, 80
     rep stosw
 
-.halt: hlt
-    jmp .halt
+    ; AMD24593 - AMD64 Architecture Programmer's Manual Volume 2: System Programming, 14.7 Leaving Long Mode
+    ; 1. Switch to compatibility mode and place the processor at the highest privilege level (CPL=0).
+.longmode_leave:
+    cli
+    mov rax, rsp
+    push 0x10     ; ss
+    push rax      ; rsp
+    push 0x2      ; eflags (bit 1 is always set)
+    push 0x08     ; cs
+    push .leave32 ; rip
+    iretq
+
+    bits 32
+.leave32:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov edi, 0xb8000  + 80*2*2
+    mov eax, 0x5F00 | 'Y'
+    mov ecx, 80
+    rep stosw
+
+    bochs_magic
+    ; 2. Deactivate long mode by clearing CR0.PG to 0. This causes the processor to clear the LMA bit to 0.
+    mov     eax, cr0
+    btc     eax, 31
+    mov     cr0, eax
+    ; 3. Load CR3 with the physical base-address of the legacy page tables.
+    ; 4. Disable long mode by clearing EFER.LME to 0.
+    mov     ecx, EFER
+    rdmsr
+    btc     eax, 8
+    wrmsr
+
+    jmp pmode_leave
 
     bits 32
 pmode_leave:
