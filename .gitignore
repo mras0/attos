@@ -1,4 +1,5 @@
 boot
+apmtest
 test-vm
 *.obj
 *.exe
