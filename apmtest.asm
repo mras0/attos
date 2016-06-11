@@ -60,16 +60,35 @@ test_pmode32:
     mov ecx, 80
     rep stosw
 
-.hang:
-    jmp .hang
-
 leave_pmode:
-    ; 1. Disable interrupts
+    ; Disable interrupts, paging and ensure 16-bit prototected mode selectors are avilable
     cli
-    ; 2. Turn of paging
-    ; 3. 
+    ; Jump to protected mode
+    jmp 0x18:.mode16
 
     bits 16
+.mode16:
+    ; Reload segments
+    mov ax, 0x20
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    ; Reload real mode compatible IDT
+    ; Disable protected mode
+    mov eax, cr0
+    and al, 0xfe
+    mov cr0, eax
+    ; jump to real mode
+    jmp 0x0:.realmode
+.realmode:
+    ; Reload selectors
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    sti
+    print_lit 'Back in real mode!', 13, 10
+    ret
 
 GDTF_RW         equ 0x0002 ; For code segments RW=1 means the segment is readable, for data segments RW=1 means the segment is writable
 GDTF_EXECUTABLE equ 0x0008
@@ -83,11 +102,15 @@ GDTF_PAGE_GRAN  equ 0x8000 ; Granularity Gr=0 means byte granularity, Gr=1 means
 GDT_ENTRY_NULL   equ GDT_ENTRY(0, 0x0, 0x0)
 GDT_ENTRY_CODE32 equ GDT_ENTRY(0, 0xFFFFF, GDTF_EXECUTABLE | GDTF_RW | GDTF_SYSTEM | GDTF_PRESENT | GDTF_32BIT | GDTF_PAGE_GRAN) ; code X executable R (readable) P (present) 4k Gran. 32-bit Ring0
 GDT_ENTRY_DATA32 equ GDT_ENTRY(0, 0xFFFFF, GDTF_RW | GDTF_PRESENT | GDTF_SYSTEM | GDTF_32BIT | GDTF_PAGE_GRAN) ; data W writable  P (present) 4k Gran. 32-bit Ring0
+GDT_ENTRY_CODE16 equ GDT_ENTRY(0, 0xFFFFF, GDTF_EXECUTABLE | GDTF_RW | GDTF_SYSTEM | GDTF_PRESENT)
+GDT_ENTRY_DATA16 equ GDT_ENTRY(0, 0xFFFFF, GDTF_RW | GDTF_PRESENT | GDTF_SYSTEM)
 
 gdt:
     dq GDT_ENTRY_NULL   ; 0x0000000000000000
     dq GDT_ENTRY_CODE32 ; 0x00CF9A000000FFFF
     dq GDT_ENTRY_DATA32 ; 0x00CF92000000FFFF
+    dq GDT_ENTRY_CODE16
+    dq GDT_ENTRY_DATA16
 gdt_end:
 
 gdtr:
