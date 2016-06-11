@@ -12,15 +12,7 @@
     mov sp, BOOT_ADDR
     jmp 0:main
 
-%macro print_lit 1+
-        jmp %%skip
-        %%str db %1, 0
-    %%skip:
-        push si
-        mov si, %%str
-        call put_string
-        pop si
-%endmacro
+%include "asmutil.asm"
 
 APM_ALL_DEVICES_ID_V1_1 equ 0x0001
 APM_SYSTEM_STATE_OFF equ 0x0003
@@ -34,6 +26,23 @@ APM_SYSTEM_STATE_OFF equ 0x0003
     apm_call %1
     jc apm_failure
 %endmacro
+
+; al = APM function, ah = error code
+apm_failure:
+    push ax
+    mov si, apm_fail_text1
+    call put_string
+    call put_hex8
+    mov si, apm_fail_text2
+    call put_string
+    pop ax
+    mov al, ah
+    call put_hex8
+    call put_crlf
+    jmp hang
+
+apm_fail_text1 db 'APM call 0x', 0
+apm_fail_text2 db ' failed. Error code = 0x', 0
 
 main:
     print_lit 'Hello world',13,10
@@ -93,84 +102,6 @@ main:
 hang:
     hlt
     jmp hang
-
-put_crlf:
-    push ax
-    mov al, 13
-    call put_char
-    mov al, 10
-    call put_char
-    pop ax
-    ret
-
-; al - number
-put_hex8:
-    push ax
-    shr al, 8
-    call put_digit
-    pop ax
-    call put_digit
-    ret
-
-; ax = number
-put_hex16:
-    push ax
-    shr ax, 8
-    call put_hex8
-    pop ax
-    call put_hex8
-    ret
-
-; lower nibble of al = digit to print
-put_digit:
-    pusha
-    and al, 0xF
-    cmp al, 10
-    jb .nothex
-    add al, 'A'-'0'-10
-.nothex:
-    add al, '0'
-    call put_char
-    popa
-    ret
-
-; al = character to print
-put_char:
-    pusha
-    mov ah, 0x0E   ; AH = 0Eh teletype output, AL = character
-    mov bx, 0x0007 ; BH = page number, BL = foreground color
-    int 0x10
-    popa
-    ret
-
-put_string:
-    pusha
-.inner:
-    lodsb
-    and al, al
-    jz  .done
-    call put_char
-    jmp .inner
-.done:
-    popa
-    ret
-
-; al = APM function, ah = error code
-apm_failure:
-    push ax
-    mov si, apm_fail_text1
-    call put_string
-    call put_hex8
-    mov si, apm_fail_text2
-    call put_string
-    pop ax
-    mov al, ah
-    call put_hex8
-    call put_crlf
-    jmp hang
-
-apm_fail_text1 db 'APM call 0x', 0
-apm_fail_text2 db ' failed. Error code = 0x', 0
 
     times 510-($-$$) db 0
     dw 0xaa55
