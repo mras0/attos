@@ -3,3 +3,5 @@ apmtest
 test-vm
 *.obj
 *.exe
+*.pdb
+*.ilk
