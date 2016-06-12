@@ -12,6 +12,8 @@ main:
 
     call test_pmode
 
+    call pe_test
+
 exit:
     print_lit 13, 10, 'Done. Press any key to power off.', 13, 10
     ; Get key
@@ -241,6 +243,8 @@ pdpt0    times 4096 db 0 ; First Directory Pointer Table
 pdt0     times 4096 db 0 ; 0 Page Directory Table
 pt0      times 4096 db 0 ; Page table for identity mapping the first 2MB
 pdptkrnl times 4096 db 0 ; Kernel Directory Pointer Table
+
+%include "pe.asm"
 
 ;
 ; End
