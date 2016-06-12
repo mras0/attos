@@ -136,6 +136,24 @@ constexpr uint32_t IMAGE_SCN_MEM_WRITE              = 0x80000000; // The section
 
 #pragma pack(pop)
 
+template<class T>
+class array_view {
+public:
+    array_view(T* begin, T* end) : begin_(begin), end_(end) {
+    }
+
+    T* begin() const { return begin_; }
+    T* end() const { return end_; }
+
+    T& operator[](size_t index) const {
+        return begin_[index];
+    }
+
+private:
+    T* begin_;
+    T* end_;
+};
+
 class pe_image {
 public:
     explicit pe_image(const void* base, size_t size)
@@ -165,8 +183,10 @@ public:
         return nt_headers().OptionalHeader;
     }
 
-    const IMAGE_SECTION_HEADER* sections() const {
-        return &rva_cast<IMAGE_SECTION_HEADER>(optional_header(), file_header().SizeOfOptionalHeader);
+    array_view<const IMAGE_SECTION_HEADER> sections() const {
+        auto begin = &rva_cast<IMAGE_SECTION_HEADER>(optional_header(), file_header().SizeOfOptionalHeader);
+        auto end   = begin + file_header().NumberOfSections;
+        return {begin, end};
     }
 
 private:
@@ -186,13 +206,16 @@ private:
 
 void handle_pe(const pe_image& img)
 {
-    printf("SizeOfOptionalHeader = 0x%X\n", img.file_header().SizeOfOptionalHeader);
-    printf("ImageBase = %llX\n", img.optional_header().ImageBase);
+    auto& ioh = img.optional_header();
+    printf("AddressOfEntryPoint = %X\n", ioh.AddressOfEntryPoint);
+    printf("ImageBase           = %llX\n", ioh.ImageBase);
+    printf("SectionAlignment    = %X\n", ioh.SectionAlignment);
+    printf("FileAlignment       = %X\n", ioh.FileAlignment);
 
     auto ish = img.sections();
-    for (int s = 0; s < img.file_header().NumberOfSections; ++s) {
-        printf("Section #%d: %8.8s\n", s + 1, ish[s].Name);
-#define P(name) printf("  %-30.30s 0x%8.8X\n", #name, ish[s] . name)
+    for (const auto& s: ish) {
+        printf("Section #%d: %8.8s\n", (int)(&s - ish.begin()) + 1, s.Name);
+#define P(name) printf("  %-30.30s 0x%8.8X\n", #name, s . name)
         P(Misc.VirtualSize);
         P(VirtualAddress);
         P(SizeOfRawData);
@@ -203,7 +226,7 @@ void handle_pe(const pe_image& img)
         P(NumberOfLinenumbers);
         P(Characteristics);
 #undef P
-#define C(f) if (ish[s].Characteristics & IMAGE_SCN_ ## f) printf("    " #f "\n")
+#define C(f) if (s.Characteristics & IMAGE_SCN_ ## f) printf("    " #f "\n")
         C(CNT_CODE);
         C(CNT_INITIALIZED_DATA);
         C(CNT_UNINITIALIZED_DATA);
@@ -211,6 +234,13 @@ void handle_pe(const pe_image& img)
         C(MEM_READ);
         C(MEM_WRITE);
 #undef C
+    }
+
+    for (const auto& s: ish) {
+        if (!s.SizeOfRawData) continue;
+        uint64_t va  = ioh.ImageBase + s.VirtualAddress;
+        uint32_t rel = s.VirtualAddress - s.PointerToRawData;
+        printf("Map %8.8s 0x%08X`%08X to file offset 0x%08X [Relative 0x%X]\n", s.Name, (uint32_t)(va>>32), (uint32_t)va, s.PointerToRawData, rel);
     }
 }
 
