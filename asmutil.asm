@@ -37,6 +37,24 @@ put_hex16:
     call put_hex8
     ret
 
+; si = addr to number
+put_hex32:
+    push ax
+    mov ax, [si+2]
+    call put_hex16
+    mov ax, [si]
+    call put_hex16
+    pop ax
+    ret
+
+; si = addr to number
+put_hex64:
+    add si, 4
+    call put_hex32
+    sub si, 4
+    call put_hex32
+    ret
+
 ; lower nibble of al = digit to print
 put_digit:
     pusha

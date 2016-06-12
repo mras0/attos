@@ -33,14 +33,8 @@ main:
     jc failed
 
     print_lit 'Total number of sectors: 0x'
-    mov ax, [LOAD_ADDR+0x16]
-    call put_hex16
-    mov ax, [LOAD_ADDR+0x14]
-    call put_hex16
-    mov ax, [LOAD_ADDR+0x12]
-    call put_hex16
-    mov ax, [LOAD_ADDR+0x10]
-    call put_hex16
+    mov si, LOAD_ADDR+0x10
+    call put_hex64
     call put_crlf
 
     ; Use sector count - 1 as count to load (though or at most MAX_SECTORS)

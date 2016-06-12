@@ -39,6 +39,46 @@ uint32_t le_u32(const uint8_t* buf)
     return le_u16(buf) | (le_u16(buf+2) << 16);
 }
 
+uint64_t le_u64(const uint8_t* buf)
+{
+    return le_u32(buf) | (static_cast<uint64_t>(le_u32(buf+4)) << 32);
+}
+
+#pragma pack(push, 1)
+struct IMAGE_OPTIONAL_HEADER64 {
+    uint16_t Magic;
+    uint8_t  MajorLinkerVersion;
+    uint8_t  MinorLinkerVersion;
+    uint32_t SizeOfCode;
+    uint32_t SizeOfInitializedData;
+    uint32_t SizeOfUninitializedData;
+    uint32_t AddressOfEntryPoint;
+    uint32_t BaseOfCode;
+    uint64_t ImageBase;
+    uint32_t SectionAlignment;
+    uint32_t FileAlignment;
+    uint16_t MajorOperatingSystemVersion;
+    uint16_t MinorOperatingSystemVersion;
+    uint16_t MajorImageVersion;
+    uint16_t MinorImageVersion;
+    uint16_t MajorSubsystemVersion;
+    uint16_t MinorSubsystemVersion;
+    uint32_t Win32VersionValue;
+    uint32_t SizeOfImage;
+    uint32_t SizeOfHeaders;
+    uint32_t CheckSum;
+    uint16_t Subsystem;
+    uint16_t DllCharacteristics;
+    uint64_t SizeOfStackReserve;
+    uint64_t SizeOfStackCommit;
+    uint64_t SizeOfHeapReserve;
+    uint64_t SizeOfHeapCommit;
+    uint32_t LoaderFlags;
+    uint32_t NumberOfRvaAndSizes;
+    //IMAGE_DATA_DIRECTORY DataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
+};
+#pragma pack(pop)
+
 } // unnamed namespace
 
 void handle_pe(const uint8_t* pe_buf, size_t pe_size)
@@ -70,12 +110,13 @@ void handle_pe(const uint8_t* pe_buf, size_t pe_size)
     printf("size_of_optional_header = 0x%X\n", size_of_optional_header);
 
     // IMAGE_OPTIONAL_HEADER
-    const auto ioh = ifh + IMAGE_SIZEOF_FILE_HEADER;
+    const auto ioh = reinterpret_cast<const IMAGE_OPTIONAL_HEADER64*>(ifh + IMAGE_SIZEOF_FILE_HEADER);
     constexpr uint16_t IMAGE_NT_OPTIONAL_HDR64_MAGIC = 0x20b;
-    CHECK(le_u16(ioh) == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
+    CHECK(ioh->Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
+    printf("ImageBase = %llX offset=%d\n", ioh->ImageBase, (int)offsetof(IMAGE_OPTIONAL_HEADER64, ImageBase));
 
     // IMAGE_SECTION_HEADER
-    const auto ish = ioh + size_of_optional_header;
+    const auto ish = reinterpret_cast<const uint8_t*>(ioh) + size_of_optional_header;
     constexpr auto IMAGE_SIZEOF_SECTION_HEADER = 40;
     constexpr auto IMAGE_SIZEOF_SHORT_NAME     = 8;
 
