@@ -101,4 +101,5 @@ pe_test:
 
     ret
 
+    align 4096
 small_exe incbin "small_exe/small_exe.exe"

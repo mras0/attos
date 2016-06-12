@@ -108,6 +108,50 @@ test_longmode:
     dec     ecx
     jnz     .initpage
 
+    ; map small_exe
+    mov esi, small_exe
+    add esi, [esi+IMAGE_DOS_HEADER.e_lfanew]
+    ; esi = IMAGE_NT_HEADERS*
+    mov eax, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.ImageBase]
+    test ax, 0xfff
+    jnz .fatal ; ImageBase must be page aligned
+    mov edx, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.ImageBase+4]
+    test edx, ~0x7f
+    jnz .fatal ; Outside PML4 entry 0
+    shrd eax, edx, 12
+    jmp .ok
+.fatal:
+    hlt
+    jmp .fatal
+.ok:
+    ; PML4 (entry 0)
+    ; PDPT
+    mov edx, eax
+    shr edx, 30-12
+    and edx, 511
+    shl edx, 3
+    add edx, pdpt0
+    set_page_entry edx, 0, pdt_program
+    ; PDT
+    mov edx, eax
+    shr edx, 21-12
+    and edx, 511
+    shl edx, 3
+    add edx, pdt_program
+    set_page_entry edx, 0, pt_program
+    ; PT
+    mov ecx, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.SizeOfImage]
+    shr ecx, 12
+    mov edi, pt_program
+    mov esi, small_exe
+.initpage2:
+    set_page_entry edi, 0, esi
+    add esi, 4096
+    add edi, 8
+    dec ecx
+    jnz .initpage2
+
+
     ; Enable PAE (CR4.PAE=1)
     mov     eax, cr4
     bts     eax, 5
@@ -141,6 +185,13 @@ test_longmode:
     mov ecx, 80
     rep stosw
 
+    mov esi, small_exe
+    add esi, [rsi+IMAGE_DOS_HEADER.e_lfanew]
+    ; rsi = IMAGE_NT_HEADERS*
+    mov eax, [rsi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.AddressOfEntryPoint]
+    add rax, [rsi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.ImageBase]
+    call rax
+
     ; AMD24593 - AMD64 Architecture Programmer's Manual Volume 2: System Programming, 14.7 Leaving Long Mode
     ; 1. Switch to compatibility mode and place the processor at the highest privilege level (CPL=0).
 .longmode_leave:
@@ -163,7 +214,6 @@ test_longmode:
     mov ecx, 80
     rep stosw
 
-    bochs_magic
     ; 2. Deactivate long mode by clearing CR0.PG to 0. This causes the processor to clear the LMA bit to 0.
     mov     eax, cr0
     btc     eax, 31
@@ -238,12 +288,27 @@ gdtr:
     dw gdt_end - gdt - 1
     dd gdt
 
+;
+; +------------------------------+--------+------+
+; | Name                         | Maps   | Bits |
+; +------------------------------+--------+------+
+; | Page Map Level 4             | 256 TB |    9 |
+; | Page Directory Pointer Table | 512 GB |    9 |
+; | Page Directory Table         |   1 GB |    9 |
+; | Page Table                   |   2 MB |    9 |
+; | Each Page Table Entry        |   4 KB |   12 |
+; +------------------------------+--------+------+
+;
+
     align 4096 ; page tables must be 4K aligned
-pml4     times 4096 db 0 ; Page Map Level 4
-pdpt0    times 4096 db 0 ; First Directory Pointer Table
-pdt0     times 4096 db 0 ; 0 Page Directory Table
-pt0      times 4096 db 0 ; Page table for identity mapping the first 2MB
-pdptkrnl times 4096 db 0 ; Kernel Directory Pointer Table
+
+pml4        times 4096 db 0 ; Page Map Level 4
+pdpt0       times 4096 db 0 ; First Directory Pointer Table
+pdt0        times 4096 db 0 ; 0 Page Directory Table
+pt0         times 4096 db 0 ; Page table for identity mapping the first 2MB
+
+pdt_program  times 4096 db 0 ; Program Page Directory Table
+pt_program   times 4096 db 0 ; Program Page Table
 
 ;
 ; End

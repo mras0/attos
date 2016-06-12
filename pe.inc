@@ -101,9 +101,9 @@ struc IMAGE_OPTIONAL_HEADER64
 endstruc
 
 struc IMAGE_NT_HEADERS
-  Signature      resd 1
-  FileHeader     resb IMAGE_FILE_HEADER
-  OptionalHeader resb IMAGE_OPTIONAL_HEADER64_size
+    .Signature      resd 1
+    .FileHeader     resb IMAGE_FILE_HEADER_size
+    .OptionalHeader resb IMAGE_OPTIONAL_HEADER64_size
 endstruc
 
 IMAGE_NT_SIGNATURE   equ 0x00004550 ; PE00
