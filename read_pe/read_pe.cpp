@@ -27,24 +27,48 @@ void hexdump(const void* ptr, size_t len)
         }
         printf("\n");
     }
-} 
-
-uint16_t le_u16(const uint8_t* buf)
-{
-    return buf[0] | (buf[1] << 8);
 }
 
-uint32_t le_u32(const uint8_t* buf)
-{
-    return le_u16(buf) | (le_u16(buf+2) << 16);
-}
-
-uint64_t le_u64(const uint8_t* buf)
-{
-    return le_u32(buf) | (static_cast<uint64_t>(le_u32(buf+4)) << 32);
-}
+} // unnamed namespace
 
 #pragma pack(push, 1)
+
+struct IMAGE_DOS_HEADER
+{
+     uint16_t e_magic;
+     uint16_t e_cblp;
+     uint16_t e_cp;
+     uint16_t e_crlc;
+     uint16_t e_cparhdr;
+     uint16_t e_minalloc;
+     uint16_t e_maxalloc;
+     uint16_t e_ss;
+     uint16_t e_sp;
+     uint16_t e_csum;
+     uint16_t e_ip;
+     uint16_t e_cs;
+     uint16_t e_lfarlc;
+     uint16_t e_ovno;
+     uint16_t e_res[4];
+     uint16_t e_oemid;
+     uint16_t e_oeminfo;
+     uint16_t e_res2[10];
+     uint32_t e_lfanew;
+};
+constexpr uint16_t IMAGE_DOS_SIGNATURE = 0x5A4D; // MZ
+
+struct IMAGE_FILE_HEADER {
+    uint16_t Machine;
+    uint16_t NumberOfSections;
+    uint32_t TimeDateStamp;
+    uint32_t PointerToSymbolTable;
+    uint32_t NumberOfSymbols;
+    uint16_t SizeOfOptionalHeader;
+    uint16_t Characteristics;
+};
+constexpr uint16_t IMAGE_FILE_MACHINE_I386 = 0x014c;
+constexpr uint16_t IMAGE_FILE_MACHINE_AMD64 = 0x8664;
+
 struct IMAGE_OPTIONAL_HEADER64 {
     uint16_t Magic;
     uint8_t  MajorLinkerVersion;
@@ -77,62 +101,116 @@ struct IMAGE_OPTIONAL_HEADER64 {
     uint32_t NumberOfRvaAndSizes;
     //IMAGE_DATA_DIRECTORY DataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
 };
+constexpr uint16_t IMAGE_NT_OPTIONAL_HDR64_MAGIC = 0x20b;
+
+struct IMAGE_NT_HEADERS {
+    uint32_t                Signature;
+    IMAGE_FILE_HEADER       FileHeader;
+    IMAGE_OPTIONAL_HEADER64 OptionalHeader;
+};
+constexpr uint32_t IMAGE_NT_SIGNATURE = 0x00004550; // PE00
+
+struct IMAGE_SECTION_HEADER {
+    static constexpr uint8_t IMAGE_SIZEOF_SHORT_NAME = 8;
+
+    uint8_t  Name[IMAGE_SIZEOF_SHORT_NAME];
+    union {
+        uint32_t PhysicalAddress;
+        uint32_t VirtualSize;
+    } Misc;
+    uint32_t VirtualAddress;
+    uint32_t SizeOfRawData;
+    uint32_t PointerToRawData;
+    uint32_t PointerToRelocations;
+    uint32_t PointerToLinenumbers;
+    uint16_t NumberOfRelocations;
+    uint16_t NumberOfLinenumbers;
+    uint32_t Characteristics;
+};
+constexpr uint32_t IMAGE_SCN_CNT_CODE               = 0x00000020; // The section contains executable code.
+constexpr uint32_t IMAGE_SCN_CNT_INITIALIZED_DATA   = 0x00000040; // The section contains initialized data.
+constexpr uint32_t IMAGE_SCN_CNT_UNINITIALIZED_DATA = 0x00000080; // The section contains uninitialized data.
+constexpr uint32_t IMAGE_SCN_MEM_EXECUTE            = 0x20000000; // The section can be executed as code.
+constexpr uint32_t IMAGE_SCN_MEM_READ               = 0x40000000; // The section can be read.
+constexpr uint32_t IMAGE_SCN_MEM_WRITE              = 0x80000000; // The section can be written to.
+
 #pragma pack(pop)
 
-} // unnamed namespace
+class pe_image {
+public:
+    explicit pe_image(const void* base, size_t size)
+        : base_(reinterpret_cast<const uint8_t*>(base))
+        , size_(size) {
+        CHECK(size_ >= sizeof(IMAGE_DOS_HEADER));
+        CHECK(dos_header().e_magic == IMAGE_DOS_SIGNATURE);
+        CHECK(size_ >= dos_header().e_lfanew && size_ >= dos_header().e_lfanew + sizeof(IMAGE_NT_HEADERS));
+        CHECK(nt_headers().Signature == IMAGE_NT_SIGNATURE);
+        CHECK(file_header().Machine == IMAGE_FILE_MACHINE_AMD64);
+        CHECK(optional_header().Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
+    }
 
-void handle_pe(const uint8_t* pe_buf, size_t pe_size)
+    const IMAGE_DOS_HEADER& dos_header() const {
+        return rva_cast<IMAGE_DOS_HEADER>(*base_, 0);
+    }
+
+    const IMAGE_NT_HEADERS& nt_headers() const {
+        return rva_cast<IMAGE_NT_HEADERS>(dos_header(), dos_header().e_lfanew);
+    }
+
+    const IMAGE_FILE_HEADER& file_header() const {
+        return nt_headers().FileHeader;
+    }
+
+    const IMAGE_OPTIONAL_HEADER64& optional_header() const {
+        return nt_headers().OptionalHeader;
+    }
+
+    const IMAGE_SECTION_HEADER* sections() const {
+        return &rva_cast<IMAGE_SECTION_HEADER>(optional_header(), file_header().SizeOfOptionalHeader);
+    }
+
+private:
+    template<typename T, typename Y>
+    const T& rva_cast(const Y& from_obj, size_t offset) const {
+        auto p = reinterpret_cast<const uint8_t*>(&from_obj);
+        CHECK((uintptr_t)p >= (uintptr_t)base_);
+        CHECK((uintptr_t)p <= (uintptr_t)base_ + size_);
+        CHECK((uintptr_t)p + offset <= (uintptr_t)base_ + size_);
+        CHECK((uintptr_t)p + offset + sizeof(T) <= (uintptr_t)base_ + size_);
+        return *reinterpret_cast<const T*>(p + offset);
+    }
+
+    const uint8_t* base_;
+    size_t         size_;
+};
+
+void handle_pe(const pe_image& img)
 {
-    // TODO: Check file offsets
+    printf("SizeOfOptionalHeader = 0x%X\n", img.file_header().SizeOfOptionalHeader);
+    printf("ImageBase = %llX\n", img.optional_header().ImageBase);
 
-    // IMAGE_DOS_HEADER
-    constexpr uint16_t IMAGE_DOS_SIGNATURE       = 0x5A4D; // MZ
-    constexpr uint16_t IMAGE_DOS_HEADER_size     = 0x40;
-    constexpr uint16_t IMAGE_DOS_HEADER_e_lfanew = 0x3C;
-    CHECK(pe_size >= IMAGE_DOS_HEADER_size);
-    CHECK(le_u16(pe_buf) == IMAGE_DOS_SIGNATURE);
-    const auto e_lfanew = le_u32(pe_buf + IMAGE_DOS_HEADER_e_lfanew);
-
-    // IMAGE_NT_HEADERS
-    constexpr uint16_t IMAGE_NT_SIGNATURE   = 0x00004550; // PE00
-    constexpr uint16_t SIZE_OF_NT_SIGNATURE = 4;
-    const auto inh = pe_buf + e_lfanew;
-    CHECK(le_u32(inh) == IMAGE_NT_SIGNATURE);
-
-    // IMAGE_FILE_HEADER
-    constexpr auto IMAGE_SIZEOF_FILE_HEADER = 20;
-    constexpr uint16_t IMAGE_FILE_MACHINE_I386 = 0x014c;
-    constexpr uint16_t IMAGE_FILE_MACHINE_AMD64 = 0x8664;
-    const auto ifh = inh + SIZE_OF_NT_SIGNATURE;
-    CHECK(le_u16(ifh) == IMAGE_FILE_MACHINE_AMD64); // IMAGE_FILE_HEADER.Machine
-    const auto number_of_sections = le_u16(ifh+2);// IMAGE_FILE_HEADER.NumberOfSections
-    const auto size_of_optional_header = le_u16(ifh+16); // IMAGE_FILE_HEADER.SizeOfOptionalHeader
-    printf("size_of_optional_header = 0x%X\n", size_of_optional_header);
-
-    // IMAGE_OPTIONAL_HEADER
-    const auto ioh = reinterpret_cast<const IMAGE_OPTIONAL_HEADER64*>(ifh + IMAGE_SIZEOF_FILE_HEADER);
-    constexpr uint16_t IMAGE_NT_OPTIONAL_HDR64_MAGIC = 0x20b;
-    CHECK(ioh->Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
-    printf("ImageBase = %llX offset=%d\n", ioh->ImageBase, (int)offsetof(IMAGE_OPTIONAL_HEADER64, ImageBase));
-
-    // IMAGE_SECTION_HEADER
-    const auto ish = reinterpret_cast<const uint8_t*>(ioh) + size_of_optional_header;
-    constexpr auto IMAGE_SIZEOF_SECTION_HEADER = 40;
-    constexpr auto IMAGE_SIZEOF_SHORT_NAME     = 8;
-
-    for (int s = 0; s < number_of_sections; ++s) {
-        auto sh = ish + s * IMAGE_SIZEOF_SECTION_HEADER;
-        printf("Section #%d: %8.8s\n", s + 1, sh);
-#define P(offset, name) printf("  " name " = 0x%lX\n", le_u32(sh + offset))
-        P(0x08, "Misc");
-        P(0x0C, "VirtualAddress");
-        P(0x10, "SizeOfRawData");
-        P(0x14, "PointerToRawData");
-        P(0x18, "PointerToRelocations");
-        P(0x1C, "PointerToLinenumbers");
-        P(0x20, "Numbers");
-        P(0x24, "Characteristics");
+    auto ish = img.sections();
+    for (int s = 0; s < img.file_header().NumberOfSections; ++s) {
+        printf("Section #%d: %8.8s\n", s + 1, ish[s].Name);
+#define P(name) printf("  %-30.30s 0x%8.8X\n", #name, ish[s] . name)
+        P(Misc.VirtualSize);
+        P(VirtualAddress);
+        P(SizeOfRawData);
+        P(PointerToRawData);
+        P(PointerToRelocations);
+        P(PointerToLinenumbers);
+        P(NumberOfRelocations);
+        P(NumberOfLinenumbers);
+        P(Characteristics);
 #undef P
+#define C(f) if (ish[s].Characteristics & IMAGE_SCN_ ## f) printf("    " #f "\n")
+        C(CNT_CODE);
+        C(CNT_INITIALIZED_DATA);
+        C(CNT_UNINITIALIZED_DATA);
+        C(MEM_EXECUTE);
+        C(MEM_READ);
+        C(MEM_WRITE);
+#undef C
     }
 }
 
@@ -145,11 +223,11 @@ int main(int argc, const char* argv[])
         exit(1);
     }
     fseek(fp, 0, SEEK_END);
-    const auto size = ftell(fp);
+    const auto size = static_cast<size_t>(ftell(fp));
     fseek(fp, 0, SEEK_SET);
     auto buf = malloc(size);
     fread(buf, size, 1, fp);
     fclose(fp);
-    handle_pe(static_cast<const uint8_t*>(buf), size);
+    handle_pe(pe_image{buf, size});
     free(buf);
 }
