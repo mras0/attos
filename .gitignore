@@ -1,6 +1,5 @@
-boot
-apmtest
 test-vm
+*.bin
 *.obj
 *.exe
 *.pdb
