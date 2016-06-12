@@ -136,9 +136,9 @@ void handle_pe(const uint8_t* pe_buf, size_t pe_size)
     }
 }
 
-int main()
+int main(int argc, const char* argv[])
 {
-    const char* const filename = "../small_exe/small_exe.exe";
+    const char* const filename = argc >= 2 ? argv[1] : "../stage3/stage3.exe";
     FILE* fp = fopen(filename, "rb");
     if (!fp) {
         fprintf(stderr, "Error opening '%s'\n", filename);

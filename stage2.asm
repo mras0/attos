@@ -108,8 +108,8 @@ test_longmode:
     dec     ecx
     jnz     .initpage
 
-    ; map small_exe
-    mov esi, small_exe
+    ; map stage3
+    mov esi, stage3
     add esi, [esi+IMAGE_DOS_HEADER.e_lfanew]
     ; esi = IMAGE_NT_HEADERS*
     mov eax, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.ImageBase]
@@ -143,7 +143,7 @@ test_longmode:
     mov ecx, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.SizeOfImage]
     shr ecx, 12
     mov edi, pt_program
-    mov esi, small_exe
+    mov esi, stage3
 .initpage2:
     set_page_entry edi, 0, esi
     add esi, 4096
@@ -185,7 +185,7 @@ test_longmode:
     mov ecx, 80
     rep stosw
 
-    mov esi, small_exe
+    mov esi, stage3
     add esi, [rsi+IMAGE_DOS_HEADER.e_lfanew]
     ; rsi = IMAGE_NT_HEADERS*
     mov eax, [rsi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.AddressOfEntryPoint]
@@ -309,6 +309,9 @@ pt0         times 4096 db 0 ; Page table for identity mapping the first 2MB
 
 pdt_program  times 4096 db 0 ; Program Page Directory Table
 pt_program   times 4096 db 0 ; Program Page Table
+
+    align 4096
+stage3 incbin "stage3/stage3.exe"
 
 ;
 ; End

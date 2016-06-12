@@ -53,7 +53,7 @@ pe_test:
     print_lit 'pe_test running', 13, 10
 
     ; IMAGE_DOS_HEADER
-    mov si, small_exe
+    mov si, stage3
     pe_check_u16 si+IMAGE_DOS_HEADER.e_magic, IMAGE_DOS_SIGNATURE
     add si, [si+IMAGE_DOS_HEADER.e_lfanew]
 
@@ -100,6 +100,3 @@ pe_test:
 .done:
 
     ret
-
-    align 4096
-small_exe incbin "small_exe/small_exe.exe"
