@@ -2,7 +2,7 @@ SMAP_ID             EQU 0x534D4150 ; 'SMAP'
 SMAP_ENTRY_MIN_SIZE EQU 20
 SMAP_BUFFER_SIZE    EQU 1024
 
-smap_buffer db SMAP_BUFFER_SIZE
+smap_buffer times SMAP_BUFFER_SIZE db 0
 
 %macro print_reg32 1 ; requires ss=ds
     push esi
@@ -81,6 +81,13 @@ smap_init:
     xor ax, ax
     rep stosb
 
+    popad
+    ret
+
+smap_print:
+    push si
+    push di
+
     print_lit 'Base    Length   Type', 13, 10
 
     ; Print list
@@ -107,9 +114,6 @@ smap_init:
     jmp .inner
 
 .listend:
-    ;get key
-    xor ax,ax
-    int 0x16
-
-    popad
+    pop di
+    pop si
     ret

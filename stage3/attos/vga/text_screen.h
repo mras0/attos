@@ -20,7 +20,7 @@ private:
     int         height_ = 25;
     int         x_ = 0;
     int         y_ = 0;
-    uint8_t     attr_ = 0x4F;
+    uint8_t     attr_ = 0x07;
 
     void put(int c);
     void newline();

@@ -12,9 +12,11 @@ main:
 
     call a20_test
 
-    call test_pmode
-
     call pe_test
+
+    call smap_print
+
+    call test_pmode
 
 exit:
     print_lit 13, 10, 'Done. Press any key to power off.', 13, 10
@@ -187,10 +189,27 @@ test_longmode:
     mov ecx, 80
     rep stosw
 
+    ; Enable SSE
+    bochs_magic
+    mov rax, cr0
+    btr rax, 2 ; Clear CR0.EM (co-processor EMulation)
+    bts rax, 1 ; Set CR0.MP (Monitor co-Processor)
+    mov cr0, rax
+
+    mov rax, cr4
+    or rax, 3 << 9 ; Set CR4.OSFXSR, CR4.OSXMMEXCPT
+    mov cr4, rax
+
     ; Make sure the stack is acceptable
     xor rbp, rbp  ; this is the start of the frame pointer chain
     push rbp
     mov rbp, rsp  ; preserve old stack pointer
+
+    ; build argument structure
+    sub rsp, 8
+    mov rcx, rsp
+    mov qword [rcx], smap_buffer
+
     and rsp, -16  ; in 64-bit the stack must be 16 byte aligned before a call
     sub rsp, 0x20 ; make room for the function to preserve rcx, rdx, r8 and r9
 

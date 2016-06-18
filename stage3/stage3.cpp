@@ -13,6 +13,7 @@
 //#pragma comment(linker,"/merge:.reloc=.data")
 
 const unsigned char bochs_magic_code[] = { 0x66, 0x87, 0xDB, 0xC3 }; // xchg bx, bx; ret
+auto bochs_magic = ((void (*)(void))(void*)bochs_magic_code);
 
 uint8_t read_key() {
     static constexpr uint8_t ps2_data_port    = 0x60;
@@ -27,15 +28,27 @@ uint8_t read_key() {
     return __inbyte(ps2_data_port);  // read key
 }
 
-void small_exe()
+#pragma pack(push, 1)
+struct smap_entry {
+    uint64_t base;
+    uint64_t length;
+    uint32_t type;
+};
+#pragma pack(pop)
+
+struct arguments {
+    smap_entry* smap_entries;
+};
+
+void small_exe(const arguments& args)
 {
     attos::vga::text_screen ts;
-    ts.clear();
+    using attos::as_hex;
 
-    for (int i = 0; i < 30; ++i) {
-        ts << "Hello world! Line " << i << "\n";
+    ts << "Base    Length   Type\n";
+    for (auto e = args.smap_entries; e->type; ++e) {
+        ts << as_hex(e->base) << ' ' << as_hex(e->length) << ' ' << as_hex(e->type) << "\n";
     }
-    ts << INT64_MIN << "\n";
 
     ts << "Press any key to exit.\n";
     uint8_t c;
@@ -43,5 +56,4 @@ void small_exe()
         c = read_key();
         ts << "Key pressed: " << c << "\n";
     } while (!c);
-//    ((void (*)(void))(void*)bochs_magic_code)();
 }

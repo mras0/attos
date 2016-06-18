@@ -3,6 +3,22 @@
 #include <intrin.h>
 
 namespace attos { namespace vga {
+// 0x0   Black
+// 0x1   Blue
+// 0x2   Green
+// 0x3   Cyan
+// 0x4   Red
+// 0x5   Magenta
+// 0x6   Brown
+// 0x7   Light Gray
+// 0x8   Gray
+// 0x9   Light Blue
+// 0xA   Light Green
+// 0xB   Light Cyan
+// 0xC   Light Red
+// 0xD   Light Magenta
+// 0xE   Light Yellow
+// 0xF   White
 
 constexpr uint16_t crtc_index = 0x3D4;
 constexpr uint16_t crtc_data  = 0x3D5;
@@ -11,6 +27,12 @@ enum class crtc_registers : uint8_t { // Ralf Browns's Port list (Table P0654)
     cursor_location_high = 0x0E, // R/W
     cursor_location_low  = 0x0F, // R/W
 };
+
+uint8_t get_register(crtc_registers reg)
+{
+    __outbyte(crtc_index, static_cast<uint8_t>(reg));
+    return __inbyte(crtc_data);
+}
 
 void set_register(crtc_registers reg, uint8_t value)
 {
@@ -24,7 +46,15 @@ void cursor_location(uint16_t location)
     set_register(crtc_registers::cursor_location_low, location & 0xff);
 }
 
+uint16_t cursor_location()
+{
+    return (get_register(crtc_registers::cursor_location_high) << 8) | get_register(crtc_registers::cursor_location_low);
+}
+
 text_screen::text_screen() {
+    auto location = cursor_location();
+    x_ = location % width_;
+    y_ = location / width_;
 }
 
 void text_screen::clear() {
