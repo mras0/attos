@@ -5,6 +5,20 @@
 #include <attos/mem.h>
 #include <attos/vga/text_screen.h>
 
+namespace attos {
+
+out_stream* global_dbgout;
+
+void set_dbgout(out_stream& os) {
+    global_dbgout = &os;
+}
+
+out_stream& dbgout() {
+    return *global_dbgout;
+}
+
+}  // namespace attos
+
 // http://www.catch22.net/tuts/reducing-executable-size
 // Merge all default sections into the .text (code) section.
 #pragma comment(linker,"/merge:.rdata=.data")
@@ -42,19 +56,21 @@ struct arguments {
 
 void small_exe(const arguments& args)
 {
-    attos::vga::text_screen ts;
-    using attos::as_hex;
+    using namespace attos;
 
-    ts << "Base             Length           Type\n";
-    ts << "FEDCBA9876543210 FEDCBA9876543210 76543210\n";
+    vga::text_screen ts;
+    set_dbgout(ts);
+
+    dbgout() << "Base             Length           Type\n";
+    dbgout() << "FEDCBA9876543210 FEDCBA9876543210 76543210\n";
     for (auto e = args.smap_entries; e->type; ++e) {
-        ts << as_hex(e->base) << ' ' << as_hex(e->length) << ' ' << as_hex(e->type) << "\n";
+        dbgout() << as_hex(e->base) << ' ' << as_hex(e->length) << ' ' << as_hex(e->type) << "\n";
     }
 
-    ts << "Press any key to exit.\n";
+    dbgout() << "Press any key to exit.\n";
     uint8_t c;
     do {
         c = read_key();
-        ts << "Key pressed: " << c << "\n";
+        dbgout() << "Key pressed: " << c << "\n";
     } while (!c);
 }
