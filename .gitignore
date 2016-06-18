@@ -4,4 +4,5 @@ test-vm
 *.exe
 *.pdb
 *.ilk
-stage3/stage3.asm
+*.map
+stage3/*.asm
