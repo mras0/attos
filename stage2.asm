@@ -95,6 +95,8 @@ test_pmode32:
     mov     dword [%1+4], %2
 %endmacro
 
+STAGE3_LOAD_ADDR EQU (1<<20) ; TODO: Maybe the memory at 1MB isn't available - check the SMAP
+
 test_longmode:
     mov ax, 0x10
     mov ds, ax
@@ -108,7 +110,14 @@ test_longmode:
     ;set_page_entry pdptkrnl+0x1FE*8, 0, pdt0
     set_page_entry pdt0, 0, 0 | PAGEF_PAGESIZE
 
+    ; copy stage3 to its place
+    mov esi, stage3
+    mov edi, STAGE3_LOAD_ADDR
+    mov ecx, stage3_size
+    rep movsb
+
     ; map stage3
+    ; TODO: Handle sections, e.g. initialize BSS...
     mov esi, stage3
     add esi, [esi+IMAGE_DOS_HEADER.e_lfanew]
     ; esi = IMAGE_NT_HEADERS*
@@ -143,7 +152,7 @@ test_longmode:
     mov ecx, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.SizeOfImage]
     shr ecx, 12
     mov edi, pt_program
-    mov esi, stage3
+    mov esi, STAGE3_LOAD_ADDR
 .initpage2:
     set_page_entry edi, 0, esi
     add esi, 4096
@@ -321,10 +330,7 @@ gdtr:
 
     align 4096
 stage3 incbin "stage3/stage3.exe"
-
-%if $-$$ > 0x7F * 512 ; Stage1 only loads MAX_SECTORS (currently 0x7F)
-%error We need to load more sections ourselves
-%endif
+stage3_size EQU $-stage3
 
 ;
 ; BSS
@@ -350,6 +356,10 @@ pdt0        times 4096 db 0 ; 0 Page Directory Table
 
 pdt_program  times 4096 db 0 ; Program Page Directory Table
 pt_program   times 4096 db 0 ; Program Page Table
+
+%if $-$$ > 0x7F * 512 ; Stage1 only loads MAX_SECTORS (currently 0x7F)
+%error We need to load more sections ourselves (or handle BSS better)
+%endif
 
 ;
 ; End
