@@ -151,7 +151,6 @@ test_longmode:
     dec ecx
     jnz .initpage2
 
-
     ; Enable PAE (CR4.PAE=1)
     mov     eax, cr4
     bts     eax, 5
@@ -185,12 +184,23 @@ test_longmode:
     mov ecx, 80
     rep stosw
 
+    ; Make sure the stack is acceptable
+    xor rbp, rbp  ; this is the start of the frame pointer chain
+    push rbp
+    mov rbp, rsp  ; preserve old stack pointer
+    and rsp, -16  ; in 64-bit the stack must be 16 byte aligned before a call
+    sub rsp, 0x20 ; make room for the function to preserve rcx, rdx, r8 and r9
+
     mov esi, stage3
     add esi, [rsi+IMAGE_DOS_HEADER.e_lfanew]
     ; rsi = IMAGE_NT_HEADERS*
     mov eax, [rsi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.AddressOfEntryPoint]
     add rax, [rsi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.ImageBase]
     call rax
+
+    ; Restore stack pointer
+    mov rsp, rbp
+    pop rbp
 
     ; AMD24593 - AMD64 Architecture Programmer's Manual Volume 2: System Programming, 14.7 Leaving Long Mode
     ; 1. Switch to compatibility mode and place the processor at the highest privilege level (CPL=0).
