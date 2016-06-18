@@ -210,9 +210,10 @@ test_longmode:
     mov rbp, rsp  ; preserve old stack pointer
 
     ; build argument structure
-    sub rsp, 8
+    sub rsp, 0x10
     mov rcx, rsp
-    mov qword [rcx], smap_buffer
+    mov qword [rcx+0x00], STAGE3_LOAD_ADDR
+    mov qword [rcx+0x08], smap_buffer
 
     and rsp, -16  ; in 64-bit the stack must be 16 byte aligned before a call
     sub rsp, 0x20 ; make room for the function to preserve rcx, rdx, r8 and r9

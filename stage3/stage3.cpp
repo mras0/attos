@@ -3,6 +3,7 @@
 #include <type_traits>
 
 #include <attos/mem.h>
+#include <attos/pe.h>
 #include <attos/vga/text_screen.h>
 
 namespace attos {
@@ -18,13 +19,6 @@ out_stream& dbgout() {
 }
 
 }  // namespace attos
-
-// http://www.catch22.net/tuts/reducing-executable-size
-// Merge all default sections into the .text (code) section.
-#pragma comment(linker,"/merge:.rdata=.data")
-#pragma comment(linker,"/merge:.text=.data")
-#pragma comment(linker,"/merge:.pdata=.data")
-//#pragma comment(linker,"/merge:.reloc=.data")
 
 const unsigned char bochs_magic_code[] = { 0x66, 0x87, 0xDB, 0xC3 }; // xchg bx, bx; ret
 auto bochs_magic = ((void (*)(void))(void*)bochs_magic_code);
@@ -51,7 +45,8 @@ struct smap_entry {
 #pragma pack(pop)
 
 struct arguments {
-    smap_entry* smap_entries;
+    const attos::pe::IMAGE_DOS_HEADER&  image_base;
+    smap_entry*                         smap_entries;
 };
 
 void small_exe(const arguments& args)
@@ -67,10 +62,18 @@ void small_exe(const arguments& args)
         dbgout() << as_hex(e->base) << ' ' << as_hex(e->length) << ' ' << as_hex(e->type) << "\n";
     }
 
+    dbgout() << "cr3 = " << as_hex(__readcr3()) << "\n";
+
+    const auto& nth = args.image_base.nt_headers();
+    for (const auto& s : nth.sections()) {
+        for (auto c: s.Name) {
+            dbgout() << char(c ? c : ' ');
+        }
+        dbgout() << " " << as_hex(s.VirtualAddress + nth.OptionalHeader.ImageBase) << " " << as_hex(s.Misc.VirtualSize) << "\n";
+    }
+
+    //dbgout() << "nt_headers.Signature = " << as_hex(args.image_base.nt_headers().Signature) << "\n";
+
     dbgout() << "Press any key to exit.\n";
-    uint8_t c;
-    do {
-        c = read_key();
-        dbgout() << "Key pressed: " << c << "\n";
-    } while (!c);
+    read_key();
 }
