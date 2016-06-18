@@ -8,6 +8,8 @@
 main:
     print_lit 'Hello world',13,10
 
+    call smap_init ; get system memory map
+
     call a20_test
 
     call test_pmode
@@ -31,6 +33,7 @@ hang:
 %include "a20.asm"
 %include "poweroff.asm"
 %include "pe.asm"
+%include "smap.asm"
 
 bits 16
 %macro pmode_enter 1

@@ -19,6 +19,13 @@ put_crlf:
     pop ax
     ret
 
+put_space:
+    push ax
+    mov al, ' '
+    call put_char
+    pop ax
+    ret
+
 ; al - number
 put_hex8:
     push ax
