@@ -45,7 +45,8 @@ void small_exe(const arguments& args)
     attos::vga::text_screen ts;
     using attos::as_hex;
 
-    ts << "Base    Length   Type\n";
+    ts << "Base             Length           Type\n";
+    ts << "FEDCBA9876543210 FEDCBA9876543210 76543210\n";
     for (auto e = args.smap_entries; e->type; ++e) {
         ts << as_hex(e->base) << ' ' << as_hex(e->length) << ' ' << as_hex(e->type) << "\n";
     }

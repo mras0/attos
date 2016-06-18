@@ -85,9 +85,13 @@ test_pmode32:
 
 %define EFER 0xc0000080
 
+%define PAGEF_PRESENT  0x01
+%define PAGEF_WRITE    0x02
+%define PAGEF_PAGESIZE 0x80
+
 %macro set_page_entry 3 ; %1 = u64* dest, %2 = u32 hi, %3 = u32 lo
     mov     dword [%1], %3
-    or      dword [%1], 3; PAGE_PRESENT | PAGE_WRITE
+    or      dword [%1], PAGEF_PRESENT | PAGEF_WRITE
     mov     dword [%1+4], %2
 %endmacro
 
@@ -102,16 +106,7 @@ test_longmode:
     ;set_page_entry initial_pml4+0x1FF*8, 0, pdptkrnl
     set_page_entry pdpt0, 0, pdt0
     ;set_page_entry pdptkrnl+0x1FE*8, 0, pdt0
-    set_page_entry pdt0, 0, pt0
-    mov     edi, pt0
-    mov     esi, 0
-    mov     ecx, 4096/8
-.initpage:
-    set_page_entry edi, 0, esi
-    add     esi, 4096
-    add     edi, 8
-    dec     ecx
-    jnz     .initpage
+    set_page_entry pdt0, 0, 0 | PAGEF_PAGESIZE
 
     ; map stage3
     mov esi, stage3
@@ -352,7 +347,6 @@ stage3 incbin "stage3/stage3.exe"
 pml4        times 4096 db 0 ; Page Map Level 4
 pdpt0       times 4096 db 0 ; First Directory Pointer Table
 pdt0        times 4096 db 0 ; 0 Page Directory Table
-pt0         times 4096 db 0 ; Page table for identity mapping the first 2MB
 
 pdt_program  times 4096 db 0 ; Program Page Directory Table
 pt_program   times 4096 db 0 ; Program Page Table
