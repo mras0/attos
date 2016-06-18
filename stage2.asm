@@ -267,6 +267,10 @@ pmode_leave:
     sti
     ret
 
+;
+; DATA
+;
+
 GDTF_RW         equ 0x0002 ; For code segments RW=1 means the segment is readable, for data segments RW=1 means the segment is writable
 GDTF_EXECUTABLE equ 0x0008
 GDTF_SYSTEM     equ 0x0010 ; When the S (descriptor type) flag in a segment descriptor is clear, the descriptor type is a system descriptor (IA32 Vol. 3A 3.5):w
@@ -298,6 +302,17 @@ gdtr:
     dw gdt_end - gdt - 1
     dd gdt
 
+    align 4096
+stage3 incbin "stage3/stage3.exe"
+
+%if $-$$ > 0x7F * 512 ; Stage1 only loads MAX_SECTORS (currently 0x7F)
+%error We need to load more sections ourselves
+%endif
+
+;
+; BSS
+;
+
 ;
 ; +------------------------------+--------+------+
 ; | Name                         | Maps   | Bits |
@@ -319,9 +334,6 @@ pt0         times 4096 db 0 ; Page table for identity mapping the first 2MB
 
 pdt_program  times 4096 db 0 ; Program Page Directory Table
 pt_program   times 4096 db 0 ; Program Page Table
-
-    align 4096
-stage3 incbin "stage3/stage3.exe"
 
 ;
 ; End
