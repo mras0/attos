@@ -6,7 +6,6 @@
 #include <attos/pe.h>
 #include <attos/vga/text_screen.h>
 
-
 #define REQUIRE(expr) do { if (!(expr)) { ::attos::dbgout() << #expr << " failed in " << __FILE__ << ":" << __LINE__ << " . Hanging.\n"; ::attos::halt(); } } while (0);
 
 namespace attos {
@@ -25,6 +24,9 @@ out_stream& dbgout() {
 }
 
 }  // namespace attos
+
+#define assert REQUIRE // undefinde yadayda
+#include <attos/tree.h>
 
 using namespace attos;
 
@@ -128,8 +130,14 @@ private:
 };
 
 class memory_mapping {
+private:
+    virtual_address addr_;
+    uint64_t        length_;
+    memory_type     type_;
+    tree_node       link_;
+
 public:
-    explicit memory_mapping(virtual_address addr, uint64_t length, memory_type type) : addr_(addr), length_(length), type_(type) {
+    explicit memory_mapping(virtual_address addr, uint64_t length, memory_type type) : addr_(addr), length_(length), type_(type), link_() {
         REQUIRE(length != 0);
     }
     memory_mapping(const memory_mapping&) = delete;
@@ -139,10 +147,12 @@ public:
     uint64_t        length()  const { return length_; }
     memory_type     type()    const { return type_; }
 
-private:
-    virtual_address addr_;
-    uint64_t        length_;
-    memory_type     type_;
+    struct compare {
+        bool operator()(const memory_mapping& l, const memory_mapping& r) const {
+            return l.addr_ < r.addr_;
+        }
+    };
+    using tree_type = tree<memory_mapping, &memory_mapping::link_, compare>;
 };
 
 template<typename T>
@@ -190,6 +200,20 @@ private:
     simple_heap<alignof(T)> heap_;
 };
 
+
+auto find_mapping(memory_mapping::tree_type& t, virtual_address addr, uint64_t length)
+{
+    //auto it = memory_map_tree_.lower_bound(memory_mapping{addr, length, memory_type_rwx});
+    //or something smarter
+    auto it = t.begin();
+    for (auto end = t.end(); it != end; ++it) {
+        if (it->address() <= addr + length && addr <= it->address() + it->length()) {
+            break;
+        }
+    }
+    return it;
+}
+
 class boostrap_memory_manager {
 public:
     static constexpr uint64_t page_size    = 4096;
@@ -212,15 +236,21 @@ public:
     void alloc_virtual(virtual_address base, uint64_t length, memory_type type) {
         dbgout() << "[bootmm] alloc_virtual " << as_hex(base) << " " << as_hex(length) << " type=0x" << as_hex((uint32_t)type) << "\n";
 
+        auto it = find_mapping(memory_map_tree_, base, length);
+        if (it != memory_map_tree_.end()) {
+            dbgout() << "[bootmm] FATAL ERROR overlaps " << as_hex(it->address()) << "\n";
+            REQUIRE(false);
+        }
+
         auto mm = memory_mappings_.construct(base, length, type);
-        (void)mm;
-        //REQUIRE(!"Not implemented");
-        dbgout() << "Not implemented further.\n";
+        memory_map_tree_.insert(*mm);
     }
 
 private:
     simple_heap<page_size>                 physical_pages_;
     fixed_size_object_heap<memory_mapping> memory_mappings_;
+    memory_mapping::tree_type              memory_map_tree_;
+
 };
 object_buffer<boostrap_memory_manager> boot_mm_buffer;
 

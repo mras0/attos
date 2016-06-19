@@ -1,236 +1,7 @@
 #include <assert.h>
+#include "../../stage3/attos/tree.h"
 
 #define CONTAINING_RECORD(ptr, type, field) *reinterpret_cast<type*>(reinterpret_cast<char*>(ptr) - offsetof(type, field))
-
-namespace attos {
-
-template<typename Container, typename T>
-inline constexpr Container& containing_record(T& n, T Container::* field) {
-    return *reinterpret_cast<Container*>(reinterpret_cast<char*>(&n) - (size_t)(char*)&(((Container*)0)->*field));
-}
-
-struct tree_node {
-    tree_node* parent;
-    tree_node* left;
-    tree_node* right;
-};
-
-tree_node* minimum_node(tree_node* node) {
-    while (node && node->left) {
-        node = node->left;
-    }
-    return node;
-}
-
-tree_node* successor_node(tree_node* node) {
-    // We have visitied all the smaller (left) nodes
-    // and `node' and want the successor
-    if (!node) {
-        return nullptr;
-    }
-
-    // If there is right child, advance to the smallest
-    // node in that subtree
-    if (node->right) {
-        return minimum_node(node->right);
-    }
-
-    // Search upwards until we're our parent's left child
-    tree_node* parent;
-    while ((parent = node->parent) != nullptr && parent->right == node) {
-        node = parent;
-    }
-    assert(!parent || parent->left == node);
-    return parent;
-}
-
-namespace detail {
-
-// Updates the parent of `removed_node' to point to `replacement_node'
-void update_parent_of(tree_node& removed_node, tree_node* replacement_node) {
-    if (removed_node.parent) {
-        if (removed_node.parent->left == &removed_node) {
-            removed_node.parent->left = replacement_node;
-        } else {
-            assert(removed_node.parent->right == &removed_node);
-            removed_node.parent->right = replacement_node;
-        }
-    }
-}
-
-void reparent_child_nodes(tree_node& n)
-{
-    if (n.left) n.left->parent = &n;
-    if (n.right) n.right->parent = &n;
-}
-
-void check_tree(tree_node* root) {
-    if (!root) return;
-    if (root->left) {
-        assert(root->left->parent == root);
-        check_tree(root->left);
-    }
-    if (root->right) {
-        assert(root->right->parent == root);
-        check_tree(root->right);
-    }
-}
-
-} // namespace detail
-
-
-template<typename Container, tree_node Container::*Field, typename Compare>
-class tree {
-public:
-    explicit tree() {}
-    ~tree() { detail::check_tree(root_); }
-
-    void insert(Container& c) {
-        do_insert(&root_, node(c));
-    }
-
-    tree_node* debug_get_root() { return root_; }
-
-    class iterator {
-    public:
-        bool operator==(const iterator& rhs) const { return node_ == rhs.node_; }
-        bool operator!=(const iterator& rhs) const { return !(*this == rhs); }
-
-        iterator& operator++() {
-            node_ = successor_node(node_);
-            return *this;
-        }
-
-        auto& operator*() {
-            return containing_record(*node_, Field);
-        }
-
-    private:
-        explicit iterator(tree_node* node = nullptr) : node_(node) {
-        }
-
-        tree_node* node_;
-        friend tree;
-    };
-
-    iterator begin() { return iterator{minimum_node(root_)}; }
-    iterator end() { return iterator{}; }
-
-    void remove(Container& c) {
-        auto& node = tree::node(c);
-        tree_node* replacement_node = nullptr;
-        for (;;) {
-            if (node.left) {
-                if (node.right) {
-                    // We have 2 children, swap places with our inorder successor and retry
-                    auto successor = successor_node(&node);
-                    assert(successor);
-
-                    // Handle corner case
-                    if (successor == node.right) {
-                        // The successor is our right child
-                        assert(successor->parent == &node);
-
-                        // Update our parent
-                        detail::update_parent_of(node, successor);
-                        // The successor gets our parent
-                        successor->parent = node.parent;
-
-                        // The left child is easy
-                        std::swap(node.left, successor->left);
-
-                        // Grab the right child of the successor
-                        node.right = successor->right;
-
-                        // We're now the successors right child
-                        successor->right = &node;
-
-                    } else {
-                        // The successor is some other node (it can't be our left child)
-                        // and it can't be our parent, because the only way it can be our
-                        // direct parent is if we don't have any right child (in case we
-                        // wouldn't be in this code path)
-                        assert(successor != node.left);
-                        assert(successor != node.parent);
-
-                        // Update the parents
-                        detail::update_parent_of(*successor, &node);
-                        detail::update_parent_of(node, successor);
-
-                        // Swap children
-                        std::swap(node.left, successor->left);
-                        std::swap(node.right, successor->right);
-
-                        // Swap parents
-                        std::swap(node.parent, successor->parent);
-                    }
-
-                    // Update the children
-                    detail::reparent_child_nodes(node);
-                    detail::reparent_child_nodes(*successor);
-
-                    // Check if we were the root node
-                    if (&node == root_) {
-                        root_ = successor;
-                    }
-
-                    // Continue search
-                } else {
-                    // Only left child
-                    std::swap(replacement_node, node.left);
-                    break;
-                }
-            } else if (node.right) {
-                // Only right child
-                std::swap(replacement_node, node.right);
-                break;
-            } else {
-                // No children - Simply unhook from parent
-                break;
-            }
-        }
-        assert(node.left == nullptr);
-        assert(node.right == nullptr);
-
-        // Unlink from parent
-        detail::update_parent_of(node, replacement_node);
-        // Link new node to parent
-        if (replacement_node) {
-            replacement_node->parent = node.parent;
-        }
-        // Update root if necessary
-        if (root_ == &node) {
-            root_ = replacement_node;
-        }
-        node.parent = nullptr;
-    }
-
-private:
-    tree_node* root_ = nullptr;
-
-    static void do_insert(tree_node** root, tree_node& node) {
-        assert(node.parent == nullptr);
-        assert(node.left   == nullptr);
-        assert(node.right  == nullptr);
-        assert(root);
-
-        Compare compare;
-        tree_node* parent = nullptr;
-        while (*root) {
-            assert(root);
-            parent = *root;
-            root = compare(containing_record(node, Field), containing_record(*parent, Field)) ? &parent->left : &parent->right;
-        }
-        node.parent = parent;
-        *root = &node;
-    }
-
-    static constexpr tree_node& node(Container& t) {
-        return t.*Field;
-    }
-};
-
-} // namespace attos
 
 #include <iostream>
 
@@ -407,6 +178,37 @@ TEST_CASE("more complicated removal") {
         t.remove(t19);
         REQUIRE(conv(t) == V(t5, t9, t12, t13, t14, t16, t16b, t18));
     }
+}
+
+TEST_CASE("lower_bound") {
+    test x3a{3}, x4a{4}, x4b{4}, x4c{4}, x4d{4}, x5a{5}, x7a{7}, x7b{7}, x7c{7}, x7d{7}, x8a{8};
+    tree_type t;
+//    x3a x4a x4b x4c x4d x5a x7a x7b x7c x7d x8a
+    t.insert(x3a);
+    t.insert(x4a);
+    t.insert(x4b);
+    t.insert(x4c);
+    t.insert(x4d);
+    t.insert(x5a);
+    t.insert(x7a);
+    t.insert(x7b);
+    t.insert(x7c);
+    t.insert(x7d);
+    t.insert(x8a);
+    REQUIRE(conv(t) == V(x3a, x4a, x4b, x4c, x4d, x5a, x7a, x7b, x7c, x7d, x8a));
+#define RL(n, x) REQUIRE(&*t.lower_bound(test{n}) == &x)
+#define RU(n, x) REQUIRE(&*t.upper_bound(test{n}) == &x)
+    RL(2, x3a);
+    RU(2, x3a);
+    RL(4, x4a);
+    RU(4, x5a);
+    RL(6, x7a);
+    RU(6, x7a);
+    RL(8, x8a);
+    REQUIRE(t.upper_bound(test{8}) == t.end());
+    REQUIRE(t.lower_bound(test{9}) == t.end());
+#undef RU
+#undef RL
 }
 
 class memory_area {
