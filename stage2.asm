@@ -110,18 +110,27 @@ test_longmode:
     set_page_entry pdpt511+0x1FC*8, 0, 0 | PAGEF_PAGESIZE ; Map 1GB from physical 0 at 0xFFFFFFFF`00000000
     set_page_entry pdt0, 0, 0 | PAGEF_PAGESIZE ; Identity map first 2MB
 
+    mov esi, stage3
+    add esi, [esi+IMAGE_DOS_HEADER.e_lfanew]
+    ; esi = IMAGE_NT_HEADERS*
+
+    ; clear destination area
+    mov edi, STAGE3_LOAD_ADDR
+    mov ecx, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.SizeOfImage]
+    xor al, al
+    rep stosb
+
     ; copy stage3 to its place
+    push esi
     mov esi, stage3
     mov edi, STAGE3_LOAD_ADDR
     mov ecx, stage3_size
     rep movsb
+    pop esi
 
     ; map stage3
     ; TODO: Handle sections, e.g. initialize BSS...
     ; Current limitations: Must not overlap identity mapping. ImageBase+SizeOfImage must not cross a 2MB boundary, Section mapping must be 4K aligned, etc..
-    mov esi, stage3
-    add esi, [esi+IMAGE_DOS_HEADER.e_lfanew]
-    ; esi = IMAGE_NT_HEADERS*
     mov eax, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.ImageBase]
     mov edx, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.ImageBase+4]
     ; edx:eax = ImageBase
