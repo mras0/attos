@@ -339,7 +339,7 @@ gdtr:
     dd gdt
 
     align 4096
-stage3 incbin "stage3/stage3.exe"
+stage3 incbin "../stage3/stage3.exe"
 stage3_size EQU $-stage3
 
 ;
