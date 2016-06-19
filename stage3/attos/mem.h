@@ -21,10 +21,14 @@ T* physical_address(uint64_t base) {
     return reinterpret_cast<T*>(base + identity_map_start);
 }
 
+constexpr static uint32_t pml4_shift = 39;
+constexpr static uint32_t pdp_shift  = 30;
+constexpr static uint32_t pd_shift   = 21;
+constexpr static uint32_t pt_shift   = 12;
+
 inline void move_memory(void* destination, const void* source, size_t count) {
     __movsb(reinterpret_cast<uint8_t*>(destination), reinterpret_cast<const uint8_t*>(source), count);
 }
-
 
 //  +------------------------------+--------+--------+------+
 //  | Name                         |  Entry | Maps   | Bits |

@@ -97,36 +97,130 @@ void print_page_tables(uint64_t cr3)
         }
     }
 }
+#define ENUM_BIT_OP(type, op, inttype) \
+constexpr inline type operator op(type l, type r) { return static_cast<type>(static_cast<inttype>(l) op static_cast<inttype>(r)); }
+#define ENUM_BIT_OPS(type, inttype) \
+    ENUM_BIT_OP(type, |, inttype)
+
+enum class memory_type : uint32_t {
+    read    = 0x01,
+    write   = 0x02,
+    execute = 0x04,
+};
+
+ENUM_BIT_OPS(memory_type, uint32_t)
+static constexpr auto memory_type_rwx = memory_type::read | memory_type::write | memory_type::execute;
+
+class virtual_address {
+public:
+    constexpr explicit virtual_address(uint64_t addr=0) : addr_(addr) {
+    }
+
+    constexpr operator uint64_t() const { return addr_; }
+
+    constexpr uint32_t pml4e() const { return (addr_ >> pml4_shift) & ~511; }
+    constexpr uint32_t pdpe()  const { return (addr_ >> pdp_shift)  & ~511; }
+    constexpr uint32_t pde()   const { return (addr_ >> pd_shift)   & ~511; }
+    constexpr uint32_t pte()   const { return (addr_ >> pt_shift)   & ~511; }
+
+private:
+    uint64_t addr_;
+};
+
+class memory_mapping {
+public:
+    explicit memory_mapping(virtual_address addr, uint64_t length, memory_type type) : addr_(addr), length_(length), type_(type) {
+        REQUIRE(length != 0);
+    }
+    memory_mapping(const memory_mapping&) = delete;
+    memory_mapping& operator=(const memory_mapping&) = delete;
+
+    virtual_address address() const { return addr_; }
+    uint64_t        length()  const { return length_; }
+    memory_type     type()    const { return type_; }
+
+private:
+    virtual_address addr_;
+    uint64_t        length_;
+    memory_type     type_;
+};
+
+template<typename T>
+constexpr auto round_up(T val, T align)
+{
+    return val % align ? val + align - (val % align) : val;
+}
+
+template<uint64_t Alignment>
+class simple_heap {
+public:
+    explicit simple_heap(uint8_t* base, uint64_t length) : base_(base), end_(base + length), cur_(base) {
+        REQUIRE(!((uint64_t)base & (Alignment-1)));
+        REQUIRE(length >= Alignment);
+    }
+    simple_heap(const simple_heap&) = delete;
+    simple_heap& operator=(const simple_heap&) = delete;
+
+    uint8_t* alloc(uint64_t size) {
+        size = round_up(size, Alignment);
+        REQUIRE(cur_ + size <= end_);
+        auto ptr = cur_;
+        cur_ += size;
+        return ptr;
+    }
+
+private:
+    uint8_t* const base_;
+    uint8_t* const end_;
+    uint8_t* cur_;
+};
+
+template<typename T>
+class fixed_size_object_heap {
+public:
+    explicit fixed_size_object_heap(uint8_t* base, uint64_t length) : heap_{base, length} {
+    }
+
+    template<typename... Args>
+    T* construct(Args&&... args) {
+        return new (heap_.alloc(sizeof(T))) T(static_cast<Args&&>(args)...);
+    }
+
+private:
+    simple_heap<alignof(T)> heap_;
+};
 
 class boostrap_memory_manager {
 public:
-    explicit boostrap_memory_manager(uint64_t physical_base, uint64_t length) : base_(physical_address<uint8_t>(physical_base)), end_(base_ + length), cur_(base_) {
-        REQUIRE(length != 0);
-        REQUIRE(!(physical_base & (min_align_-1)));
+    static constexpr uint64_t page_size    = 4096;
 
+    explicit boostrap_memory_manager(uint64_t physical_base, uint64_t length)
+        : physical_pages_{physical_address<uint8_t>(physical_base), length}
+        , memory_mappings_{alloc_physical(page_size), page_size} {
         dbgout() << "[bootmm] Starting. Base 0x" << as_hex(physical_base) << " Length " << (length>>20) << " MB\n";
     }
     boostrap_memory_manager(const boostrap_memory_manager&) = delete;
     boostrap_memory_manager& operator=(const boostrap_memory_manager&) = delete;
 
-    uint8_t* alloc(uint64_t size) {
-        REQUIRE(cur_ + size <= end_);
-        auto ptr = cur_;
-        if (auto excess = size % min_align_) {
-            // Round up allocation
-            size += min_align_ - excess;
-        }
-        cur_ += size;
+    uint8_t* alloc_physical(uint64_t size) {
+        size = round_up(size, page_size);
+        auto ptr = physical_pages_.alloc(size);
         __stosq(reinterpret_cast<uint64_t*>(ptr), 0, size / 8);
         return ptr;
     }
 
+    void alloc_virtual(virtual_address base, uint64_t length, memory_type type) {
+        dbgout() << "[bootmm] alloc_virtual " << as_hex(base) << " " << as_hex(length) << " type=0x" << as_hex((uint32_t)type) << "\n";
+
+        auto mm = memory_mappings_.construct(base, length, type);
+        (void)mm;
+        //REQUIRE(!"Not implemented");
+        dbgout() << "Not implemented further.\n";
+    }
 
 private:
-    static constexpr uint64_t min_align_ = 4096;
-    uint8_t* const            base_;
-    uint8_t* const            end_;
-    uint8_t*                  cur_;
+    simple_heap<page_size>                 physical_pages_;
+    fixed_size_object_heap<memory_mapping> memory_mappings_;
 };
 object_buffer<boostrap_memory_manager> boot_mm_buffer;
 
@@ -163,7 +257,11 @@ auto construct_boot_mm(const smap_entry* smap)
     }
 
     REQUIRE(base_len != 0);
-    return boot_mm_buffer.construct(base_addr, base_len);
+    auto boot_mm = boot_mm_buffer.construct(base_addr, base_len);
+    // Handle identity map
+    boot_mm->alloc_virtual(virtual_address(identity_map_start), identity_map_length, memory_type_rwx);
+
+    return boot_mm;
 }
 
 void small_exe(const arguments& args)
@@ -172,10 +270,6 @@ void small_exe(const arguments& args)
     set_dbgout(ts);
 
     auto boot_mm = construct_boot_mm(args.smap_entries);
-    auto buf = boot_mm->alloc(8192);
-    buf[0] = 'X';
-    buf[1] = '\0';
-    dbgout() << (char*)buf << "\n";
     dbgout() << "Press any key\n";
     read_key();
 
