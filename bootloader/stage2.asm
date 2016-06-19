@@ -1,3 +1,5 @@
+PAGE_TABLES_ADDRESS EQU 0x70000
+
     org 0x7e00
     bits 16
 
@@ -102,6 +104,12 @@ test_longmode:
     mov ds, ax
     mov es, ax
     mov ss, ax
+
+    ; clear page tabls
+    mov edi, PAGE_TABLES_ADDRESS
+    mov ecx, PAGE_TABLES_SIZE/4
+    xor eax, eax
+    rep stosd
 
     ; build initial page mapping
     set_page_entry pml4, 0, pdpt0
@@ -342,6 +350,15 @@ gdtr:
 stage3 incbin "../stage3/stage3.exe"
 stage3_size EQU $-stage3
 
+%if $-$$ > 0x7F * 512 ; Stage1 only loads MAX_SECTORS (currently 0x7F)
+%error We need to load more sections ourselves (or handle BSS better)
+%endif
+
+    times (16*63*512)-($-$$) db 0 ; Make sure we fill at least one cylinder
+
+    align 512, db 0 ; Pad to sector size
+
+
 ;
 ; BSS
 ;
@@ -358,23 +375,14 @@ stage3_size EQU $-stage3
 ; +------------------------------+--------+------+
 ;
 
-    align 4096 ; page tables must be 4K aligned
+    absolute PAGE_TABLES_ADDRESS
+    align 4096, resb 1 ; page tables must be 4K aligned
+pml4         resb 4096 ; Page Map Level 4
+pdpt0        resb 4096 ; First Directory Pointer Table
+pdpt511      resb 4096 ; Last Directory Pointer Table
+pdt0         resb 4096 ; 0 Page Directory Table
+pdt_program  resb 4096 ; Program Page Directory Table
+pt_program   resb 4096 ; Program Page Table
 
-pml4         times 4096 db 0 ; Page Map Level 4
-pdpt0        times 4096 db 0 ; First Directory Pointer Table
-pdpt511      times 4096 db 0 ; Last Directory Pointer Table
-pdt0         times 4096 db 0 ; 0 Page Directory Table
-pdt_program  times 4096 db 0 ; Program Page Directory Table
-pt_program   times 4096 db 0 ; Program Page Table
+PAGE_TABLES_SIZE EQU $-$$
 
-%if $-$$ > 0x7F * 512 ; Stage1 only loads MAX_SECTORS (currently 0x7F)
-%error We need to load more sections ourselves (or handle BSS better)
-%endif
-
-;
-; End
-;
-
-    times (16*63*512)-($-$$) db 0 ; Make sure we fill at least one cylinder
-
-    align 512, db 0 ; Pad to sector size
