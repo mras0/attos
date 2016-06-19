@@ -20,7 +20,7 @@ namespace attos { namespace vga {
 // 0xE   Light Yellow
 // 0xF   White
 
-constexpr auto screen_buffer = reinterpret_cast<uint16_t*>(0xb8000 + identity_map_start);
+constexpr auto screen_buffer = fixed_physical_address<uint16_t, 0xb8000>;
 constexpr int  screen_width = 80;
 constexpr int  screen_height = 25;
 

@@ -6,7 +6,13 @@
 #include <attos/pe.h>
 #include <attos/vga/text_screen.h>
 
+
+#define REQUIRE(expr) do { if (!(expr)) { ::attos::dbgout() << #expr << " failed in " << __FILE__ << ":" << __LINE__ << " . Hanging.\n"; ::attos::halt(); } } while (0);
+
 namespace attos {
+
+void halt() { for (;;) __halt(); }
+
 
 out_stream* global_dbgout;
 
@@ -38,11 +44,19 @@ uint8_t read_key() {
     return __inbyte(ps2_data_port);  // read key
 }
 
+enum class smap_type : uint32_t {
+    end_of_list  = 0, // last entry in list (placed by stage2)
+    available    = 1, // memory, available to OS
+    reserved     = 2, // reserved, not available (e.g. system ROM, memory-mapped device)
+    acpi_reclaim = 3, // ACPI Reclaim Memory (usable by OS after reading ACPI tables)
+    acpi_nvs     = 4, // ACPI NVS Memory (OS is required to save this memory between NVS
+};
+
 #pragma pack(push, 1)
 struct smap_entry {
-    uint64_t base;
-    uint64_t length;
-    uint32_t type;
+    uint64_t  base;
+    uint64_t  length;
+    smap_type type;
 };
 #pragma pack(pop)
 
@@ -84,30 +98,86 @@ void print_page_tables(uint64_t cr3)
     }
 }
 
-struct test_class {
-    int n;
-    test_class(int n) : n(n) {
-        dbgout() << "test_class::test_class(" << n << ")\n";
+class boostrap_memory_manager {
+public:
+    explicit boostrap_memory_manager(uint64_t physical_base, uint64_t length) : base_(physical_address<uint8_t>(physical_base)), end_(base_ + length), cur_(base_) {
+        REQUIRE(length != 0);
+        REQUIRE(!(physical_base & (min_align_-1)));
+
+        dbgout() << "[bootmm] Starting. Base 0x" << as_hex(physical_base) << " Length " << (length>>20) << " MB\n";
     }
-    ~test_class() {
-        dbgout() << "test_class::~test_class(" << n << ")\n";
+    boostrap_memory_manager(const boostrap_memory_manager&) = delete;
+    boostrap_memory_manager& operator=(const boostrap_memory_manager&) = delete;
+
+    uint8_t* alloc(uint64_t size) {
+        REQUIRE(cur_ + size <= end_);
+        auto ptr = cur_;
+        if (auto excess = size % min_align_) {
+            // Round up allocation
+            size += min_align_ - excess;
+        }
+        cur_ += size;
+        __stosq(reinterpret_cast<uint64_t*>(ptr), 0, size / 8);
+        return ptr;
     }
-    void foo(int n2) {
-        dbgout() << "test_class(" << n << ")::foo(" << n2 << "\n";
-    }
+
+
+private:
+    static constexpr uint64_t min_align_ = 4096;
+    uint8_t* const            base_;
+    uint8_t* const            end_;
+    uint8_t*                  cur_;
 };
-object_buffer<test_class> test_class_buffer;
+object_buffer<boostrap_memory_manager> boot_mm_buffer;
+
+auto construct_boot_mm(const smap_entry* smap)
+{
+    // Find suitable place to construct initial memory manager
+    uint64_t base_addr = 0;
+    uint64_t base_len  = 0;
+
+    dbgout() << "Base             Length           Type\n";
+    dbgout() << "FEDCBA9876543210 FEDCBA9876543210 76543210\n";
+
+    constexpr uint64_t min_len_megabytes = 4;
+    constexpr uint64_t min_base = 1ULL << 20;
+    constexpr uint64_t min_len  = min_len_megabytes << 20;
+    constexpr uint64_t max_base = identity_map_length - min_len_megabytes;
+
+    // TODO: Handle unaligned areas
+    for (auto e = smap; e->type != smap_type::end_of_list; ++e) {
+        dbgout() << as_hex(e->base) << ' ' << as_hex(e->length) << ' ' << as_hex(static_cast<uint32_t>(e->type));
+        if (e->type == smap_type::available && e->base >= min_base && e->base <= max_base && e->length >= min_len) {
+            if (!base_len) {
+                // Selected this one
+                base_addr = e->base;
+                base_len  = e->length;
+                dbgout() << " *\n";
+            } else {
+                // We would have selected this one
+                dbgout() << " +\n";
+            }
+        } else {
+            dbgout() << " -\n";
+        }
+    }
+
+    REQUIRE(base_len != 0);
+    return boot_mm_buffer.construct(base_addr, base_len);
+}
 
 void small_exe(const arguments& args)
 {
     vga::text_screen ts;
     set_dbgout(ts);
 
-    dbgout() << "Base             Length           Type\n";
-    dbgout() << "FEDCBA9876543210 FEDCBA9876543210 76543210\n";
-    for (auto e = args.smap_entries; e->type; ++e) {
-        dbgout() << as_hex(e->base) << ' ' << as_hex(e->length) << ' ' << as_hex(e->type) << "\n";
-    }
+    auto boot_mm = construct_boot_mm(args.smap_entries);
+    auto buf = boot_mm->alloc(8192);
+    buf[0] = 'X';
+    buf[1] = '\0';
+    dbgout() << (char*)buf << "\n";
+    dbgout() << "Press any key\n";
+    read_key();
 
     print_page_tables(__readcr3());
 
@@ -118,12 +188,6 @@ void small_exe(const arguments& args)
         }
         dbgout() << " " << as_hex(s.VirtualAddress + nth.OptionalHeader.ImageBase) << " " << as_hex(s.Misc.VirtualSize) << "\n";
     }
-
-    dbgout() << "Last mapped: " << as_hex(nth.OptionalHeader.ImageBase + nth.OptionalHeader.SizeOfImage + (1<<12)) << "\n";
-
-    auto tc = test_class_buffer.construct(42);
-    tc->foo(1);
-    (*tc).foo(2);
 
     dbgout() << "Press any key to exit.\n";
     read_key();

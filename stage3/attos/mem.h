@@ -10,7 +10,16 @@ void operator delete(void* address, size_t size);
 
 namespace attos {
 
-constexpr uint64_t identity_map_start = 0xFFFFFFFF'00000000; // 1 GB mapped currently
+constexpr uint64_t identity_map_start  = 0xFFFFFFFF'00000000;
+constexpr uint64_t identity_map_length = 0x00000000'10000000;
+
+template<class T, uint64_t base>
+constexpr T* fixed_physical_address = reinterpret_cast<T*>(base + identity_map_start);
+
+template<typename T>
+T* physical_address(uint64_t base) {
+    return reinterpret_cast<T*>(base + identity_map_start);
+}
 
 inline void move_memory(void* destination, const void* source, size_t count) {
     __movsb(reinterpret_cast<uint8_t*>(destination), reinterpret_cast<const uint8_t*>(source), count);
@@ -79,7 +88,10 @@ private:
 
 struct destruct_deleter {
     template<typename T>
-    void operator()(T* ptr) { ptr->~T(); }
+    void operator()(T* ptr) {
+        ptr->~T();
+        (void)ptr; // Avoid msvc warning
+    }
 };
 
 template<typename T>
