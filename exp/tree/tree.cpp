@@ -1,10 +1,13 @@
-#include <iostream>
 #include <assert.h>
 
-#include <cstddef> // offsetof
 #define CONTAINING_RECORD(ptr, type, field) *reinterpret_cast<type*>(reinterpret_cast<char*>(ptr) - offsetof(type, field))
 
 namespace attos {
+
+template<typename Container, typename T>
+inline constexpr Container& containing_record(T& n, T Container::* field) {
+    return *reinterpret_cast<Container*>(reinterpret_cast<char*>(&n) - (size_t)(char*)&(((Container*)0)->*field));
+}
 
 struct tree_node {
     tree_node* parent;
@@ -41,6 +44,8 @@ tree_node* successor_node(tree_node* node) {
     return parent;
 }
 
+namespace detail {
+
 // Updates the parent of `removed_node' to point to `replacement_node'
 void update_parent_of(tree_node& removed_node, tree_node* replacement_node) {
     if (removed_node.parent) {
@@ -52,7 +57,6 @@ void update_parent_of(tree_node& removed_node, tree_node* replacement_node) {
         }
     }
 }
-
 
 void reparent_child_nodes(tree_node& n)
 {
@@ -72,18 +76,17 @@ void check_tree(tree_node* root) {
     }
 }
 
+} // namespace detail
 
-template<typename NodeTraits>
+
+template<typename Container, tree_node Container::*Field, typename Compare>
 class tree {
 public:
     explicit tree() {}
-    ~tree() { check_tree(root_); }
+    ~tree() { detail::check_tree(root_); }
 
-    using container_type = decltype(NodeTraits::container(std::declval<tree_node&>()));
-
-    void insert(container_type& c) {
-        do_insert(&root_, NodeTraits::node(c));
-        check_tree(root_);
+    void insert(Container& c) {
+        do_insert(&root_, node(c));
     }
 
     tree_node* debug_get_root() { return root_; }
@@ -99,7 +102,7 @@ public:
         }
 
         auto& operator*() {
-            return NodeTraits::container(*node_);
+            return containing_record(*node_, Field);
         }
 
     private:
@@ -113,17 +116,15 @@ public:
     iterator begin() { return iterator{minimum_node(root_)}; }
     iterator end() { return iterator{}; }
 
-    void remove(container_type& c) {
-        auto& node = NodeTraits::node(c);
+    void remove(Container& c) {
+        auto& node = tree::node(c);
         tree_node* replacement_node = nullptr;
         for (;;) {
-            std::cout << "Removing node " << c << std::endl;
             if (node.left) {
                 if (node.right) {
                     // We have 2 children, swap places with our inorder successor and retry
                     auto successor = successor_node(&node);
                     assert(successor);
-                    std::cout << "Replace with " << NodeTraits::container(*successor) << std::endl;
 
                     // Handle corner case
                     if (successor == node.right) {
@@ -131,7 +132,7 @@ public:
                         assert(successor->parent == &node);
 
                         // Update our parent
-                        update_parent_of(node, successor);
+                        detail::update_parent_of(node, successor);
                         // The successor gets our parent
                         successor->parent = node.parent;
 
@@ -153,8 +154,8 @@ public:
                         assert(successor != node.parent);
 
                         // Update the parents
-                        update_parent_of(*successor, &node);
-                        update_parent_of(node, successor);
+                        detail::update_parent_of(*successor, &node);
+                        detail::update_parent_of(node, successor);
 
                         // Swap children
                         std::swap(node.left, successor->left);
@@ -165,15 +166,13 @@ public:
                     }
 
                     // Update the children
-                    reparent_child_nodes(node);
-                    reparent_child_nodes(*successor);
+                    detail::reparent_child_nodes(node);
+                    detail::reparent_child_nodes(*successor);
 
                     // Check if we were the root node
                     if (&node == root_) {
                         root_ = successor;
                     }
-
-                    check_tree(root_);
 
                     // Continue search
                 } else {
@@ -194,7 +193,7 @@ public:
         assert(node.right == nullptr);
 
         // Unlink from parent
-        update_parent_of(node, replacement_node);
+        detail::update_parent_of(node, replacement_node);
         // Link new node to parent
         if (replacement_node) {
             replacement_node->parent = node.parent;
@@ -204,7 +203,6 @@ public:
             root_ = replacement_node;
         }
         node.parent = nullptr;
-        check_tree(root_);
     }
 
 private:
@@ -216,25 +214,31 @@ private:
         assert(node.right  == nullptr);
         assert(root);
 
+        Compare compare;
         tree_node* parent = nullptr;
         while (*root) {
             assert(root);
             parent = *root;
-            root = NodeTraits::compare(NodeTraits::container(node), NodeTraits::container(*parent)) ? &parent->left : &parent->right;
+            root = compare(containing_record(node, Field), containing_record(*parent, Field)) ? &parent->left : &parent->right;
         }
         node.parent = parent;
         *root = &node;
     }
+
+    static constexpr tree_node& node(Container& t) {
+        return t.*Field;
+    }
 };
+
+} // namespace attos
+
+#include <iostream>
+
+using namespace attos;
 
 std::ostream& operator<<(std::ostream& os, const tree_node& n) {
     return os << "tree_node{" << &n << ", parent=" << n.parent << ", left=" << n.left << ", " << n.right << "}";
 }
-
-} // namespace attos
-
-
-using namespace attos;
 
 struct test {
     explicit test(int value = 0) : value(value), node() {
@@ -246,14 +250,8 @@ struct test {
     tree_node node;
 };
 
-struct test_node_traits {
-    static tree_node& node(test& t) {
-        return t.node;
-    }
-    static test& container(tree_node& n) {
-        return CONTAINING_RECORD(&n, test, node);
-    }
-    static bool compare(const test& l, const test& r) {
+struct test_node_compare {
+    bool operator()(const test& l, const test& r) const {
         return l.value < r.value;
     }
 };
@@ -262,7 +260,7 @@ std::ostream& operator<<(std::ostream& os, const test& t) {
     return os << "test{value=" << t.value << ", node=" << t.node << "}";
 }
 
-using tree_type = tree<test_node_traits>;
+using tree_type = tree<test, &test::node, test_node_compare>;
 
 #include <string>
 
@@ -273,7 +271,7 @@ void dump_tree(tree_node* root, int indent = 0)
         std::cout << "(null)\n";
         return;
     }
-    std::cout << test_node_traits::container(*root) << "\n";
+    std::cout << containing_record(*root, &test::node) << "\n";
     dump_tree(root->left, indent+1);
     dump_tree(root->right, indent+1);
 }
