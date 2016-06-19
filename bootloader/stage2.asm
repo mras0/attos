@@ -97,8 +97,6 @@ test_pmode32:
     mov     dword [%1+4], %2
 %endmacro
 
-STAGE3_LOAD_ADDR EQU (1<<20) ; TODO: Maybe the memory at 1MB isn't available - check the SMAP
-
 test_longmode:
     mov ax, 0x10
     mov ds, ax
@@ -122,12 +120,6 @@ test_longmode:
     add esi, [esi+IMAGE_DOS_HEADER.e_lfanew]
     ; esi = IMAGE_NT_HEADERS*
 
-    ; clear destination area
-    mov edi, STAGE3_LOAD_ADDR
-    mov ecx, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.SizeOfImage]
-    xor al, al
-    rep stosb
-
     ; copy stage3 to its place
     ; determine size by finding the section with the largest physical extend
     bochs_magic
@@ -149,12 +141,6 @@ test_longmode:
     dec eax
     jnz .sections
 .sectionsdone:
-
-    push esi
-    mov esi, stage3
-    mov edi, STAGE3_LOAD_ADDR
-    rep movsb
-    pop esi
 
     ; map stage3
     ; TODO: Handle sections, e.g. initialize BSS...
@@ -190,7 +176,7 @@ test_longmode:
     mov ecx, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.SizeOfImage]
     shr ecx, 12
     mov edi, pt_program
-    mov esi, STAGE3_LOAD_ADDR
+    mov esi, stage3
 .initpage2:
     set_page_entry edi, 0, esi
     add esi, 4096
@@ -249,7 +235,7 @@ test_longmode:
     ; build argument structure
     sub rsp, 0x10
     mov rcx, rsp
-    mov qword [rcx+0x00], STAGE3_LOAD_ADDR
+    mov qword [rcx+0x00], stage3
     mov qword [rcx+0x08], smap_buffer
 
     and rsp, -16  ; in 64-bit the stack must be 16 byte aligned before a call

@@ -51,9 +51,8 @@ struct arguments {
     smap_entry*                  smap_entries;
 };
 
-void print_page_tables()
+void print_page_tables(uint64_t cr3)
 {
-    const auto cr3 = __readcr3();
     dbgout() << "cr3 = " << as_hex(cr3) << "\n";
     auto pml4 = (uint64_t*)cr3;
     for (int i = 0; i < 512; ++i ) {
@@ -63,6 +62,22 @@ void print_page_tables()
             for (int j = 0; j < 512; ++j) {
                 if (pdpt[j] & PAGEF_PRESENT) {
                     dbgout() << " " << as_hex(j) << " " << as_hex(pdpt[j]) << "\n";
+                    if (!(pdpt[j] & PAGEF_PAGESIZE)) {
+                        auto pdt = (uint64_t*)(pdpt[j]&~511);
+                        for (int k = 0; k < 512; ++k) {
+                            if (pdt[k] & PAGEF_PRESENT) {
+                                dbgout() << "  " << as_hex(k) << " " << as_hex(pdt[k]) << "\n";
+                                if (!(pdt[k] & PAGEF_PAGESIZE)) {
+                                    auto pt = (uint64_t*)(pdt[k]&~511);
+                                    for (int l = 0; l < 512; ++l) {
+                                        if (pt[l] & PAGEF_PRESENT) {
+                                            dbgout() << "   " << as_hex(l) << " " << as_hex(pt[l]) << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -94,7 +109,7 @@ void small_exe(const arguments& args)
         dbgout() << as_hex(e->base) << ' ' << as_hex(e->length) << ' ' << as_hex(e->type) << "\n";
     }
 
-    print_page_tables();
+    print_page_tables(__readcr3());
 
     const auto& nth = args.image_base.nt_headers();
     for (const auto& s : nth.sections()) {
