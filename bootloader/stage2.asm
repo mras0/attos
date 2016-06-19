@@ -129,10 +129,30 @@ test_longmode:
     rep stosb
 
     ; copy stage3 to its place
+    ; determine size by finding the section with the largest physical extend
+    bochs_magic
+    movzx edi, word [esi+IMAGE_NT_HEADERS.FileHeader+IMAGE_FILE_HEADER.SizeOfOptionalHeader]
+    lea edi, [edi+esi+IMAGE_NT_HEADERS.OptionalHeader]
+    ; edi = IMAGE_SECTION_HEADER*
+    xor ecx, ecx ; ecx = largest extend so far
+    movzx eax, word [esi+IMAGE_NT_HEADERS.FileHeader+IMAGE_FILE_HEADER.NumberOfSections]
+.sections: ; eax = number of remaining sections to process
+    and eax, eax
+    jz .sectionsdone
+    mov ebx, [edi+IMAGE_SECTION_HEADER.PointerToRawData]
+    add ebx, [edi+IMAGE_SECTION_HEADER.SizeOfRawData]
+    cmp ebx, ecx
+    jbe .nextsection
+    mov ecx, ebx
+.nextsection:
+    add edi, IMAGE_SECTION_HEADER_size
+    dec eax
+    jnz .sections
+.sectionsdone:
+
     push esi
     mov esi, stage3
     mov edi, STAGE3_LOAD_ADDR
-    mov ecx, stage3_size
     rep movsb
     pop esi
 
@@ -348,7 +368,6 @@ gdtr:
 
     align 4096
 stage3 incbin "../stage3/stage3.exe"
-stage3_size EQU $-stage3
 
 %if $-$$ > 0x7F * 512 ; Stage1 only loads MAX_SECTORS (currently 0x7F)
 %error We need to load more sections ourselves (or handle BSS better)
