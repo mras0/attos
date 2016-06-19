@@ -293,12 +293,6 @@ void do_print(const char* title, tree_type& t)
 #include <vector>
 using vt = std::vector<const test*>;
 
-std::ostream& operator<<(std::ostream& os, const vt& v) {
-    os << "{";
-    for (const auto& e : v) os << " " << e->value;
-    return os << " }";
-}
-
 vt conv(tree_type& t)
 {
     vt v;
@@ -413,4 +407,48 @@ TEST_CASE("more complicated removal") {
         t.remove(t19);
         REQUIRE(conv(t) == V(t5, t9, t12, t13, t14, t16, t16b, t18));
     }
+}
+
+class memory_area {
+private:
+    uint64_t    addr_;
+    uint64_t    length_;
+    tree_node   link_;
+
+public:
+    explicit memory_area() : addr_(0), length_(0), link_() {
+    }
+    explicit memory_area(uint64_t addr, uint64_t length) : addr_(addr), length_(length), link_() {
+        assert(length);
+    }
+    memory_area(const memory_area&) = delete;
+    memory_area& operator=(const memory_area&) = delete;
+
+    uint64_t address() const { return addr_; }
+    uint64_t length() const { return length_; }
+
+    struct compare {
+        bool operator()(const memory_area& l, const memory_area& r) const {
+            return l.addr_ < r.addr_;
+        }
+    };
+    using tree_type = tree<memory_area, &memory_area::link_, compare>;
+};
+
+std::ostream& operator<<(std::ostream& os, memory_area::tree_type& t) {
+    for (const auto& fl : t) {
+        os << fl.address() << " " << fl.length() << "\n";
+    }
+    return os;
+}
+
+TEST_CASE("memory_area test") {
+    memory_area area0{0, 1<<20};
+    memory_area area1{1<<20, 15<<20};
+    memory_area::tree_type free_list;
+    memory_area::tree_type reserved_list;
+    free_list.insert(area1);
+    reserved_list.insert(area0);
+    std::cout << free_list << "\n";
+    std::cout << reserved_list << "\n";
 }

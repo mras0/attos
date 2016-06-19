@@ -69,6 +69,20 @@ void print_page_tables()
     }
 }
 
+struct test_class {
+    int n;
+    test_class(int n) : n(n) {
+        dbgout() << "test_class::test_class(" << n << ")\n";
+    }
+    ~test_class() {
+        dbgout() << "test_class::~test_class(" << n << ")\n";
+    }
+    void foo(int n2) {
+        dbgout() << "test_class(" << n << ")::foo(" << n2 << "\n";
+    }
+};
+object_buffer<test_class> test_class_buffer;
+
 void small_exe(const arguments& args)
 {
     vga::text_screen ts;
@@ -91,6 +105,10 @@ void small_exe(const arguments& args)
     }
 
     dbgout() << "Last mapped: " << as_hex(nth.OptionalHeader.ImageBase + nth.OptionalHeader.SizeOfImage + (1<<12)) << "\n";
+
+    auto tc = test_class_buffer.construct(42);
+    tc->foo(1);
+    (*tc).foo(2);
 
     dbgout() << "Press any key to exit.\n";
     read_key();
