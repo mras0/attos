@@ -20,6 +20,8 @@ out_stream& dbgout() {
 
 }  // namespace attos
 
+using namespace attos;
+
 const unsigned char bochs_magic_code[] = { 0x66, 0x87, 0xDB, 0xC3 }; // xchg bx, bx; ret
 auto bochs_magic = ((void (*)(void))(void*)bochs_magic_code);
 
@@ -45,14 +47,12 @@ struct smap_entry {
 #pragma pack(pop)
 
 struct arguments {
-    const attos::pe::IMAGE_DOS_HEADER&  image_base;
-    smap_entry*                         smap_entries;
+    const pe::IMAGE_DOS_HEADER&  image_base;
+    smap_entry*                  smap_entries;
 };
 
 void small_exe(const arguments& args)
 {
-    using namespace attos;
-
     vga::text_screen ts;
     set_dbgout(ts);
 
@@ -72,7 +72,7 @@ void small_exe(const arguments& args)
         dbgout() << " " << as_hex(s.VirtualAddress + nth.OptionalHeader.ImageBase) << " " << as_hex(s.Misc.VirtualSize) << "\n";
     }
 
-    //dbgout() << "nt_headers.Signature = " << as_hex(args.image_base.nt_headers().Signature) << "\n";
+    dbgout() << "Last mapped: " << as_hex(nth.OptionalHeader.ImageBase + nth.OptionalHeader.SizeOfImage + (1<<12)) << "\n";
 
     dbgout() << "Press any key to exit.\n";
     read_key();

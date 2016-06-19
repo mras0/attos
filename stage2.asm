@@ -105,9 +105,7 @@ test_longmode:
 
     ; build initial page mapping (2MB identity mapped)
     set_page_entry pml4, 0, pdpt0
-    ;set_page_entry initial_pml4+0x1FF*8, 0, pdptkrnl
     set_page_entry pdpt0, 0, pdt0
-    ;set_page_entry pdptkrnl+0x1FE*8, 0, pdt0
     set_page_entry pdt0, 0, 0 | PAGEF_PAGESIZE
 
     ; copy stage3 to its place
@@ -118,32 +116,30 @@ test_longmode:
 
     ; map stage3
     ; TODO: Handle sections, e.g. initialize BSS...
+    ; Current limitations: Must not overlap identity mapping. ImageBase+SizeOfImage must not cross a 2MB boundary, Section mapping must be 4K aligned, etc..
     mov esi, stage3
     add esi, [esi+IMAGE_DOS_HEADER.e_lfanew]
     ; esi = IMAGE_NT_HEADERS*
     mov eax, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.ImageBase]
-    test ax, 0xfff
-    jnz .fatal ; ImageBase must be page aligned
     mov edx, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.ImageBase+4]
-    test edx, ~0x7f
-    jnz .fatal ; Outside PML4 entry 0
-    shrd eax, edx, 12
-    jmp .ok
-.fatal:
-    hlt
-    jmp .fatal
-.ok:
-    ; PML4 (entry 0)
-    ; PDPT
-    mov edx, eax
-    shr edx, 30-12
+    ; edx:eax = ImageBase
+    ; PML4
+    shrd eax, edx, 12 ; eax = (uint32_t)(ImageBase>>12)
+    shr edx, 7        ; edx = (uint32_t)(ImageBase>>39) as shrld doesn't change edx
     and edx, 511
     shl edx, 3
-    add edx, pdpt0
+    add edx, pml4
+    set_page_entry edx, 0, pdpt_program
+    ; PDPT
+    mov edx, eax      ; edx = (uint32_t)(ImageBase>>12)
+    shr edx, 30-12    ; edx = (uint32_t)(ImageBase>>30)
+    and edx, 511
+    shl edx, 3
+    add edx, pdpt_program
     set_page_entry edx, 0, pdt_program
     ; PDT
-    mov edx, eax
-    shr edx, 21-12
+    mov edx, eax      ; edx = (uint32_t)(ImageBase>>12)
+    shr edx, 21-12    ; edx = (uint32_t)(ImageBase>>21)
     and edx, 511
     shl edx, 3
     add edx, pdt_program
@@ -194,7 +190,6 @@ test_longmode:
     rep stosw
 
     ; Enable SSE
-    bochs_magic
     mov rax, cr0
     btr rax, 2 ; Clear CR0.EM (co-processor EMulation)
     bts rax, 1 ; Set CR0.MP (Monitor co-Processor)
@@ -340,21 +335,23 @@ stage3_size EQU $-stage3
 ;
 ; +------------------------------+--------+------+
 ; | Name                         | Maps   | Bits |
-; +------------------------------+--------+------+
-; | Page Map Level 4             | 256 TB |    9 |
-; | Page Directory Pointer Table | 512 GB |    9 |
-; | Page Directory Table         |   1 GB |    9 |
-; | Page Table                   |   2 MB |    9 |
-; | Each Page Table Entry        |   4 KB |   12 |
+; +------------------------------+--------+------+ // 48 0xffffffffffffffff
+; | Page Map Level 4             | 256 TB |    9 | // 39 0x0000ff8000000000
+; | Page Directory Pointer Table | 512 GB |    9 | // 30 0x0000007fc0000000
+; | Page Directory Table         |   1 GB |    9 | // 21 0x000000003fe00000
+; | Page Table                   |   2 MB |    9 | // 12 0x00000000001ff000
+; | Each Page Table Entry        |   4 KB |   12 | //  0 0x0000000000000fff
 ; +------------------------------+--------+------+
 ;
 
     align 4096 ; page tables must be 4K aligned
 
-pml4        times 4096 db 0 ; Page Map Level 4
-pdpt0       times 4096 db 0 ; First Directory Pointer Table
-pdt0        times 4096 db 0 ; 0 Page Directory Table
+pml4         times 4096 db 0 ; Page Map Level 4
 
+pdpt0        times 4096 db 0 ; First Directory Pointer Table
+pdt0         times 4096 db 0 ; 0 Page Directory Table
+
+pdpt_program times 4096 db 0 ; Program Directory Pointer Table
 pdt_program  times 4096 db 0 ; Program Page Directory Table
 pt_program   times 4096 db 0 ; Program Page Table
 
