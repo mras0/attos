@@ -367,16 +367,11 @@ gdtr:
     dd gdt
 
     align 4096
-stage3 incbin "../stage3/stage3.exe"
+stage3: ; incbin "../stage3/stage3.exe"
 
 %if $-$$ > 0x7F * 512 ; Stage1 only loads MAX_SECTORS (currently 0x7F)
-%error We need to load more sections ourselves (or handle BSS better)
+%error We need to load more sections ourselves
 %endif
-
-    times (16*63*512)-($-$$) db 0 ; Make sure we fill at least one cylinder
-
-    align 512, db 0 ; Pad to sector size
-
 
 ;
 ; BSS
