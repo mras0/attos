@@ -1,4 +1,3 @@
-test-vm
 *.bin
 *.obj
 *.exe
@@ -6,3 +5,9 @@ test-vm
 *.ilk
 *.map
 stage3/*.asm
+test-vm/*.log
+test-vm/*.nvram
+test-vm/*.vmsd
+test-vm/*.vmxf
+test-vm/*.vmdk
+test-vm/*.raw
