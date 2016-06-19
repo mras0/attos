@@ -15,9 +15,6 @@ public:
     virtual void write(const void* data, size_t n) override;
 
 private:
-    static constexpr uint16_t* buffer_ = reinterpret_cast<uint16_t*>(0xb8000);
-    int         width_ = 80;
-    int         height_ = 25;
     int         x_ = 0;
     int         y_ = 0;
     uint8_t     attr_ = 0x07;

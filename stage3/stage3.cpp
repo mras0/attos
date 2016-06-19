@@ -51,6 +51,24 @@ struct arguments {
     smap_entry*                  smap_entries;
 };
 
+void print_page_tables()
+{
+    const auto cr3 = __readcr3();
+    dbgout() << "cr3 = " << as_hex(cr3) << "\n";
+    auto pml4 = (uint64_t*)cr3;
+    for (int i = 0; i < 512; ++i ) {
+        if (pml4[i] & PAGEF_PRESENT) {
+            dbgout() << as_hex(i) << " " << as_hex(pml4[i]) << "\n";
+            auto pdpt = (uint64_t*)(pml4[i]&~511);
+            for (int j = 0; j < 512; ++j) {
+                if (pdpt[j] & PAGEF_PRESENT) {
+                    dbgout() << " " << as_hex(j) << " " << as_hex(pdpt[j]) << "\n";
+                }
+            }
+        }
+    }
+}
+
 void small_exe(const arguments& args)
 {
     vga::text_screen ts;
@@ -62,7 +80,7 @@ void small_exe(const arguments& args)
         dbgout() << as_hex(e->base) << ' ' << as_hex(e->length) << ' ' << as_hex(e->type) << "\n";
     }
 
-    dbgout() << "cr3 = " << as_hex(__readcr3()) << "\n";
+    print_page_tables();
 
     const auto& nth = args.image_base.nt_headers();
     for (const auto& s : nth.sections()) {

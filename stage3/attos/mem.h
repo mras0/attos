@@ -5,6 +5,8 @@
 
 namespace attos {
 
+constexpr uint64_t identity_map_start = 0xFFFFFFFF'00000000; // 1 GB mapped currently
+
 inline void move_memory(void* destination, const void* source, size_t count) {
     __movsb(reinterpret_cast<uint8_t*>(destination), reinterpret_cast<const uint8_t*>(source), count);
 }

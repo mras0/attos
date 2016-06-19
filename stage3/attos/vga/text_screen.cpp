@@ -20,6 +20,10 @@ namespace attos { namespace vga {
 // 0xE   Light Yellow
 // 0xF   White
 
+constexpr auto screen_buffer = reinterpret_cast<uint16_t*>(0xb8000 + identity_map_start);
+constexpr int  screen_width = 80;
+constexpr int  screen_height = 25;
+
 constexpr uint16_t crtc_index = 0x3D4;
 constexpr uint16_t crtc_data  = 0x3D5;
 
@@ -53,12 +57,12 @@ uint16_t cursor_location()
 
 text_screen::text_screen() {
     auto location = cursor_location();
-    x_ = location % width_;
-    y_ = location / width_;
+    x_ = location % screen_width;
+    y_ = location / screen_width;
 }
 
 void text_screen::clear() {
-    for (int i = 0; i < height_; ++i) {
+    for (int i = 0; i < screen_height; ++i) {
         clear_line(i);
     }
     x_ = 0;
@@ -80,30 +84,30 @@ void text_screen::put(int c) {
     } else if (c == '\n') {
         newline();
     } else {
-        buffer_[x_ + y_ * width_] = static_cast<uint16_t>((attr_ << 8) | (c & 0xff));
-        if (++x_ == width_) {
+        screen_buffer[x_ + y_ * screen_width] = static_cast<uint16_t>((attr_ << 8) | (c & 0xff));
+        if (++x_ == screen_width) {
             newline();
         }
     }
 }
 
 void text_screen::newline() {
-    if (++y_ == height_) {
-        y_ = height_-1;
-        move_memory(&buffer_[0], &buffer_[width_], width_ * (height_ - 1) * sizeof(uint16_t));
+    if (++y_ == screen_height) {
+        y_ = screen_height-1;
+        move_memory(&screen_buffer[0], &screen_buffer[screen_width], screen_width * (screen_height - 1) * sizeof(uint16_t));
         clear_line(y_);
     }
     x_ = 0;
 }
 
 void text_screen::clear_line(int y) {
-    for (int i = 0; i < width_; ++i) {
-        buffer_[i + y * width_] = attr_ << 8;
+    for (int i = 0; i < screen_width; ++i) {
+        screen_buffer[i + y * screen_width] = attr_ << 8;
     }
 }
 
 void text_screen::set_cursor() {
-    cursor_location(static_cast<uint16_t>(x_ + y_ * width_));
+    cursor_location(static_cast<uint16_t>(x_ + y_ * screen_width));
 }
 
 } } // namespace attos::vga

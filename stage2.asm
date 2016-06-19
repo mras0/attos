@@ -103,10 +103,12 @@ test_longmode:
     mov es, ax
     mov ss, ax
 
-    ; build initial page mapping (2MB identity mapped)
+    ; build initial page mapping
     set_page_entry pml4, 0, pdpt0
+    set_page_entry pml4+0x1FF*8, 0, pdpt511
     set_page_entry pdpt0, 0, pdt0
-    set_page_entry pdt0, 0, 0 | PAGEF_PAGESIZE
+    set_page_entry pdpt511+0x1FC*8, 0, 0 | PAGEF_PAGESIZE ; Map 1GB from physical 0 at 0xFFFFFFFF`00000000
+    set_page_entry pdt0, 0, 0 | PAGEF_PAGESIZE ; Identity map first 2MB
 
     ; copy stage3 to its place
     mov esi, stage3
@@ -129,13 +131,16 @@ test_longmode:
     and edx, 511
     shl edx, 3
     add edx, pml4
-    set_page_entry edx, 0, pdpt_program
+    ;; pdpt_program assumed to be pdpt511
+    ;; set_page_entry edx, 0, pdpt_program
     ; PDPT
     mov edx, eax      ; edx = (uint32_t)(ImageBase>>12)
     shr edx, 30-12    ; edx = (uint32_t)(ImageBase>>30)
     and edx, 511
     shl edx, 3
-    add edx, pdpt_program
+    ;; pdpt_program assumed to be pdpt511
+    ;;add edx, pdpt_program
+    add edx, pdpt511
     set_page_entry edx, 0, pdt_program
     ; PDT
     mov edx, eax      ; edx = (uint32_t)(ImageBase>>12)
@@ -347,11 +352,9 @@ stage3_size EQU $-stage3
     align 4096 ; page tables must be 4K aligned
 
 pml4         times 4096 db 0 ; Page Map Level 4
-
 pdpt0        times 4096 db 0 ; First Directory Pointer Table
+pdpt511      times 4096 db 0 ; Last Directory Pointer Table
 pdt0         times 4096 db 0 ; 0 Page Directory Table
-
-pdpt_program times 4096 db 0 ; Program Directory Pointer Table
 pdt_program  times 4096 db 0 ; Program Page Directory Table
 pt_program   times 4096 db 0 ; Program Page Table
 
