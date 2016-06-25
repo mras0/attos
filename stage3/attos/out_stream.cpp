@@ -58,8 +58,18 @@ out_stream& operator<<(out_stream& os, int32_t arg) {
 }
 
 out_stream& operator<<(out_stream& os, const formatted_number& fn) {
-    format_number(os, fn.num, fn.base, fn.width, fn.fill);
+    format_number(os, fn.num(), fn.base(), fn.width(), fn.fill());
     return os;
+}
+
+out_stream* global_dbgout;
+
+void set_dbgout(out_stream& os) {
+    global_dbgout = &os;
+}
+
+out_stream& dbgout() {
+    return *global_dbgout;
 }
 
 } // namespace attos

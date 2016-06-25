@@ -1,5 +1,5 @@
 #include "mm.h"
-#include "util.h"
+#include "cpu.h"
 #include "out_stream.h"
 
 #define assert(expr)
@@ -7,6 +7,11 @@
 #undef assert
 
 namespace attos {
+
+inline uint64_t* table_entry(uint64_t table_value) {
+    return static_cast<uint64_t*>(physical_address{table_value & ~(memory_manager::page_size - 1)});
+}
+
 
 class memory_mapping {
 private:
@@ -84,8 +89,8 @@ auto find_mapping(memory_mapping::tree_type& t, virtual_address addr, uint64_t l
 
 class kernel_memory_manager : public memory_manager {
 public:
-    static kernel_memory_manager& instance() {
-        return *instance_;
+    static kernel_memory_manager* instance() {
+        return instance_;
     }
 
     explicit kernel_memory_manager(physical_address base, uint64_t length)
@@ -93,7 +98,6 @@ public:
         , memory_mappings_{alloc_physical(page_size), page_size}
         , saved_cr3_(__readcr3()) {
         dbgout() << "[mm] Starting. Base 0x" << as_hex(base) << " Length " << (length>>20) << " MB\n";
-        REQUIRE(instance_ == nullptr);
         pml4_ = static_cast<uint64_t*>(alloc_physical(page_size));
         instance_ = this;
     }
@@ -112,14 +116,14 @@ public:
     }
 
     physical_address pml4() const {
-        return physical_address{pml4_};
+        return physical_address::from_identity_mapped_ptr(pml4_);
     }
 
     physical_address alloc_physical(uint64_t size) {
         size = round_up(size, page_size);
         auto ptr = physical_pages_.alloc(size);
         __stosq(reinterpret_cast<uint64_t*>(ptr), 0, size / 8);
-        return physical_address{ptr};
+        return physical_address::from_identity_mapped_ptr(ptr);
     }
 
 private:
@@ -134,20 +138,25 @@ private:
     uint64_t* alloc_if_not_present(uint64_t& parent, uint64_t flags) {
         if (parent & PAGEF_PRESENT) {
             // TODO: Check flags
-            return reinterpret_cast<uint64_t*>(parent & ~(page_size -1));
+            return table_entry(parent);
         }
         return alloc_table_entry(parent, flags);
     }
 
     uint64_t* alloc_table_entry(uint64_t& parent, uint64_t flags) {
         auto table = static_cast<uint64_t*>(alloc_physical(page_size));
-        parent = physical_address{table} | PAGEF_PRESENT | flags;
+        parent = physical_address::from_identity_mapped_ptr(table) | PAGEF_PRESENT | flags;
         dbgout() << "[mm] Allocated page table. parent " << as_hex((uint64_t)&parent) << " <- " << as_hex(parent) << "\n";
         return table;
     }
 
+    virtual void do_ready() override {
+        REQUIRE(__readcr3() == saved_cr3());
+        __writecr3(pml4());
+    }
+
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
-        dbgout() << "[mm] map_memory virt=" << as_hex(virt) << " " << as_hex(length) << " type=0x" << as_hex((uint32_t)type) << " phys=" << as_hex(phys) << "\n";
+        dbgout() << "[mm] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << " type = " << as_hex(type).width(0) << "\n";
 
         const uint64_t map_page_size = static_cast<uint32_t>(type & memory_type::ps_1gb) ? (1<<30) : (1<<12);
 
@@ -181,6 +190,7 @@ private:
                 auto* pt = alloc_if_not_present(pd[virt.pde()], flags);
                 pt[virt.pte()] = phys | PAGEF_PRESENT | flags;
             }
+            dbgout() << "[mm] " << as_hex(virt) << " " << as_hex(phys) << "\n";
         }
     }
 };
@@ -189,18 +199,9 @@ object_buffer<kernel_memory_manager> mm_buffer;
 
 owned_ptr<memory_manager, destruct_deleter> mm_init(physical_address base, uint64_t length)
 {
+    REQUIRE(kernel_memory_manager::instance() == nullptr);
     auto mm = mm_buffer.construct(base, length);
     return owned_ptr<memory_manager, destruct_deleter>{mm.release()};
-}
-
-void mm_ready()
-{
-    __writecr3(kernel_memory_manager::instance().pml4());
-}
-
-const uint64_t* table_entry(uint64_t table_value)
-{
-    return static_cast<const uint64_t*>(physical_address{table_value & ~table_mask});
 }
 
 void print_page_tables(physical_address cr3)
@@ -234,6 +235,37 @@ void print_page_tables(physical_address cr3)
             }
         }
     }
+}
+
+physical_address virt_to_phys(physical_address cr3, virtual_address virt)
+{
+    //dbgout() << "virt_to_phys(" << as_hex(cr3) << ", " << as_hex(virt) << ")\n";
+
+    const auto pml4e = table_entry(cr3)[virt.pml4e()];
+    //dbgout() << "PML4 " << as_hex(pml4e) << "\n";
+    REQUIRE(pml4e & PAGEF_PRESENT);
+
+    const auto pdpe  = table_entry(pml4e)[virt.pdpe()];
+    //dbgout() << "PDP  " << as_hex(pdpe) << "\n";
+    REQUIRE(pdpe & PAGEF_PRESENT);
+    if (pdpe & PAGEF_PAGESIZE) {
+        constexpr uint64_t page_mask = (1ULL<<30) - 1;
+        return physical_address{(pdpe & ~page_mask) | (virt & page_mask)};
+    }
+
+    const auto pde = table_entry(pdpe)[virt.pde()];
+    //dbgout() << "PD   " << as_hex(pde) << "\n";
+    REQUIRE(pde & PAGEF_PRESENT);
+    if (pde & PAGEF_PAGESIZE) {
+        constexpr uint64_t page_mask = (2ULL<<20) - 1;
+        return physical_address{(pdpe & ~page_mask) | (virt & page_mask)};
+    }
+
+    const auto pte = table_entry(pde)[virt.pte()];
+    //dbgout() << "PT   " << as_hex(pte) << "\n";
+    REQUIRE(pte & PAGEF_PRESENT);
+
+    return physical_address{(pte & ~(memory_manager::page_size-1)) | (virt & (memory_manager::page_size-1)) };
 }
 
 } // namespace attos

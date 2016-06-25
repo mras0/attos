@@ -60,6 +60,10 @@ public:
     constexpr explicit virtual_address(uint64_t addr=0) : address_base(addr) {
     }
 
+    static constexpr virtual_address in_current_address_space(const void* ptr) {
+        return virtual_address{reinterpret_cast<uint64_t>(ptr)};
+    }
+
     constexpr uint32_t pml4e() const { return (addr_ >> pml4_shift) & table_mask; }
     constexpr uint32_t pdpe()  const { return (addr_ >> pdp_shift)  & table_mask; }
     constexpr uint32_t pde()   const { return (addr_ >> pd_shift)   & table_mask; }
@@ -71,7 +75,8 @@ public:
     constexpr explicit physical_address(uint64_t addr=0) : address_base(addr) {
     }
 
-    constexpr explicit physical_address(const void* ptr) : address_base(reinterpret_cast<uint64_t>(ptr) - identity_map_start) {
+    static constexpr physical_address from_identity_mapped_ptr(const void* ptr) {
+        return physical_address{reinterpret_cast<uint64_t>(ptr) - identity_map_start};
     }
 
     template<typename T>

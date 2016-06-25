@@ -2,16 +2,17 @@
 #include <intrin.h>
 #include <type_traits>
 
-#include <attos/util.h>
+#include <attos/cpu.h>
 #include <attos/mem.h>
 #include <attos/mm.h>
 #include <attos/pe.h>
+#include <attos/isr.h>
 #include <attos/vga/text_screen.h>
 
 #define assert REQUIRE // undefined yadayda
 #include <attos/tree.h>
 
-using namespace attos;
+namespace attos {
 
 uint8_t read_key() {
     static constexpr uint8_t ps2_data_port    = 0x60;
@@ -82,20 +83,18 @@ owned_ptr<memory_manager, destruct_deleter> construct_mm(const smap_entry* smap,
 
     // Map in kernel executable image
     const auto& nth = image_base.nt_headers();
-    mm->map_memory(virtual_address{nth.OptionalHeader.ImageBase}, memory_manager::page_size, memory_type_rwx, physical_address{&image_base});
-    for (const auto& s : nth.sections()) {
-        REQUIRE(s.PointerToRawData); // real bss not implemented....
-
-        const auto virt = virtual_address{(s.VirtualAddress + nth.OptionalHeader.ImageBase) & ~(memory_manager::page_size-1)};
-        const auto size = round_up(static_cast<uint64_t>(s.Misc.VirtualSize), memory_manager::page_size);
-        const uint8_t* data = &image_base.rva<uint8_t>(s.PointerToRawData);
-        mm->map_memory(virt, size, memory_type_rwx, physical_address{data});
-    }
+    const auto image_phys = physical_address::from_identity_mapped_ptr(&image_base);
+    const auto image_size = round_up(static_cast<uint64_t>(nth.OptionalHeader.SizeOfImage), memory_manager::page_size);
+    mm->map_memory(virtual_address{nth.OptionalHeader.ImageBase}, image_size, memory_type_rwx, image_phys);
 
     // Switch to the new PML4
-    mm_ready();
+    mm->ready();
     return mm;
 }
+
+} // namespace attos
+
+using namespace attos;
 
 struct arguments {
     const pe::IMAGE_DOS_HEADER& image_base() const {
@@ -109,15 +108,23 @@ private:
     physical_address image_base_;
     physical_address smap_entries_;
 };
-
 void stage3_entry(const arguments& args)
 {
     // First make sure we can output debug information
     vga::text_screen ts;
     set_dbgout(ts);
 
+    const physical_address orig_cr3{__readcr3()};
+
+    REQUIRE(virt_to_phys(orig_cr3, virtual_address{0x1234}) == physical_address{0x1234});
+    REQUIRE(virt_to_phys(orig_cr3, virtual_address{identity_map_start + 0x1234}) == physical_address{0x1234});
+    dbgout() << "Physical address of entry point: " << as_hex(virt_to_phys(orig_cr3, virtual_address::in_current_address_space(&stage3_entry))) << "\n";
+
     // Construct initial memory manager
     auto mm = construct_mm(args.smap_entries(), args.image_base());
+
+    // Initialize interrupt handlers
+    auto ih = isr_init();
 
     dbgout() << "Press any key to exit.\n";
     read_key();

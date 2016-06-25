@@ -63,6 +63,7 @@ inline void reparent_child_nodes(tree_node& n)
     if (n.right) n.right->parent = &n;
 }
 
+#ifdef ATTOS_CHECK_TREE
 inline void check_tree(tree_node* root) {
     if (!root) return;
     if (root->left) {
@@ -74,6 +75,9 @@ inline void check_tree(tree_node* root) {
         check_tree(root->right);
     }
 }
+#else
+inline void check_tree(tree_node*) {}
+#endif
 
 } // namespace detail
 
@@ -82,7 +86,9 @@ template<typename Container, tree_node Container::*Field, typename Compare>
 class tree {
 public:
     explicit tree() {}
-    ~tree() { detail::check_tree(root_); }
+    ~tree() {
+        detail::check_tree(root_);
+    }
 
     void insert(Container& c) {
         do_insert(&root_, node(c));
