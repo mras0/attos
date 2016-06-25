@@ -72,14 +72,15 @@ isr_common:
     save_reg r14
     save_reg r15
 
-    cld ; ensure direction flag is cleared
-
-    mov  rbp, rsp  ; save stack pointer
-    and  rsp, -16  ; align stack
-    sub  rsp, 0x20 ; make room for the function to preserve rcx, rdx, r8 and r9
-    mov  rcx, rbp  ; arg = registers*
+    cld                  ; ensure direction flag is cleared
+    mov  rbp, rsp        ; save stack pointer
+    and  rsp, -16        ; align stack
+    sub  rsp, 512 + 0x20 ; make room for the function to preserve rcx, rdx, r8 and r9 and fx state
+    fxsave [rsp+0x20]    ; save fx state
+    mov  rcx, rbp        ; arg = registers*
     call interrupt_service_routine
-    mov  rsp, rbp  ; restore stack pointer
+    fxrstor [rsp+0x20]   ; restore fx state
+    mov  rsp, rbp        ; restore stack pointer
 
     ; restore registers
     restore_reg rax

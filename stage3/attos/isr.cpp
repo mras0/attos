@@ -113,24 +113,8 @@ private:
     int      pos_;
 };
 
-class fx_state_saver {
-public:
-    explicit fx_state_saver() {
-        _fxsave64(state_);
-    }
-    ~fx_state_saver() {
-        _fxrstor64(state_);
-    }
-    fx_state_saver(const fx_state_saver&) = delete;
-    fx_state_saver& operator=(const fx_state_saver&) = delete;
-
-private:
-    alignas(16) uint8_t state_[512];
-};
-
 void interrupt_service_routine(registers*)
 {
-    fx_state_saver state_;
     bochs_magic();
 }
 
