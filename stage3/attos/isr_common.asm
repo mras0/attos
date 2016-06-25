@@ -24,7 +24,6 @@ struc registers
     .r13             resq 1
     .r14             resq 1
     .r15             resq 1
-    .fx              resb 512
 registers_saved_size: ; only the above are saved by code
     .interrupt_no    resq 1 ; pushed by isr
     .error_code      resq 1 ; pushed by system (or isr)
@@ -72,7 +71,6 @@ isr_common:
     save_reg r13
     save_reg r14
     save_reg r15
-    fxsave   [rsp+registers.fx]
 
     cld ; ensure direction flag is cleared
 
@@ -99,7 +97,6 @@ isr_common:
     restore_reg r13
     restore_reg r14
     restore_reg r15
-    fxrstor     [rsp+registers.fx]
     add         rsp, registers_saved_size + 2 * 8 ; error_code and interrupt_no
 
     iretq

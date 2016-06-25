@@ -97,13 +97,13 @@ public:
         : physical_pages_{base, length}
         , memory_mappings_{alloc_physical(page_size), page_size}
         , saved_cr3_(__readcr3()) {
-        dbgout() << "[mm] Starting. Base 0x" << as_hex(base) << " Length " << (length>>20) << " MB\n";
+        dbgout() << "[mem] Starting. Base 0x" << as_hex(base) << " Length " << (length>>20) << " MB\n";
         pml4_ = static_cast<uint64_t*>(alloc_physical(page_size));
         instance_ = this;
     }
 
     ~kernel_memory_manager() {
-        dbgout() << "[mm] Shutting down. Restoring CR3 to " << as_hex(saved_cr3_) << "\n";
+        dbgout() << "[mem] Shutting down. Restoring CR3 to " << as_hex(saved_cr3_) << "\n";
         instance_ = nullptr;
         __writecr3(saved_cr3_);
     }
@@ -146,7 +146,7 @@ private:
     uint64_t* alloc_table_entry(uint64_t& parent, uint64_t flags) {
         auto table = static_cast<uint64_t*>(alloc_physical(page_size));
         parent = physical_address::from_identity_mapped_ptr(table) | PAGEF_PRESENT | flags;
-        dbgout() << "[mm] Allocated page table. parent " << as_hex((uint64_t)&parent) << " <- " << as_hex(parent) << "\n";
+        dbgout() << "[mem] Allocated page table. parent " << as_hex((uint64_t)&parent) << " <- " << as_hex(parent) << "\n";
         return table;
     }
 
@@ -156,7 +156,7 @@ private:
     }
 
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
-        dbgout() << "[mm] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << " type = " << as_hex(type).width(0) << "\n";
+        dbgout() << "[mem] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << " type = " << as_hex(type).width(0) << "\n";
 
         const uint64_t map_page_size = static_cast<uint32_t>(type & memory_type::ps_1gb) ? (1<<30) : (1<<12);
 
@@ -171,7 +171,7 @@ private:
 
         auto it = find_mapping(memory_map_tree_, virt, length);
         if (it != memory_map_tree_.end()) {
-            dbgout() << "[mm] FATAL ERROR overlaps " << as_hex(it->address()) << "\n";
+            dbgout() << "[mem] FATAL ERROR overlaps " << as_hex(it->address()) << "\n";
             REQUIRE(false);
         }
 
@@ -190,7 +190,7 @@ private:
                 auto* pt = alloc_if_not_present(pd[virt.pde()], flags);
                 pt[virt.pte()] = phys | PAGEF_PRESENT | flags;
             }
-            dbgout() << "[mm] " << as_hex(virt) << " " << as_hex(phys) << "\n";
+            dbgout() << "[mem] " << as_hex(virt) << " " << as_hex(phys) << "\n";
         }
     }
 };

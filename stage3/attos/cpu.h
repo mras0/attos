@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <intrin.h>
 
+#include <attos/mem.h>
+
 #pragma intrinsic(_disable)
 #pragma intrinsic(_enable)
 
@@ -11,12 +13,13 @@
 
 namespace attos {
 
-constexpr uint16_t kernel_cs = 0x28; // Matches stage2/bootloader.asm
+extern void (*bochs_magic)();
 
-namespace detail {
-static constexpr uint8_t bochs_magic_code[] = { 0x66, 0x87, 0xDB, 0xC3 }; // xchg bx, bx; ret
-} // namespace detail
-static auto bochs_magic = ((void (*)(void))(void*)detail::bochs_magic_code);
+template<uint8_t InterruptNo>
+void sw_int() {
+    static constexpr uint8_t code[] = { 0xCD, InterruptNo, 0xC3 }; // int InterruptNo; ret
+    ((void (*)(void))(void*)code)();
+}
 
 void fatal_error(const char* file, int line, const char* detail);
 
@@ -25,6 +28,15 @@ constexpr auto round_up(T val, T align)
 {
     return val % align ? val + align - (val % align) : val;
 }
+
+class __declspec(novtable) cpu_manager {
+public:
+    virtual ~cpu_manager() {}
+    static constexpr uint16_t kernel_cs = 0x08; // Matches stage2/bootloader.asm
+    static constexpr uint16_t kernel_ds = 0x10;
+};
+
+owned_ptr<cpu_manager, destruct_deleter> cpu_init();
 
 }  // namespace attos
 

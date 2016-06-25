@@ -75,7 +75,6 @@ struct registers {
     uint64_t r13;
     uint64_t r14;
     uint64_t r15;
-    uint8_t  fx[512];
     uint8_t  interrupt_no;
     uint8_t  reservered[7];
     uint64_t error_code;
@@ -89,21 +88,21 @@ struct registers {
 extern "C" void isr_common(void);
 extern "C" void interrupt_service_routine(registers*);
 
-
 class code_builder {
 public:
     explicit code_builder(uint8_t* code) : code_(code), pos_(0) {
     }
 
     void push_imm8(int8_t imm) {
-        constexpr uint8_t push_byte_opcode  = 0x64;
+        constexpr uint8_t push_byte_opcode  = 0x6A;
         code_[pos_++] = push_byte_opcode;
         code_[pos_++] = static_cast<uint8_t>(imm);
     }
 
     void call_rel32(const void* target) {
         constexpr uint8_t call_rel32_opcode = 0xE9;
-        const int64_t offset = code_ + 5 - static_cast<const uint8_t*>(target);
+        const int64_t offset =  static_cast<const uint8_t*>(target) - (code_ + pos_ + 5);
+        REQUIRE(offset >= INT32_MIN && offset <= INT32_MAX);
         code_[pos_++] = call_rel32_opcode;
         *reinterpret_cast<int32_t*>(code_ + pos_) = static_cast<int32_t>(offset);
         pos_ += 4;
@@ -114,8 +113,24 @@ private:
     int      pos_;
 };
 
+class fx_state_saver {
+public:
+    explicit fx_state_saver() {
+        _fxsave64(state_);
+    }
+    ~fx_state_saver() {
+        _fxrstor64(state_);
+    }
+    fx_state_saver(const fx_state_saver&) = delete;
+    fx_state_saver& operator=(const fx_state_saver&) = delete;
+
+private:
+    alignas(16) uint8_t state_[512];
+};
+
 void interrupt_service_routine(registers*)
 {
+    fx_state_saver state_;
     bochs_magic();
 }
 
@@ -125,7 +140,7 @@ void set_idt_entry(interrupt_gate& idt, void* code)
 {
     const uint64_t base = virtual_address::in_current_address_space(code);
     idt.offset_low  = base & 0xffff;
-    idt.selector    = kernel_cs;
+    idt.selector    = cpu_manager::kernel_cs;
     idt.ist         = 0;
     idt.type        = 0x8E; // (32-bit) Interrupt gate, present
     idt.offset_mid  = (base >> 16) & 0xffff;
@@ -151,9 +166,18 @@ public:
         }
         idt_desc_.limit = sizeof(idt_)-1;
         idt_desc_.base  = virtual_address::in_current_address_space(&idt_);
+        auto iv = &isr_code_[0x80*isr_code_size];
+        dbgout() << "Interrupt vector 0x80: " << as_hex(virtual_address::in_current_address_space(iv)) << "\n";
+        for (int i = 0; i < isr_code_size; ++i) {
+            dbgout() << as_hex(iv[i]) << " ";
+        }
+        dbgout() << "\n";
+        dbgout() << "&isr_common = " << as_hex((uint64_t)&isr_common) << "\n";
         dbgout() << "Waiting for key...\n";
         read_key();
         __lidt(&idt_desc_);
+        sw_int<0x80>();
+        //_enable();
     }
 
     isr_handler_impl(const isr_handler_impl&) = delete;
@@ -161,6 +185,7 @@ public:
 
     ~isr_handler_impl() {
         dbgout() << "[isr] Shutting down. Restoring IDT to limit " << as_hex(old_idt_desc_.limit) << " base " << as_hex(old_idt_desc_.base) << "\n";
+        _disable();
         __lidt(&old_idt_desc_);
     }
 
@@ -175,8 +200,7 @@ private:
 };
 object_buffer<isr_handler_impl> isr_handler_buffer;
 
-owned_ptr<isr_handler, destruct_deleter> isr_init()
-{
+owned_ptr<isr_handler, destruct_deleter> isr_init() {
     return owned_ptr<isr_handler, destruct_deleter>{isr_handler_buffer.construct().release()};
 }
 

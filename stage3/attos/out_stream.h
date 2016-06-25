@@ -45,6 +45,8 @@ formatted_number as_hex(I i) {
 
 out_stream& operator<<(out_stream& os, const formatted_number& fn);
 
+void hexdump(out_stream& out, const void* ptr, size_t len);
+
 void set_dbgout(out_stream& os);
 out_stream& dbgout();
 

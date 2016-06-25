@@ -24,13 +24,16 @@ constexpr auto screen_buffer = fixed_physical_address<uint16_t, 0xb8000>;
 constexpr int  screen_width = 80;
 constexpr int  screen_height = 25;
 
-constexpr uint16_t crtc_index = 0x3D4;
-constexpr uint16_t crtc_data  = 0x3D5;
+constexpr uint16_t crtc_index    = 0x3D4;
+constexpr uint16_t crtc_data     = 0x3D5;
+constexpr uint16_t input_status1 = 0x3DA;
 
 enum class crtc_registers : uint8_t { // Ralf Browns's Port list (Table P0654)
     cursor_location_high = 0x0E, // R/W
     cursor_location_low  = 0x0F, // R/W
 };
+
+const uint8_t input_status1_vsync_mask = 0x08; // vertical sync bit in status register 1
 
 uint8_t get_register(crtc_registers reg)
 {
@@ -53,6 +56,14 @@ void cursor_location(uint16_t location)
 uint16_t cursor_location()
 {
     return (get_register(crtc_registers::cursor_location_high) << 8) | get_register(crtc_registers::cursor_location_low);
+}
+
+void wait_vsync()
+{
+    while (__inbyte(input_status1) & input_status1_vsync_mask)
+        ;
+    while (!(__inbyte(input_status1) & input_status1_vsync_mask))
+        ;
 }
 
 text_screen::text_screen() {
@@ -98,6 +109,7 @@ void text_screen::newline() {
         clear_line(y_);
     }
     x_ = 0;
+    wait_vsync();
 }
 
 void text_screen::clear_line(int y) {

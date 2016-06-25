@@ -108,17 +108,16 @@ private:
     physical_address image_base_;
     physical_address smap_entries_;
 };
+
 void stage3_entry(const arguments& args)
 {
     // First make sure we can output debug information
     vga::text_screen ts;
     set_dbgout(ts);
 
+    // Initialize GDT
+    auto cpu = cpu_init();
     const physical_address orig_cr3{__readcr3()};
-
-    REQUIRE(virt_to_phys(orig_cr3, virtual_address{0x1234}) == physical_address{0x1234});
-    REQUIRE(virt_to_phys(orig_cr3, virtual_address{identity_map_start + 0x1234}) == physical_address{0x1234});
-    dbgout() << "Physical address of entry point: " << as_hex(virt_to_phys(orig_cr3, virtual_address::in_current_address_space(&stage3_entry))) << "\n";
 
     // Construct initial memory manager
     auto mm = construct_mm(args.smap_entries(), args.image_base());

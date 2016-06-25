@@ -62,6 +62,31 @@ out_stream& operator<<(out_stream& os, const formatted_number& fn) {
     return os;
 }
 
+void hexdump(out_stream& out, const void* ptr, size_t len) {
+    if (len == 0) return;
+    const uint64_t beg = reinterpret_cast<uint64_t>(ptr);
+    const uint64_t end = beg + len;
+    for (uint64_t a = beg & ~0xf; a < ((end+15) & ~0xf); a += 16) {
+        for (uint32_t i = 0; i < 16; i++) {
+            if (a+i >= beg && a+i <= end) {
+                out << as_hex(*reinterpret_cast<const uint8_t*>(a+i));
+            } else {
+                out << "  ";
+            }
+            out << ' ';
+        }
+        for (uint32_t i = 0; i < 16; i++) {
+            uint8_t c = ' ';
+            if (a+i >= beg && a+i <= end) {
+                uint8_t rc = *reinterpret_cast<const uint8_t*>(a+i);
+                if (rc > ' ' && rc < 128) c = rc; // poor mans isprint
+            }
+            out << static_cast<char>(c);
+        }
+        out << '\n';
+    }
+}
+
 out_stream* global_dbgout;
 
 void set_dbgout(out_stream& os) {
