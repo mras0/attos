@@ -97,6 +97,8 @@ test_pmode32:
     mov     dword [%1+4], %2
 %endmacro
 
+%define IDENTITY_MAP_START 0xFFFFFFFF00000000
+
 test_longmode:
     mov ax, 0x10
     mov ds, ax
@@ -111,9 +113,9 @@ test_longmode:
 
     ; build initial page mapping
     set_page_entry pml4, 0, pdpt0
-    set_page_entry pml4+0x1FF*8, 0, pdpt511
+    set_page_entry pml4+((IDENTITY_MAP_START>>39)&511)*8, 0, pdpt511
     set_page_entry pdpt0, 0, pdt0
-    set_page_entry pdpt511+0x1FC*8, 0, 0 | PAGEF_PAGESIZE ; Map 1GB from physical 0 at 0xFFFFFFFF`00000000
+    set_page_entry pdpt511+((IDENTITY_MAP_START>>30)&511)*8, 0, 0 | PAGEF_PAGESIZE ; Map 1GB from physical 0 at 0xFFFFFFFF`00000000
     set_page_entry pdt0, 0, 0 | PAGEF_PAGESIZE ; Identity map first 2MB
 
     mov esi, stage3
@@ -122,7 +124,6 @@ test_longmode:
 
     ; copy stage3 to its place
     ; determine size by finding the section with the largest physical extend
-    bochs_magic
     movzx edi, word [esi+IMAGE_NT_HEADERS.FileHeader+IMAGE_FILE_HEADER.SizeOfOptionalHeader]
     lea edi, [edi+esi+IMAGE_NT_HEADERS.OptionalHeader]
     ; edi = IMAGE_SECTION_HEADER*
@@ -235,9 +236,12 @@ test_longmode:
     ; build argument structure
     sub rsp, 0x10
     mov rcx, rsp
-    mov qword [rcx+0x00], stage3
-    mov qword [rcx+0x08], smap_buffer
+    mov qword [rcx+0x00], IDENTITY_MAP_START+stage3
+    mov qword [rcx+0x08], IDENTITY_MAP_START+smap_buffer
 
+    mov rax, IDENTITY_MAP_START
+    add rcx, rax
+    add rsp, rax  ; Stack pointer should point to identity
     and rsp, -16  ; in 64-bit the stack must be 16 byte aligned before a call
     sub rsp, 0x20 ; make room for the function to preserve rcx, rdx, r8 and r9
 

@@ -25,12 +25,12 @@ out_stream& dbgout() {
 
 }  // namespace attos
 
-#define assert REQUIRE // undefinde yadayda
+#define assert REQUIRE // undefined yadayda
 #include <attos/tree.h>
 
 using namespace attos;
 
-const unsigned char bochs_magic_code[] = { 0x66, 0x87, 0xDB, 0xC3 }; // xchg bx, bx; ret
+constexpr uint8_t bochs_magic_code[] = { 0x66, 0x87, 0xDB, 0xC3 }; // xchg bx, bx; ret
 auto bochs_magic = ((void (*)(void))(void*)bochs_magic_code);
 
 uint8_t read_key() {
@@ -62,71 +62,62 @@ struct smap_entry {
 };
 #pragma pack(pop)
 
-struct arguments {
-    const pe::IMAGE_DOS_HEADER&  image_base;
-    smap_entry*                  smap_entries;
-};
-
-void print_page_tables(uint64_t cr3)
-{
-    dbgout() << "cr3 = " << as_hex(cr3) << "\n";
-    auto pml4 = (uint64_t*)cr3;
-    for (int i = 0; i < 512; ++i ) {
-        if (pml4[i] & PAGEF_PRESENT) {
-            dbgout() << as_hex(i) << " " << as_hex(pml4[i]) << "\n";
-            auto pdpt = (uint64_t*)(pml4[i]&~511);
-            for (int j = 0; j < 512; ++j) {
-                if (pdpt[j] & PAGEF_PRESENT) {
-                    dbgout() << " " << as_hex(j) << " " << as_hex(pdpt[j]) << "\n";
-                    if (!(pdpt[j] & PAGEF_PAGESIZE)) {
-                        auto pdt = (uint64_t*)(pdpt[j]&~511);
-                        for (int k = 0; k < 512; ++k) {
-                            if (pdt[k] & PAGEF_PRESENT) {
-                                dbgout() << "  " << as_hex(k) << " " << as_hex(pdt[k]) << "\n";
-                                if (!(pdt[k] & PAGEF_PAGESIZE)) {
-                                    auto pt = (uint64_t*)(pdt[k]&~511);
-                                    for (int l = 0; l < 512; ++l) {
-                                        if (pt[l] & PAGEF_PRESENT) {
-                                            dbgout() << "   " << as_hex(l) << " " << as_hex(pt[l]) << "\n";
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 #define ENUM_BIT_OP(type, op, inttype) \
 constexpr inline type operator op(type l, type r) { return static_cast<type>(static_cast<inttype>(l) op static_cast<inttype>(r)); }
 #define ENUM_BIT_OPS(type, inttype) \
-    ENUM_BIT_OP(type, |, inttype)
+    ENUM_BIT_OP(type, |, inttype)   \
+    ENUM_BIT_OP(type, &, inttype)
 
 enum class memory_type : uint32_t {
     read    = 0x01,
     write   = 0x02,
     execute = 0x04,
+
+    //ps_2mb  = 0x1000,
+    ps_1gb  = 0x2000,
 };
 
 ENUM_BIT_OPS(memory_type, uint32_t)
-static constexpr auto memory_type_rwx = memory_type::read | memory_type::write | memory_type::execute;
+constexpr auto memory_type_rwx = memory_type::read | memory_type::write | memory_type::execute;
 
-class virtual_address {
+template<typename T>
+class address_base {
 public:
-    constexpr explicit virtual_address(uint64_t addr=0) : addr_(addr) {
+    constexpr explicit address_base(uint64_t addr=0) : addr_(addr) {
     }
 
     constexpr operator uint64_t() const { return addr_; }
 
-    constexpr uint32_t pml4e() const { return (addr_ >> pml4_shift) & ~511; }
-    constexpr uint32_t pdpe()  const { return (addr_ >> pdp_shift)  & ~511; }
-    constexpr uint32_t pde()   const { return (addr_ >> pd_shift)   & ~511; }
-    constexpr uint32_t pte()   const { return (addr_ >> pt_shift)   & ~511; }
+    address_base& operator+=(uint64_t rhs) {
+        addr_ += rhs;
+        return *this;
+    }
 
-private:
+protected:
     uint64_t addr_;
+};
+
+class virtual_address : public address_base<virtual_address> {
+public:
+    constexpr explicit virtual_address(uint64_t addr=0) : address_base(addr) {
+    }
+
+    constexpr uint32_t pml4e() const { return (addr_ >> pml4_shift) & 511; }
+    constexpr uint32_t pdpe()  const { return (addr_ >> pdp_shift)  & 511; }
+    constexpr uint32_t pde()   const { return (addr_ >> pd_shift)   & 511; }
+    constexpr uint32_t pte()   const { return (addr_ >> pt_shift)   & 511; }
+};
+
+class physical_address : public address_base<physical_address> {
+public:
+    constexpr explicit physical_address(uint64_t addr=0) : address_base(addr) {
+    }
+
+    constexpr explicit physical_address(const void* ptr) : address_base(reinterpret_cast<uint64_t>(ptr) - identity_map_start) {
+    }
+
+    template<typename T>
+    constexpr operator T*() const { return reinterpret_cast<T*>(addr_ + identity_map_start); }
 };
 
 class memory_mapping {
@@ -205,60 +196,112 @@ auto find_mapping(memory_mapping::tree_type& t, virtual_address addr, uint64_t l
 {
     //auto it = memory_map_tree_.lower_bound(memory_mapping{addr, length, memory_type_rwx});
     //or something smarter
-    auto it = t.begin();
-    for (auto end = t.end(); it != end; ++it) {
-        if (it->address() <= addr + length && addr <= it->address() + it->length()) {
-            break;
-        }
-    }
-    return it;
+    return std::find_if(t.begin(), t.end(), [addr, length](const auto& m) { return memory_areas_overlap(addr, length, m.address(), m.length()); });
 }
 
 class boostrap_memory_manager {
 public:
-    static constexpr uint64_t page_size    = 4096;
+    static constexpr uint64_t page_size = 4096;
 
-    explicit boostrap_memory_manager(uint64_t physical_base, uint64_t length)
-        : physical_pages_{physical_address<uint8_t>(physical_base), length}
-        , memory_mappings_{alloc_physical(page_size), page_size} {
-        dbgout() << "[bootmm] Starting. Base 0x" << as_hex(physical_base) << " Length " << (length>>20) << " MB\n";
+    explicit boostrap_memory_manager(physical_address base, uint64_t length)
+        : physical_pages_{base, length}
+        , memory_mappings_{alloc_physical(page_size), page_size}
+        , saved_cr3_(__readcr3()) {
+        dbgout() << "[bootmm] Starting. Base 0x" << as_hex(base) << " Length " << (length>>20) << " MB\n";
+
+        pml4_ = static_cast<uint64_t*>(alloc_physical(page_size));
     }
+
+    ~boostrap_memory_manager() {
+        dbgout() << "[bootmm] Shutting down. Restoring CR3 to " << as_hex(saved_cr3_) << "\n";
+        __writecr3(saved_cr3_);
+    }
+
     boostrap_memory_manager(const boostrap_memory_manager&) = delete;
     boostrap_memory_manager& operator=(const boostrap_memory_manager&) = delete;
 
-    uint8_t* alloc_physical(uint64_t size) {
+    physical_address saved_cr3() const {
+        return saved_cr3_;
+    }
+
+    physical_address pml4() const {
+        return physical_address{pml4_};
+    }
+
+    physical_address alloc_physical(uint64_t size) {
         size = round_up(size, page_size);
         auto ptr = physical_pages_.alloc(size);
         __stosq(reinterpret_cast<uint64_t*>(ptr), 0, size / 8);
-        return ptr;
+        return physical_address{ptr};
     }
 
-    void alloc_virtual(virtual_address base, uint64_t length, memory_type type) {
-        dbgout() << "[bootmm] alloc_virtual " << as_hex(base) << " " << as_hex(length) << " type=0x" << as_hex((uint32_t)type) << "\n";
+    void map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) {
+        dbgout() << "[bootmm] map_memory virt=" << as_hex(virt) << " " << as_hex(length) << " type=0x" << as_hex((uint32_t)type) << " phys=" << as_hex(phys) << "\n";
 
-        auto it = find_mapping(memory_map_tree_, base, length);
+        const uint64_t map_page_size = static_cast<uint32_t>(type & memory_type::ps_1gb) ? (1<<30) : (1<<12);
+
+        // Check address alignment
+        REQUIRE((virt & (map_page_size - 1)) == 0);
+        REQUIRE((phys & (map_page_size - 1)) == 0);
+
+        // Check length
+        REQUIRE(length > 0);
+        REQUIRE(virt + length > virt && "No wraparound allowed");
+        REQUIRE((length & (map_page_size - 1)) == 0);
+
+        auto it = find_mapping(memory_map_tree_, virt, length);
         if (it != memory_map_tree_.end()) {
             dbgout() << "[bootmm] FATAL ERROR overlaps " << as_hex(it->address()) << "\n";
             REQUIRE(false);
         }
 
-        auto mm = memory_mappings_.construct(base, length, type);
+        const uint64_t flags = PAGEF_WRITE;
+
+        auto mm = memory_mappings_.construct(virt, length, type);
         memory_map_tree_.insert(*mm);
+
+        for (; length; length -= map_page_size, virt += map_page_size, phys += map_page_size) {
+            auto* pdp = alloc_if_not_present(pml4_[virt.pml4e()], flags);
+
+            if (static_cast<uint32_t>(type & memory_type::ps_1gb)) {
+                pdp[virt.pdpe()] = phys | PAGEF_PAGESIZE | PAGEF_PRESENT | flags;
+            } else {
+                auto* pd = alloc_if_not_present(pdp[virt.pdpe()], flags);
+                auto* pt = alloc_if_not_present(pd[virt.pde()], flags);
+                pt[virt.pte()] = phys | PAGEF_PRESENT | flags;
+            }
+        }
     }
 
 private:
     simple_heap<page_size>                 physical_pages_;
     fixed_size_object_heap<memory_mapping> memory_mappings_;
     memory_mapping::tree_type              memory_map_tree_;
+    physical_address                       saved_cr3_;
+    uint64_t*                              pml4_;
 
+    uint64_t* alloc_if_not_present(uint64_t& parent, uint64_t flags) {
+        if (parent & PAGEF_PRESENT) {
+            // TODO: Check flags
+            return reinterpret_cast<uint64_t*>(parent & ~(page_size -1));
+        }
+        return alloc_table_entry(parent, flags);
+    }
+
+    uint64_t* alloc_table_entry(uint64_t& parent, uint64_t flags) {
+        auto table = static_cast<uint64_t*>(alloc_physical(page_size));
+        parent = physical_address{table} | PAGEF_PRESENT | flags;
+        dbgout() << "[bootmm] Allocated page table. parent " << as_hex((uint64_t)&parent) << " <- " << as_hex(parent) << "\n";
+        return table;
+    }
 };
 object_buffer<boostrap_memory_manager> boot_mm_buffer;
 
 auto construct_boot_mm(const smap_entry* smap)
 {
     // Find suitable place to construct initial memory manager
-    uint64_t base_addr = 0;
-    uint64_t base_len  = 0;
+    physical_address base_addr{};
+    uint64_t         base_len  = 0;
 
     dbgout() << "Base             Length           Type\n";
     dbgout() << "FEDCBA9876543210 FEDCBA9876543210 76543210\n";
@@ -274,7 +317,7 @@ auto construct_boot_mm(const smap_entry* smap)
         if (e->type == smap_type::available && e->base >= min_base && e->base <= max_base && e->length >= min_len) {
             if (!base_len) {
                 // Selected this one
-                base_addr = e->base;
+                base_addr = physical_address{e->base};
                 base_len  = e->length;
                 dbgout() << " *\n";
             } else {
@@ -289,29 +332,107 @@ auto construct_boot_mm(const smap_entry* smap)
     REQUIRE(base_len != 0);
     auto boot_mm = boot_mm_buffer.construct(base_addr, base_len);
     // Handle identity map
-    boot_mm->alloc_virtual(virtual_address(identity_map_start), identity_map_length, memory_type_rwx);
+    static_assert(identity_map_length == 1<<30, "");
+    boot_mm->map_memory(virtual_address(identity_map_start), identity_map_length, memory_type_rwx | memory_type::ps_1gb, physical_address{0ULL});
 
     return boot_mm;
 }
 
-void small_exe(const arguments& args)
+inline const uint64_t* table_entry(uint64_t table_value)
 {
-    vga::text_screen ts;
-    set_dbgout(ts);
+    return static_cast<const uint64_t*>(physical_address{table_value & ~511});
+}
 
-    auto boot_mm = construct_boot_mm(args.smap_entries);
-    dbgout() << "Press any key\n";
-    read_key();
+void print_page_tables(physical_address cr3)
+{
+    dbgout() << "cr3 = " << as_hex(cr3) << "\n";
+    auto pml4 = table_entry(cr3);
+    for (int i = 0; i < 512; ++i ) {
+        if (pml4[i] & PAGEF_PRESENT) {
+            dbgout() << as_hex(i) << " " << as_hex(pml4[i]) << "\n";
+            auto pdpt = table_entry(pml4[i]);
+            for (int j = 0; j < 512; ++j) {
+                if (pdpt[j] & PAGEF_PRESENT) {
+                    dbgout() << " " << as_hex(j) << " " << as_hex(pdpt[j]) << "\n";
+                    if (!(pdpt[j] & PAGEF_PAGESIZE)) {
+                        auto pdt = table_entry(pdpt[j]);
+                        for (int k = 0; k < 512; ++k) {
+                            if (pdt[k] & PAGEF_PRESENT) {
+                                dbgout() << "  " << as_hex(k) << " " << as_hex(pdt[k]) << "\n";
+                                if (!(pdt[k] & PAGEF_PAGESIZE)) {
+                                    auto pt = table_entry(pdt[k]);
+                                    for (int l = 0; l < 512; ++l) {
+                                        if (pt[l] & PAGEF_PRESENT) {
+                                            dbgout() << "   " << as_hex(l) << " " << as_hex(pt[l]) << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
-    print_page_tables(__readcr3());
+struct arguments {
+    const pe::IMAGE_DOS_HEADER& image_base() const {
+        return *static_cast<const pe::IMAGE_DOS_HEADER*>(image_base_);
+    }
+    const smap_entry* smap_entries() const {
+        return static_cast<const smap_entry*>(smap_entries_);
+    }
 
-    const auto& nth = args.image_base.nt_headers();
+private:
+    physical_address image_base_;
+    physical_address smap_entries_;
+};
+
+void map_pe(boostrap_memory_manager& boot_mm, const pe::IMAGE_DOS_HEADER& image_base)
+{
+    const auto& nth = image_base.nt_headers();
+    boot_mm.map_memory(virtual_address{nth.OptionalHeader.ImageBase}, boostrap_memory_manager::page_size, memory_type_rwx, physical_address{&image_base});
     for (const auto& s : nth.sections()) {
+#if 0
         for (auto c: s.Name) {
             dbgout() << char(c ? c : ' ');
         }
         dbgout() << " " << as_hex(s.VirtualAddress + nth.OptionalHeader.ImageBase) << " " << as_hex(s.Misc.VirtualSize) << "\n";
+#endif
+        REQUIRE(s.PointerToRawData); // real bss not implemented....
+
+        const auto virt = virtual_address{(s.VirtualAddress + nth.OptionalHeader.ImageBase) & ~(boostrap_memory_manager::page_size-1)};
+        const auto size = round_up(static_cast<uint64_t>(s.Misc.VirtualSize), boostrap_memory_manager::page_size);
+        const uint8_t* data = &image_base.rva<uint8_t>(s.PointerToRawData);
+        boot_mm.map_memory(virt, size, memory_type_rwx, physical_address{data});
     }
+}
+
+void stage3_entry(const arguments& args)
+{
+    // First make sure we can output debug information
+    vga::text_screen ts;
+    set_dbgout(ts);
+
+    // Construct initial memory manager
+    auto boot_mm = construct_boot_mm(args.smap_entries());
+    // Map in the stage3 executable
+    map_pe(*boot_mm, args.image_base());
+    // Allocate a proper stack
+    const auto& image_oh = args.image_base().nt_headers().OptionalHeader;
+    const auto initial_stack_size = image_oh.SizeOfStackCommit;
+    auto stack_ptr = boot_mm->alloc_physical(initial_stack_size);
+    boot_mm->map_memory(virtual_address{image_oh.ImageBase - initial_stack_size}, initial_stack_size, memory_type::read | memory_type::write, stack_ptr);
+    // TODO: set stack pointer and restore it again later
+
+    print_page_tables(boot_mm->saved_cr3());
+
+    const auto new_cr3 = boot_mm->pml4();
+    dbgout() << "Setting CR3 to " << as_hex(new_cr3) << "\n";
+    bochs_magic();
+    __writecr3(new_cr3);
+    print_page_tables(new_cr3);
 
     dbgout() << "Press any key to exit.\n";
     read_key();

@@ -254,3 +254,22 @@ TEST_CASE("memory_area test") {
     std::cout << free_list << "\n";
     std::cout << reserved_list << "\n";
 }
+
+constexpr bool memory_areas_overlap(uint64_t start1, uint64_t len1, uint64_t start2, uint64_t len2) {
+    return static_cast<int64_t>(std::min(start1 + len1, start2 + len2) - std::max(start1, start2)) > 0;
+}
+
+#define REQUIRE_OVERLAPS(a,b,c,d) do { REQUIRE(memory_areas_overlap(a,b,c,d)); REQUIRE(memory_areas_overlap(c,d,a,b)); } while(0)
+#define REQUIRE_NOT_OVERLAPS(a,b,c,d) do { REQUIRE(!memory_areas_overlap(a,b,c,d)); REQUIRE(!memory_areas_overlap(c,d,a,b)); } while(0)
+
+TEST_CASE("overlaps test") {
+    REQUIRE_NOT_OVERLAPS(10, 20,  1,  4); // 2 is completely to the left of 1
+    REQUIRE_NOT_OVERLAPS(10, 20, 31,  5); // 2 is completely to the right of 1
+    REQUIRE_NOT_OVERLAPS(10, 20,  0, 10); // 2 is to the left of 1
+    REQUIRE_NOT_OVERLAPS(10, 20, 30,  5); // 2 is to the right of 1
+    REQUIRE_OVERLAPS(10, 20,  0, 12);
+    REQUIRE_OVERLAPS(10, 20,  0, 35);
+    REQUIRE_OVERLAPS(10, 20, 15,  6);
+    REQUIRE_OVERLAPS(10, 20, 29,  1);
+    REQUIRE_OVERLAPS(10, 30, 25, 10);
+}

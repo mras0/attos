@@ -51,6 +51,11 @@ struct IMAGE_DOS_HEADER
      uint16_t e_res2[10];
      uint32_t e_lfanew;
 
+     template<typename T>
+     const T& rva(uint64_t offset) const {
+        return detail::rva_cast<T>(*this, offset);
+     }
+
      const IMAGE_NT_HEADERS& nt_headers() const {
         return detail::rva_cast<IMAGE_NT_HEADERS>(*this, e_lfanew);
      }

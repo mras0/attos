@@ -3,23 +3,15 @@
 
 #include <intrin.h>
 #include <stdint.h>
-
-// placement new/delete
-void* operator new(size_t /*size*/, void* address);
-void operator delete(void* address, size_t size);
+#include <algorithm>
 
 namespace attos {
 
 constexpr uint64_t identity_map_start  = 0xFFFFFFFF'00000000;
-constexpr uint64_t identity_map_length = 0x00000000'10000000;
+constexpr uint64_t identity_map_length = 1<<30;
 
 template<class T, uint64_t base>
 constexpr T* fixed_physical_address = reinterpret_cast<T*>(base + identity_map_start);
-
-template<typename T>
-T* physical_address(uint64_t base) {
-    return reinterpret_cast<T*>(base + identity_map_start);
-}
 
 constexpr static uint32_t pml4_shift = 39;
 constexpr static uint32_t pdp_shift  = 30;
@@ -28,6 +20,10 @@ constexpr static uint32_t pt_shift   = 12;
 
 inline void move_memory(void* destination, const void* source, size_t count) {
     __movsb(reinterpret_cast<uint8_t*>(destination), reinterpret_cast<const uint8_t*>(source), count);
+}
+
+constexpr bool memory_areas_overlap(uint64_t start1, uint64_t len1, uint64_t start2, uint64_t len2) {
+    return static_cast<int64_t>(std::min(start1 + len1, start2 + len2) - std::max(start1, start2)) > 0;
 }
 
 //  +------------------------------+--------+--------+------+
