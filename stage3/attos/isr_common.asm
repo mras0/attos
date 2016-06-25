@@ -6,7 +6,7 @@
     section .text
 
     global isr_common
-    extern interrupt_service_routine ; void interrupt_service_routine(registers*);
+    extern interrupt_service_routine ; void interrupt_service_routine(registers&);
 
 struc registers
     .rax             resq 1

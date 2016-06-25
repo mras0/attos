@@ -17,33 +17,62 @@ out_stream& operator<<(out_stream& os, uint32_t arg);
 out_stream& operator<<(out_stream& os, int64_t arg);
 out_stream& operator<<(out_stream& os, int32_t arg);
 
-class formatted_number {
+template<typename Derived>
+class formatted_base {
 public:
-    formatted_number(uint64_t num, uint32_t width, uint8_t base, char fill) : num_(num), width_(width), base_(base), fill_(fill) {
-    }
-
-    uint64_t num() const { return num_; }
-
-    uint32_t width() const { return width_; }
-    formatted_number& width(uint32_t w) { width_ = w; return *this; }
-
-    uint8_t  base() const { return base_; }
+    int width() const { return width_; }
+    Derived& width(int w) { width_ = w; return static_cast<Derived&>(*this); }
 
     char     fill() const { return fill_; }
 
+protected:
+    explicit formatted_base(int width, char fill) : width_(width), fill_(fill) {
+    }
+
 private:
-    uint64_t num_;
-    uint32_t width_;
-    uint8_t  base_;
+    int width_;
     char     fill_;
 };
 
+namespace detail {
+class formatted_string : public formatted_base<formatted_string> {
+public:
+    explicit formatted_string(int width, char fill, const char* str) : formatted_base(width, fill), str_(str) {
+    }
+
+    const char* str() const { return str_; }
+
+private:
+    const char* str_;
+};
+out_stream& operator<<(out_stream& os, const formatted_string& fs);
+
+class formatted_number : public formatted_base<formatted_number> {
+public:
+    explicit formatted_number(int width, char fill, uint64_t num, uint8_t base) : formatted_base(width, fill), num_(num), base_(base) {
+    }
+
+    uint64_t num() const { return num_; }
+    uint8_t  base() const { return base_; }
+
+private:
+    uint64_t num_;
+    uint8_t  base_;
+};
+out_stream& operator<<(out_stream& os, const formatted_number& fn);
+
+} // namespace detail
+
 template<typename I>
-formatted_number as_hex(I i) {
-    return formatted_number{static_cast<uint64_t>(i), sizeof(I)*2, 16, '0'};
+auto as_hex(I i) {
+    return detail::formatted_number{sizeof(I)*2, '0', static_cast<uint64_t>(i), 16};
 }
 
-out_stream& operator<<(out_stream& os, const formatted_number& fn);
+inline auto format_str(const char* str) {
+    return detail::formatted_string{0, ' ', str};
+}
+
+void write_many(out_stream& out, char c, int count);
 
 void hexdump(out_stream& out, const void* ptr, size_t len);
 

@@ -75,7 +75,7 @@ struct registers {
     uint64_t r13;
     uint64_t r14;
     uint64_t r15;
-    uint8_t  interrupt_no;
+    interrupt_number interrupt_no;
     uint8_t  reservered[7];
     uint64_t error_code;
     uint64_t rip;
@@ -86,7 +86,7 @@ struct registers {
 };
 
 extern "C" void isr_common(void);
-extern "C" void interrupt_service_routine(registers*);
+extern "C" void interrupt_service_routine(registers&);
 
 class code_builder {
 public:
@@ -113,9 +113,39 @@ private:
     int      pos_;
 };
 
-void interrupt_service_routine(registers*)
+void interrupt_service_routine(registers& r)
 {
     bochs_magic();
+#if 0
+rax: ffffffff_ff001850 rcx: ffffffff_00007a00
+rdx: 00000000_00000060 rbx: ffffffff_ff00550c
+rsp: ffffffff_000077d8 rbp: ffffffff_00007a00
+rsi: ffffffff_ff001310 rdi: 00000000_00000009
+r8 : 00000000_000003d5 r9 : 00000000_000003d4
+r10: 00000000_00000000 r11: ffffffff_00007a70
+r12: 00000000_00000000 r13: ffffffff_ff001910
+r14: ffffffff_ff004070 r15: 00000000_00000100
+rip: ffffffff_ff0012e3
+eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
+#endif
+    dbgout() << "interrupt_service_routine: interrupt 0x" << as_hex(r.interrupt_no);
+     if (has_error_code(r.interrupt_no)) {
+         dbgout() << " error_code = " << as_hex(r.error_code);
+     }
+     dbgout() << "\n";
+#define PREG(reg, s) dbgout() << format_str(#reg).width(3) << ": " << as_hex(r.reg) << s
+#define PREG2(reg1, reg2) PREG(reg1, ' '); PREG(reg2, '\n')
+    PREG2(rax, rcx);
+    PREG2(rdx, rbx);
+    PREG2(rsp, rbp);
+    PREG2(rsi, rdi);
+    PREG2(r8,  r9);
+    PREG2(r10, r11);
+    PREG2(r12, r13);
+    PREG2(r14, r15);
+    PREG2(rip, rflags);
+#undef PREG2
+#undef PREG
 }
 
 extern uint8_t read_key();

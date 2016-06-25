@@ -14,13 +14,14 @@ void format_number(out_stream& os, uint64_t number, unsigned base = 10, int min_
         number /= base;
     } while (number);
     int count = sizeof(buffer) - pos;
-
-    (void)fill;(void)min_width;
-    while (count < min_width) {
-        os.write(&fill, 1);
-        min_width--;
-    }
+    write_many(os, fill, min_width - count);
     os.write(&buffer[pos], count);
+}
+
+size_t string_length(const char* s) {
+    size_t len = 0;
+    for (; *s; ++s) ++len;
+    return len;
 }
 
 } // unnamed namespace
@@ -31,9 +32,7 @@ out_stream& operator<<(out_stream& os, char c) {
 }
 
 out_stream& operator<<(out_stream& os, const char* arg) {
-    for (; *arg; ++arg) {
-        os << *arg;
-    }
+    os.write(arg, string_length(arg));
     return os;
 }
 
@@ -57,9 +56,32 @@ out_stream& operator<<(out_stream& os, int32_t arg) {
     return os << static_cast<int64_t>(arg);
 }
 
-out_stream& operator<<(out_stream& os, const formatted_number& fn) {
-    format_number(os, fn.num(), fn.base(), fn.width(), fn.fill());
+namespace detail {
+
+out_stream& operator<<(out_stream& os, const formatted_string& fs) {
+    auto l = string_length(fs.str());
+    os.write(fs.str(), l);
+    write_many(os, fs.fill(), fs.width() - static_cast<int>(l));
     return os;
+}
+
+out_stream& operator<<(out_stream& os, const formatted_number& fn) {
+    if (fn.base() == 16 && fn.width() == 16 && fn.fill() == '0') {
+        format_number(os, fn.num()>>32, 16, 8, '0');
+        os << '`';
+        format_number(os, fn.num()&0xffffffff, 16, 8, '0');
+    } else {
+        format_number(os, fn.num(), fn.base(), fn.width(), fn.fill());
+    }
+    return os;
+}
+
+} // namespace detail
+
+void write_many(out_stream& out, char c, int count) {
+    while (--count >= 0) {
+        out.write(&c, 1);
+    }
 }
 
 void hexdump(out_stream& out, const void* ptr, size_t len) {
