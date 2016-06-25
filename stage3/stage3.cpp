@@ -42,7 +42,7 @@ struct smap_entry {
 };
 #pragma pack(pop)
 
-owned_ptr<memory_manager, destruct_deleter> construct_mm(const smap_entry* smap)
+owned_ptr<memory_manager, destruct_deleter> construct_mm(const smap_entry* smap, const pe::IMAGE_DOS_HEADER& image_base)
 {
     // Find suitable place to construct initial memory manager
     physical_address base_addr{};
@@ -80,45 +80,21 @@ owned_ptr<memory_manager, destruct_deleter> construct_mm(const smap_entry* smap)
     static_assert(identity_map_length == 1<<30, "");
     mm->map_memory(virtual_address(identity_map_start), identity_map_length, memory_type_rwx | memory_type::ps_1gb, physical_address{0ULL});
 
-    return mm;
-}
+    // Map in kernel executable image
+    const auto& nth = image_base.nt_headers();
+    mm->map_memory(virtual_address{nth.OptionalHeader.ImageBase}, memory_manager::page_size, memory_type_rwx, physical_address{&image_base});
+    for (const auto& s : nth.sections()) {
+        REQUIRE(s.PointerToRawData); // real bss not implemented....
 
-inline const uint64_t* table_entry(uint64_t table_value)
-{
-    return static_cast<const uint64_t*>(physical_address{table_value & ~table_mask});
-}
-
-void print_page_tables(physical_address cr3)
-{
-    dbgout() << "cr3 = " << as_hex(cr3) << "\n";
-    auto pml4 = table_entry(cr3);
-    for (int i = 0; i < 512; ++i ) {
-        if (pml4[i] & PAGEF_PRESENT) {
-            dbgout() << as_hex(i) << " " << as_hex(pml4[i]) << "\n";
-            auto pdpt = table_entry(pml4[i]);
-            for (int j = 0; j < 512; ++j) {
-                if (pdpt[j] & PAGEF_PRESENT) {
-                    dbgout() << " " << as_hex(j) << " " << as_hex(pdpt[j]) << "\n";
-                    if (!(pdpt[j] & PAGEF_PAGESIZE)) {
-                        auto pdt = table_entry(pdpt[j]);
-                        for (int k = 0; k < 512; ++k) {
-                            if (pdt[k] & PAGEF_PRESENT) {
-                                dbgout() << "  " << as_hex(k) << " " << as_hex(pdt[k]) << "\n";
-                                if (!(pdt[k] & PAGEF_PAGESIZE)) {
-                                    auto pt = table_entry(pdt[k]);
-                                    for (int l = 0; l < 512; ++l) {
-                                        if (pt[l] & PAGEF_PRESENT) {
-                                            dbgout() << "   " << as_hex(l) << " " << as_hex(pt[l]) << "\n";
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        const auto virt = virtual_address{(s.VirtualAddress + nth.OptionalHeader.ImageBase) & ~(memory_manager::page_size-1)};
+        const auto size = round_up(static_cast<uint64_t>(s.Misc.VirtualSize), memory_manager::page_size);
+        const uint8_t* data = &image_base.rva<uint8_t>(s.PointerToRawData);
+        mm->map_memory(virt, size, memory_type_rwx, physical_address{data});
     }
+
+    // Switch to the new PML4
+    mm_ready();
+    return mm;
 }
 
 struct arguments {
@@ -134,26 +110,6 @@ private:
     physical_address smap_entries_;
 };
 
-void map_pe(memory_manager& mm, const pe::IMAGE_DOS_HEADER& image_base)
-{
-    const auto& nth = image_base.nt_headers();
-    mm.map_memory(virtual_address{nth.OptionalHeader.ImageBase}, memory_manager::page_size, memory_type_rwx, physical_address{&image_base});
-    for (const auto& s : nth.sections()) {
-#if 0
-        for (auto c: s.Name) {
-            dbgout() << char(c ? c : ' ');
-        }
-        dbgout() << " " << as_hex(s.VirtualAddress + nth.OptionalHeader.ImageBase) << " " << as_hex(s.Misc.VirtualSize) << "\n";
-#endif
-        REQUIRE(s.PointerToRawData); // real bss not implemented....
-
-        const auto virt = virtual_address{(s.VirtualAddress + nth.OptionalHeader.ImageBase) & ~(memory_manager::page_size-1)};
-        const auto size = round_up(static_cast<uint64_t>(s.Misc.VirtualSize), memory_manager::page_size);
-        const uint8_t* data = &image_base.rva<uint8_t>(s.PointerToRawData);
-        mm.map_memory(virt, size, memory_type_rwx, physical_address{data});
-    }
-}
-
 void stage3_entry(const arguments& args)
 {
     // First make sure we can output debug information
@@ -161,11 +117,7 @@ void stage3_entry(const arguments& args)
     set_dbgout(ts);
 
     // Construct initial memory manager
-    auto mm = construct_mm(args.smap_entries());
-    // Map in the stage3 executable
-    map_pe(*mm, args.image_base());
-    // Switch to the new PML4
-    mm_ready();
+    auto mm = construct_mm(args.smap_entries(), args.image_base());
 
     dbgout() << "Press any key to exit.\n";
     read_key();

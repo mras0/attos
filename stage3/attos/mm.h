@@ -21,6 +21,7 @@ private:
 
 owned_ptr<memory_manager, destruct_deleter> mm_init(physical_address base, uint64_t length);
 void mm_ready();
+void print_page_tables(physical_address cr3);
 
 } // namespace attos
 #endif

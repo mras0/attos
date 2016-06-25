@@ -198,4 +198,42 @@ void mm_ready()
     __writecr3(kernel_memory_manager::instance().pml4());
 }
 
+const uint64_t* table_entry(uint64_t table_value)
+{
+    return static_cast<const uint64_t*>(physical_address{table_value & ~table_mask});
+}
+
+void print_page_tables(physical_address cr3)
+{
+    dbgout() << "cr3 = " << as_hex(cr3) << "\n";
+    auto pml4 = table_entry(cr3);
+    for (int i = 0; i < 512; ++i ) {
+        if (pml4[i] & PAGEF_PRESENT) {
+            dbgout() << as_hex(i) << " " << as_hex(pml4[i]) << "\n";
+            auto pdpt = table_entry(pml4[i]);
+            for (int j = 0; j < 512; ++j) {
+                if (pdpt[j] & PAGEF_PRESENT) {
+                    dbgout() << " " << as_hex(j) << " " << as_hex(pdpt[j]) << "\n";
+                    if (!(pdpt[j] & PAGEF_PAGESIZE)) {
+                        auto pdt = table_entry(pdpt[j]);
+                        for (int k = 0; k < 512; ++k) {
+                            if (pdt[k] & PAGEF_PRESENT) {
+                                dbgout() << "  " << as_hex(k) << " " << as_hex(pdt[k]) << "\n";
+                                if (!(pdt[k] & PAGEF_PAGESIZE)) {
+                                    auto pt = table_entry(pdt[k]);
+                                    for (int l = 0; l < 512; ++l) {
+                                        if (pt[l] & PAGEF_PRESENT) {
+                                            dbgout() << "   " << as_hex(l) << " " << as_hex(pt[l]) << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 } // namespace attos
