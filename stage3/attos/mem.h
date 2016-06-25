@@ -18,6 +18,67 @@ constexpr static uint32_t pdp_shift  = 30;
 constexpr static uint32_t pd_shift   = 21;
 constexpr static uint32_t pt_shift   = 12;
 
+constexpr static uint64_t table_mask = 0x1FF;
+
+#define ENUM_BIT_OP(type, op, inttype) \
+constexpr inline type operator op(type l, type r) { return static_cast<type>(static_cast<inttype>(l) op static_cast<inttype>(r)); }
+#define ENUM_BIT_OPS(type, inttype) \
+    ENUM_BIT_OP(type, |, inttype)   \
+    ENUM_BIT_OP(type, &, inttype)
+
+enum class memory_type : uint32_t {
+    read    = 0x01,
+    write   = 0x02,
+    execute = 0x04,
+
+    //ps_2mb  = 0x1000,
+    ps_1gb  = 0x2000,
+};
+
+ENUM_BIT_OPS(memory_type, uint32_t)
+constexpr auto memory_type_rwx = memory_type::read | memory_type::write | memory_type::execute;
+
+template<typename T>
+class address_base {
+public:
+    constexpr explicit address_base(uint64_t addr=0) : addr_(addr) {
+    }
+
+    constexpr operator uint64_t() const { return addr_; }
+
+    address_base& operator+=(uint64_t rhs) {
+        addr_ += rhs;
+        return *this;
+    }
+
+protected:
+    uint64_t addr_;
+};
+
+class virtual_address : public address_base<virtual_address> {
+public:
+    constexpr explicit virtual_address(uint64_t addr=0) : address_base(addr) {
+    }
+
+    constexpr uint32_t pml4e() const { return (addr_ >> pml4_shift) & table_mask; }
+    constexpr uint32_t pdpe()  const { return (addr_ >> pdp_shift)  & table_mask; }
+    constexpr uint32_t pde()   const { return (addr_ >> pd_shift)   & table_mask; }
+    constexpr uint32_t pte()   const { return (addr_ >> pt_shift)   & table_mask; }
+};
+
+class physical_address : public address_base<physical_address> {
+public:
+    constexpr explicit physical_address(uint64_t addr=0) : address_base(addr) {
+    }
+
+    constexpr explicit physical_address(const void* ptr) : address_base(reinterpret_cast<uint64_t>(ptr) - identity_map_start) {
+    }
+
+    template<typename T>
+    constexpr operator T*() const { return reinterpret_cast<T*>(addr_ + identity_map_start); }
+};
+
+
 inline void move_memory(void* destination, const void* source, size_t count) {
     __movsb(reinterpret_cast<uint8_t*>(destination), reinterpret_cast<const uint8_t*>(source), count);
 }
@@ -57,8 +118,7 @@ class owned_ptr {
 public:
     explicit owned_ptr(T* ptr = nullptr) : ptr_(ptr) {
     }
-    owned_ptr(owned_ptr&& other) : ptr_(other.ptr_) {
-        other.ptr_ = nullptr;
+    owned_ptr(owned_ptr&& other) : ptr_(other.release()) {
     }
     ~owned_ptr() {
         if (ptr_) Deleter()(ptr_);
@@ -75,11 +135,21 @@ public:
     }
 
     T& operator*() const {
-        return *ptr_;
+        return *get();
     }
 
     T* operator->() const {
+        return get();
+    }
+
+    T* get() const {
         return ptr_;
+    }
+
+    T* release() {
+        auto ret = ptr_;
+        ptr_ = nullptr;
+        return ret;
     }
 
 private:
