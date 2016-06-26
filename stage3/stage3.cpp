@@ -33,6 +33,60 @@ uint8_t status() {
     return __inbyte(ps2::status_port);
 }
 
+
+constexpr uint8_t sc_invalid = 0;
+constexpr uint8_t scan_code_set_1_size = 0x58;
+constexpr uint8_t scan_code_set_1[scan_code_set_1_size] = {
+    /* 0x00 */ sc_invalid,
+    /* 0x01 */ '\x1b', // escape
+    /* 0x02 */ '1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
+    /* 0x0c */ '-',
+    /* 0x0d */ '=',
+    /* 0x0e */ '\x08', // backspace
+    /* 0x0f */ '\x09', // tab
+    /* 0x10 */ 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '[', ']', '\x0A', // (enter) newline
+    /* 0x1D */ sc_invalid, // left control
+    /* 0x1E */ 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ';', '\'', '`',
+    /* 0x2A */ sc_invalid, // left shift
+    /* 0x2B */ '\\',
+    /* 0x2C */ 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ',', '.', '/',
+    /* 0x36 */ sc_invalid, // right shift
+    /* 0x37 */ sc_invalid, // keypad *
+    /* 0x38 */ sc_invalid, // left alt
+    /* 0x39 */ ' ', // space
+    /* 0x3A */ sc_invalid, // caps lock
+    /* 0x3B */ sc_invalid, // f1
+    /* 0x3C */ sc_invalid, // f2
+    /* 0x3D */ sc_invalid, // ...
+    /* 0x3E */ sc_invalid,
+    /* 0x3F */ sc_invalid,
+    /* 0x40 */ sc_invalid,
+    /* 0x41 */ sc_invalid,
+    /* 0x42 */ sc_invalid,
+    /* 0x43 */ sc_invalid,
+    /* 0x44 */ sc_invalid, // f10
+    /* 0x45 */ sc_invalid, // numlock
+    /* 0x46 */ sc_invalid, // scolllock
+    /* 0x47 */ '7', // keypad 7
+    /* 0x48 */ '8', // keypad 8
+    /* 0x49 */ '9', // keypad 9
+    /* 0x4A */ '-', // keypad -
+    /* 0x4B */ '4', // keypad 4
+    /* 0x4C */ '5', // keypad 5
+    /* 0x4D */ '6', // keypad 6
+    /* 0x4E */ '+', // keypad +
+    /* 0x4F */ '1', // keypad 1
+    /* 0x50 */ '2', // keypad 2
+    /* 0x51 */ '3', // keypad 3
+    /* 0x52 */ '0', // keypad 0
+    /* 0x53 */ '.', // keypad .
+    /* 0x54 */ sc_invalid,
+    /* 0x55 */ sc_invalid,
+    /* 0x56 */ sc_invalid,
+    /* 0x57 */ sc_invalid, // f11
+    /* 0x58 */ 'Z', // f12
+};
+
 class controller : public singleton<controller> {
 public:
     explicit controller(isr_handler& isrh) {
@@ -43,12 +97,41 @@ public:
         reg_.reset();
     }
 
-    uint8_t read_key() {
-        dbgout() << "ps2::controller::read_key()!\n";
+    uint8_t get_scan_key() {
         while (!(status() & status_mask_output_full)) { // wait key
             __halt();
         }
-        return data();  // read key
+        return data();
+    }
+
+    uint8_t read_key() {
+        // Very crude translation of scan keys in Scan Code Set 1
+        for (;;) {
+            auto sk = get_scan_key();
+            if (sk == 0xE0) {
+                auto sk2 = get_scan_key();
+                dbgout() << "[ps2] ignoring scan key = 0xE0 0x" << as_hex(sk2) << "\n";
+                continue;
+            } else if (sk == 0xE1) {
+                auto sk2 = get_scan_key();
+                auto sk3 = get_scan_key();
+                dbgout() << "[ps2] ignoring scan key = 0xE1 0x" << as_hex(sk2) << " 0x" << as_hex(sk3) << "\n";
+                continue;
+            }
+
+            // Only act on key release as they are not repeated
+            const bool released = (sk & 0x80) != 0;
+            if (!released) continue;
+            sk &= ~0x80;
+
+            if (sk < scan_code_set_1_size) {
+                const auto k = scan_code_set_1[sk];
+                if (k != sc_invalid) {
+                    return k;
+                }
+            }
+            dbgout() << "[ps2] ignoring scan key = 0x" << as_hex(sk) << "\n";
+        }
     }
 
 private:
@@ -67,10 +150,15 @@ uint8_t read_key() {
         return ps2::controller::instance().read_key();
     }
 
-    while (!(ps2::status() & ps2::status_mask_output_full)) { // wait key
-        __nop();
+    for (;;) {
+        while (!(ps2::status() & ps2::status_mask_output_full)) { // wait key
+            _mm_pause();
+        }
+        const uint8_t scan_code = ps2::data();  // read key
+        if (scan_code >= 0x80 && scan_code <= 0xE0) { // crude wait for release of 'normal' key
+            return scan_code;
+        }
     }
-    return ps2::data();  // read key
 }
 
 enum class smap_type : uint32_t {
@@ -204,5 +292,8 @@ void stage3_entry(const arguments& args)
     ata::test();
 
     dbgout() << "Main about done! Press any key to exit.\n";
-    read_key();
+    for (int i = 0; i < 10; ++i) {
+        auto k = read_key();
+        dbgout() << "Key 0x" << as_hex(k) << " - " << (int)k << " " << (char)k << "\n";
+    }
 }

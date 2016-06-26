@@ -56,7 +56,7 @@ public:
     }
 
     ~kvector() {
-        destroy_range(begin(), end());
+        clear();
     }
 
     kvector(const kvector&) = delete;
@@ -72,6 +72,11 @@ public:
 
     size_t capacity() const {
         return real_end_ - begin_;
+    }
+
+    void clear() {
+        destroy_range(begin(), end());
+        begin_ = end_ = real_end_ = nullptr;
     }
 
     void reserve(size_t new_capacity) {
