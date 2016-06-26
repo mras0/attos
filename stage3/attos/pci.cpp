@@ -2,6 +2,7 @@
 #include <attos/out_stream.h>
 #include <attos/cpu.h>
 #include <attos/mm.h>
+#include <array>
 
 namespace attos { extern uint8_t read_key(); }
 
@@ -33,15 +34,21 @@ out_stream& operator<<(out_stream& os, device_address dev) {
     return os << as_hex(dev.bus()) << ":" << as_hex(dev.slot()) << "." << as_hex(dev.func()).width(1);
 }
 
-uint32_t read_config_dword(device_address dev, uint8_t reg)
+uint32_t read_config_dword(device_address addr, uint8_t reg)
 {
-    REQUIRE(reg < 64);
+    REQUIRE(reg < config_area_num_dwords);
 // 31	        30 - 24	    23 - 16	    15 - 11	        10 - 8	        7 - 2	        1 - 0
 // Enable Bit	Reserved	Bus Number	Device Number	Function Number	Register Number	00
-    __outdword(config_address_port, 0x8000'0000 | static_cast<uint32_t>(dev) | (reg << 2));
+    __outdword(config_address_port, 0x8000'0000 | static_cast<uint32_t>(addr) | (reg << 2));
     return __indword(config_data_port);
 }
 
+void write_config_dword(device_address addr, uint8_t reg, uint32_t value)
+{
+    REQUIRE(reg < config_area_num_dwords);
+    __outdword(config_address_port, 0x8000'0000 | static_cast<uint32_t>(addr) | (reg << 2));
+    __outdword(config_data_port, value);
+}
 constexpr uint8_t header_type_device_mask         = 0x03; // 0x00 = general device, 0x01 = PCI-to-PCI bridge, 0x02 = CardBus bridge
 constexpr uint8_t header_type_multi_function_mask = 0x80;
 
@@ -181,23 +188,46 @@ config_area read_config_area(device_address dev)
     return u.ca;
 }
 
-class device {
-public:
-    explicit device(device_address address) : address_(address), config_(read_config_area(address)) {
-    }
-
-    device(const device&) = delete;
-    device& operator==(const device&) = delete;
-
-    device_address address() const { return address_; }
-    config_area    config() const  { return config_; }
-
-private:
-    device_address                   address_;
-    config_area                      config_;
+struct bar_info {
+    uint64_t address;
+    uint32_t size;
 };
-using device_ptr = owned_ptr<device, kfree_deleter>;
 
+std::array<bar_info, 6> read_bars(device_address addr) {
+    std::array<bar_info, 6> res;
+
+    for (uint8_t i = 0; i < 6; ++i) {
+        const uint8_t reg = 4 + i; // bar0 is at offset 4
+
+        // Save original value
+        const auto orig = read_config_dword(addr, reg);
+
+        res[i].address = orig;
+        res[i].size    = 0;
+
+        if (!orig) {
+            continue;
+        }
+
+        // Determine size by writing all 1s and seeing what sticks (taking care that only the lower 16 bits are valid for IO bars)
+        write_config_dword(addr, reg, ~0U);
+        auto bar_size = read_config_dword(addr, reg);
+
+        // Restore original bar value back
+        write_config_dword(addr, reg, orig);
+
+        // Mask of R/O bits
+        if (orig & 1) {
+            bar_size &= ~3;
+        } else {
+            bar_size &= ~15;
+        }
+
+        // Invert bits and increment 1
+        res[i].size = (~bar_size) + 1;
+    }
+    return res;
+}
 
 class manager_impl : public manager {
 public:
@@ -209,15 +239,12 @@ public:
         dbgout() << "[pci] Shutting down.\n";
     }
 private:
-    kvector<device_ptr> devices_;
-
     void probe(device_address dev_addr) {
         const auto cfgdw = read_config_dword(dev_addr, 0);
         if ((cfgdw&0xffff) == 0xffff) {
             return;
         }
-        devices_.push_back(knew<device>(dev_addr));
-        const auto& ca = devices_.back()->config();
+        const auto ca = read_config_area(dev_addr);
         const auto header_type = ca.header_type & header_type_device_mask;
         if (header_type == 0) {
             // 0x00 = Normal devices
@@ -230,6 +257,17 @@ private:
                 device_text = di->text;
             }
             dbgout() << dev_addr << " " << as_hex(ca.device_class) << ": " << as_hex(ca.vendor) << ":" << as_hex(ca.device_id) << " " << vendor_text << " " << device_text << "\n";
+#if 0
+            if (ca.device_class == device_class_ide_controller) {
+                for (const auto& b: read_bars(dev_addr)) {
+                    if (!b.size) continue;
+                    if (b.address & 1) dbgout() << " IO  " << as_hex(b.address&~3).width(4);
+                    else dbgout() << " MEM " << as_hex(b.address&~15).width(8);
+                    dbgout() << " size " << as_hex(b.size).width(0) << "\n";
+                }
+                dbgout() << " ProgIF: " << as_hex(ca.prog_if) << "\n";
+            }
+#endif
         } else if (header_type == 1) {
             // 0x01 = PCI-to-PCI bridge
             REQUIRE(dev_addr.bus() == ca.header1.primary_bus);
