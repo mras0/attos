@@ -7,6 +7,7 @@
 #include <attos/mm.h>
 #include <attos/pe.h>
 #include <attos/isr.h>
+#include <attos/pci.h>
 #include <attos/vga/text_screen.h>
 
 #define assert REQUIRE // undefined yadayda
@@ -123,6 +124,9 @@ void stage3_entry(const arguments& args)
 
     // Initialize interrupt handlers
     auto ih = isr_init();
+
+    // PCI
+    auto pci = pci::init();
 
     dbgout() << "Main about done! Press any key to exit.\n";
     read_key();

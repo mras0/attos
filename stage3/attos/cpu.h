@@ -32,7 +32,7 @@ constexpr auto round_up(T val, T align)
 class __declspec(novtable) cpu_manager {
 public:
     virtual ~cpu_manager() {}
-    static constexpr uint16_t kernel_cs = 0x08; // Matches stage2/bootloader.asm
+    static constexpr uint16_t kernel_cs = 0x08;
     static constexpr uint16_t kernel_ds = 0x10;
 };
 
