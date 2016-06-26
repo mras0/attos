@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <intrin.h>
 #include <type_traits>
+#include <atomic>
 
 #include <attos/cpu.h>
 #include <attos/mem.h>
@@ -111,6 +112,14 @@ private:
     physical_address smap_entries_;
 };
 
+std::atomic<uint64_t> pit_ticks_{0};
+
+void pit_isr()
+{
+    ++pit_ticks_;
+    ++*static_cast<uint8_t*>(physical_address{0xb8000});
+}
+
 void stage3_entry(const arguments& args)
 {
     // First make sure we can output debug information
@@ -130,6 +139,13 @@ void stage3_entry(const arguments& args)
     auto pci = pci::init();
 
     ata::test();
+
+    //IRQ1 = 0x31, // Keyboard
+    //IRQE = 0x3E, // Primary ATA
+    auto pit_irq_reg = ih->register_irq_handler(0, &pit_isr); // PIT
+//    for (uint8_t i = 1; i < 16; ++i) {
+//        if (i != 2) unmask_irq(i);
+//    }
 
     dbgout() << "Main about done! Press any key to exit.\n";
     read_key();

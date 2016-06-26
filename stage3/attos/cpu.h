@@ -4,10 +4,12 @@
 #include <stdint.h>
 #include <intrin.h>
 
-#include <attos/mem.h>
-
 #pragma intrinsic(_disable)
 #pragma intrinsic(_enable)
+extern "C" void* memset(void* dest, int c, size_t count); // crt.asm
+#pragma function(memset)
+
+#include <attos/mem.h>
 
 #define REQUIRE(expr) do { if (!(expr)) { ::attos::fatal_error(__FILE__, __LINE__, #expr " failed"); } } while (0)
 

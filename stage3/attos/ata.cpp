@@ -169,9 +169,11 @@ private:
 
 void test() {
     device dev{primary_master};
-    char boot_sector[512];
+    uint8_t boot_sector[512];
     dev.read_sector(0, boot_sector);
-    hexdump(dbgout(), boot_sector, sizeof(boot_sector));
+    //hexdump(dbgout(), boot_sector, sizeof(boot_sector));
+    REQUIRE(boot_sector[510] == 0x55);
+    REQUIRE(boot_sector[511] == 0xAA);
 }
 
 } } // namespace attos::ata

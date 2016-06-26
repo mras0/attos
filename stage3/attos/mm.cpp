@@ -208,12 +208,8 @@ auto find_mapping(memory_mapping::tree_type& t, virtual_address addr, uint64_t l
 
 constexpr uint64_t initial_heap_size = 1<<20;
 
-class kernel_memory_manager : public memory_manager {
+class kernel_memory_manager : public memory_manager, public singleton<kernel_memory_manager> {
 public:
-    static kernel_memory_manager* instance() {
-        return instance_;
-    }
-
     explicit kernel_memory_manager(physical_address base, uint64_t length)
         : physical_pages_{base, length}
         , memory_mappings_{alloc_physical(page_size), page_size}
@@ -221,12 +217,10 @@ public:
         , kernel_heap_{alloc_physical(initial_heap_size), initial_heap_size} {
         dbgout() << "[mem] Starting. Base 0x" << as_hex(base) << " Length " << (length>>20) << " MB\n";
         pml4_ = static_cast<uint64_t*>(alloc_physical(page_size));
-        instance_ = this;
     }
 
     ~kernel_memory_manager() {
         dbgout() << "[mem] Shutting down. Restoring CR3 to " << as_hex(saved_cr3_) << "\n";
-        instance_ = nullptr;
         __writecr3(saved_cr3_);
     }
 
@@ -248,8 +242,6 @@ private:
     physical_address                       saved_cr3_;
     uint64_t*                              pml4_;
     simple_heap                            kernel_heap_;
-
-    static kernel_memory_manager*          instance_;
 
     physical_address saved_cr3() const {
         return saved_cr3_;
@@ -326,12 +318,10 @@ private:
         }
     }
 };
-kernel_memory_manager* kernel_memory_manager::instance_ = nullptr;
 object_buffer<kernel_memory_manager> mm_buffer;
 
 owned_ptr<memory_manager, destruct_deleter> mm_init(physical_address base, uint64_t length)
 {
-    REQUIRE(kernel_memory_manager::instance() == nullptr);
     auto mm = mm_buffer.construct(base, length);
     return owned_ptr<memory_manager, destruct_deleter>{mm.release()};
 }
@@ -402,12 +392,12 @@ physical_address virt_to_phys(physical_address cr3, virtual_address virt)
 
 void* kalloc(uint64_t size)
 {
-    return kernel_memory_manager::instance()->kalloc(size);
+    return kernel_memory_manager::instance().kalloc(size);
 }
 
 void kfree(void* ptr)
 {
-    kernel_memory_manager::instance()->kfree(ptr);
+    kernel_memory_manager::instance().kfree(ptr);
 }
 
 } // namespace attos

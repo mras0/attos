@@ -41,9 +41,12 @@ struct kfree_deleter {
     }
 };
 
+template<typename T>
+using kowned_ptr = owned_ptr<T, kfree_deleter>;
+
 template<typename T, typename...Args >
 auto knew(Args&&... args) {
-    return owned_ptr<T, kfree_deleter>{new (kalloc(sizeof(T))) T(static_cast<Args&&>(args)...)};
+    return kowned_ptr<T>{new (kalloc(sizeof(T))) T(static_cast<Args&&>(args)...)};
 }
 
 template<typename T>

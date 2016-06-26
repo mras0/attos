@@ -1,5 +1,7 @@
 #include "isr.h"
 #include <stdint.h>
+#include <array>
+#include <algorithm>
 #include <attos/cpu.h>
 #include <attos/mm.h>
 #include <attos/out_stream.h>
@@ -45,10 +47,35 @@ enum class interrupt_number : uint8_t {
     MC  = 0x12, // #MC Machine check (Info in MSRs)
     XF  = 0x13, // #XF SIMD exception (Info in MXCSR)
     SX  = 0x1E, // #SX Security exception
+
+    // Remapped IRQs
+    IRQ0 = 0x30, // PIT
+    IRQ1 = 0x31, // Keyboard
+    IRQ2 = 0x32, // Cascade
+    IRQ3 = 0x33, // COM2
+    IRQ4 = 0x34, // COM1
+    IRQ5 = 0x35, // LPT2
+    IRQ6 = 0x36, // Floppy disk
+    IRQ7 = 0x37, // LPT1
+    IRQ8 = 0x38, // CMOS RTC
+    IRQ9 = 0x39,
+    IRQA = 0x3A,
+    IRQB = 0x3B,
+    IRQC = 0x3C, // PS2 Mouse
+    IRQD = 0x3D, // FPU
+    IRQE = 0x3E, // Primary ATA
+    IRQF = 0x3F, // Secondary ATA
 };
 
-bool has_error_code(interrupt_number n)
-{
+constexpr bool is_irq(interrupt_number n) {
+    return  n >= interrupt_number::IRQ0 && n <= interrupt_number::IRQF;
+}
+
+constexpr uint8_t irq_number(interrupt_number n) {
+    return static_cast<uint8_t>(n) - static_cast<uint8_t>(interrupt_number::IRQ0);
+}
+
+constexpr bool has_error_code(interrupt_number n) {
     return n == interrupt_number::DF ||
            n == interrupt_number::TS ||
            n == interrupt_number::NP ||
@@ -120,8 +147,6 @@ constexpr uint16_t pic2_data    = 0xA1;
 
 constexpr uint16_t pic_irq_mask_all = 0xFFFF;
 
-constexpr uint8_t pic_eoi             = 0x20;
-
 void io_wait()
 {
     /*
@@ -144,8 +169,7 @@ void pic_irq_mask(uint16_t mask) {
     io_wait();
 }
 
-void pic_remap(uint8_t pic1_offset, uint8_t pic2_offset)
-{
+void pic_remap(uint8_t pic1_offset, uint8_t pic2_offset) {
     pic_irq_mask(pic_irq_mask_all);
 
     constexpr uint8_t pic_read_irr        = 0x0A;       // OCW3 irq ready next CMD read
@@ -183,50 +207,53 @@ void pic_remap(uint8_t pic1_offset, uint8_t pic2_offset)
     pic_irq_mask(pic_irq_mask_all);
 }
 
-class pic8259 {
+void pic_mask_irq(uint8_t irq) {
+    REQUIRE(irq < 16 && irq != 2);
+    const uint16_t mask = 1<<irq;
+    const auto irq_mask = pic_irq_mask();
+    REQUIRE(!(irq_mask & mask));
+    pic_irq_mask(pic_irq_mask() | mask);
+}
+
+void pic_unmask_irq(uint8_t irq) {
+    REQUIRE(irq < 16 && irq != 2);
+    const uint16_t mask = 1<<irq;
+    const auto irq_mask = pic_irq_mask();
+    REQUIRE(irq_mask & mask);
+    pic_irq_mask(pic_irq_mask() & ~mask);
+}
+
+void pic_send_eoi(uint8_t irq) {
+    constexpr uint8_t pic_eoi = 0x20;
+    if (irq >= 8) {
+        __outbyte(pic2_command, pic_eoi);
+    }
+    __outbyte(pic1_command, pic_eoi);
+}
+
+class pic_state {
 public:
-    explicit pic8259() : old_pic_mask_(pic_irq_mask()) {
-        pic_remap(0x30, 0x38);
+    explicit pic_state() : old_pic_mask_(pic_irq_mask()) {
+        const auto irq_offset = static_cast<uint8_t>(interrupt_number::IRQ0);
+        pic_remap(irq_offset, irq_offset + 0x08);
+        pic_irq_mask(pic_irq_mask_all & ~(1<<2)); // Unmask cascade IRQ line
     }
 
-    ~pic8259() {
-        pic_remap(0x08, 0x70); // Defaults
+    ~pic_state() {
+        constexpr uint8_t bios_irq_offset1 = 0x08;
+        constexpr uint8_t bios_irq_offset2 = 0x70;
+        pic_remap(bios_irq_offset1, bios_irq_offset2);
         pic_irq_mask(old_pic_mask_);
     }
 
-    pic8259(const pic8259&) = delete;
-    pic8259& operator=(const pic8259&) = delete;
+    pic_state(const pic_state&) = delete;
+    pic_state& operator=(const pic_state&) = delete;
 
 private:
-    uint16_t  old_pic_mask_;
+    uint16_t old_pic_mask_;
 };
 
-void interrupt_service_routine(registers& r)
-{
-#if 0
-eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
-#endif
-    dbgout() << "interrupt_service_routine: interrupt 0x" << as_hex(r.interrupt_no);
-     if (has_error_code(r.interrupt_no)) {
-         dbgout() << " error_code = " << as_hex(r.error_code);
-     }
-     dbgout() << "\n";
-#define PREG(reg, s) dbgout() << format_str(#reg).width(3) << ": " << as_hex(r.reg) << s
-#define PREG2(reg1, reg2) PREG(reg1, ' '); PREG(reg2, '\n')
-    PREG2(rax, rcx);
-    PREG2(rdx, rbx);
-    PREG2(rsp, rbp);
-    PREG2(rsi, rdi);
-    PREG2(r8,  r9);
-    PREG2(r10, r11);
-    PREG2(r12, r13);
-    PREG2(r14, r15);
-    PREG2(rip, rflags);
-#undef PREG2
-#undef PREG
-    REQUIRE(false);
-}
-
+void interrupt_service_routine(registers& r);
 void set_idt_entry(interrupt_gate& idt, void* code)
 {
     const uint64_t base = virtual_address::in_current_address_space(code);
@@ -239,9 +266,9 @@ void set_idt_entry(interrupt_gate& idt, void* code)
     idt.reserved    = 0;
 }
 
-class isr_handler_impl : public isr_handler {
+class isr_handler_impl : public isr_handler, public singleton<isr_handler_impl> {
 public:
-    isr_handler_impl() {
+    isr_handler_impl() : irq_handlers_() {
         __sidt(&old_idt_desc_);
         dbgout() << "[isr] Loading interrupt descriptor table.\n";
         for (int i = 0; i < idt_count; ++i) {
@@ -266,20 +293,89 @@ public:
 
     ~isr_handler_impl() {
         dbgout() << "[isr] Shutting down. Restoring IDT to limit " << as_hex(old_idt_desc_.limit) << " base " << as_hex(old_idt_desc_.base) << "\n";
+        REQUIRE(std::none_of(irq_handlers_.begin(), irq_handlers_.end(), [](irq_handler_t h) { return h != nullptr; }));
         _disable();
         __lidt(&old_idt_desc_);
+    }
+
+    bool on_irq(uint8_t irq) {
+        if (auto handler = irq_handlers_[irq]) {
+            handler();
+            pic_send_eoi(irq);
+            return true;
+        }
+        return false;
     }
 
 private:
     static constexpr int idt_count     = 256;
     static constexpr int isr_code_size = 9;
 
-    pic8259        pic_;
+    pic_state      pic_state_;
     interrupt_gate idt_[idt_count];
     idt_descriptor old_idt_desc_;
     idt_descriptor idt_desc_;
     uint8_t isr_code_[isr_code_size * idt_count];
+    std::array<irq_handler_t, 16>  irq_handlers_;
+
+    class isr_registration_impl : public isr_registration {
+    public:
+        explicit isr_registration_impl(isr_handler_impl& parent, uint8_t irq) : parent_(parent), irq_(irq) {
+            dbgout() << "isr_registration_impl::isr_registration_impl() irq = " << irq_ << "\n";
+        }
+        ~isr_registration_impl() {
+            dbgout() << "isr_registration_impl::~isr_registration_impl() irq = " << irq_ << "\n";
+            pic_mask_irq(irq_);
+            REQUIRE(parent_.irq_handlers_[irq_] != nullptr);
+            parent_.irq_handlers_[irq_] = nullptr;
+        }
+        isr_registration_impl(const isr_registration_impl&) = delete;
+        isr_registration_impl& operator=(const isr_registration_impl&) = delete;
+    private:
+        isr_handler_impl& parent_;
+        uint8_t           irq_;
+    };
+
+    virtual kowned_ptr<isr_registration> do_register_irq_handler(uint8_t irq, irq_handler_t irq_handler) override {
+        dbgout() << "[isr] Unmasking IRQ " << irq << "\n";
+        REQUIRE(irq_handlers_[irq] == nullptr);
+        irq_handlers_[irq] = irq_handler;
+        pic_unmask_irq(irq);
+        return kowned_ptr<isr_registration>{knew<isr_registration_impl>(*this, irq).release()};
+    }
 };
+
+void interrupt_service_routine(registers& r)
+{
+    if (is_irq(r.interrupt_no) && isr_handler_impl::instance().on_irq(irq_number(r.interrupt_no))) {
+        return;
+    }
+    dbgout() << "interrupt_service_routine: interrupt 0x" << as_hex(r.interrupt_no);
+    if (has_error_code(r.interrupt_no)) {
+        dbgout() << " error_code = " << as_hex(r.error_code);
+    }
+    if (is_irq(r.interrupt_no)) {
+        const auto irq = irq_number(r.interrupt_no);
+        dbgout() << " IRQ#" << irq << "\n";
+    }
+    dbgout() << "\n";
+#define PREG(reg, s) dbgout() << format_str(#reg).width(3) << ": " << as_hex(r.reg) << s
+#define PREG2(reg1, reg2) PREG(reg1, ' '); PREG(reg2, '\n')
+    PREG2(rax, rcx);
+    PREG2(rdx, rbx);
+    PREG2(rsp, rbp);
+    PREG2(rsi, rdi);
+    PREG2(r8,  r9);
+    PREG2(r10, r11);
+    PREG2(r12, r13);
+    PREG2(r14, r15);
+    PREG(rip, ' ');
+#undef PREG2
+#undef PREG
+    dbgout() << "eflags " << as_hex(r.rflags).width(8) << "\n"; // eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
+    REQUIRE(false);
+}
+
 object_buffer<isr_handler_impl> isr_handler_buffer;
 
 owned_ptr<isr_handler, destruct_deleter> isr_init() {

@@ -1,8 +1,6 @@
     bits 64
     default rel
 
-    %define KERNEL_CS 0x28 ; Matching ../bootloader/stage2.asm
-
     section .text
 
     global isr_common

@@ -1,7 +1,6 @@
 #ifndef ATTOS_MEM_H
 #define ATTOS_MEM_H
 
-#include <intrin.h>
 #include <stdint.h>
 #include <algorithm>
 
@@ -184,6 +183,27 @@ public:
 private:
     alignas(T) char buffer_[sizeof(T)];
 };
+
+template<typename T>
+class singleton {
+public:
+    static bool has_instance() { return instance_ != nullptr; }
+    static T& instance() { return *instance_; }
+
+protected:
+    explicit singleton() {
+        if (instance_ != nullptr) __debugbreak();
+        instance_ = static_cast<T*>(this);
+    }
+
+    ~singleton() {
+        instance_ = nullptr;
+    }
+private:
+    static T* instance_;
+};
+template<typename T>
+T* singleton<T>::instance_;
 
 
 } // namespace attos
