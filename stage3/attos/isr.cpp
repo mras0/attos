@@ -26,25 +26,25 @@ static_assert(sizeof(idt_descriptor)==10,"");
 #pragma pack(pop)
 
 enum class interrupt_number : uint8_t {
-    DE  = 0,  // #DE Divide by zero
-    DB  = 1,  // #DB Debug exception (DR6 contains debug status)
-    NMI = 2,  // NMI
-    BP  = 3,  // #BP Breakpoint
-    OF  = 4,  // #OF Overflow
-    BR  = 5,  // #BR Bound-Range
-    UD  = 6,  // #UD Invalid opcode
-    NM  = 7,  // #NM Device not available
-    DF  = 8,  // #DF Double fault
-    TS  = 10, // #TS TSS Invalid
-    NP  = 11, // #NP Segment not present
-    SS  = 12, // #SS Stack exception
-    GP  = 13, // #GP General protection fault
-    PF  = 14, // #PF Page fault (CR2 has faulting address)
-    MF  = 16, // #MF Floating point exception
-    AC  = 17, // #AC Alignment check
-    MC  = 18, // #MC Machine check (Info in MSRs)
-    XF  = 19, // #XF SIMD exception (Info in MXCSR)
-    SX  = 30, // #SX Security exception
+    DE  = 0x00, // #DE Divide by zero
+    DB  = 0x01, // #DB Debug exception (DR6 contains debug status)
+    NMI = 0x02, // NMI
+    BP  = 0x03, // #BP Breakpoint
+    OF  = 0x04, // #OF Overflow
+    BR  = 0x05, // #BR Bound-Range
+    UD  = 0x06, // #UD Invalid opcode
+    NM  = 0x07, // #NM Device not available
+    DF  = 0x08, // #DF Double fault
+    TS  = 0x0A, // #TS TSS Invalid
+    NP  = 0x0B, // #NP Segment not present
+    SS  = 0x0C, // #SS Stack exception
+    GP  = 0x0D, // #GP General protection fault
+    PF  = 0x0E, // #PF Page fault (CR2 has faulting address)
+    MF  = 0x10, // #MF Floating point exception
+    AC  = 0x11, // #AC Alignment check
+    MC  = 0x12, // #MC Machine check (Info in MSRs)
+    XF  = 0x13, // #XF SIMD exception (Info in MXCSR)
+    SX  = 0x1E, // #SX Security exception
 };
 
 bool has_error_code(interrupt_number n)
@@ -113,19 +113,81 @@ private:
     int      pos_;
 };
 
+constexpr uint16_t pic1_command = 0x20;
+constexpr uint16_t pic1_data    = 0x21;
+constexpr uint16_t pic2_command = 0xA0;
+constexpr uint16_t pic2_data    = 0xA1;
+
+constexpr uint16_t pic_irq_mask_all = 0xFFFF;
+
+constexpr uint8_t pic_eoi             = 0x20;
+
+void io_wait()
+{
+    /*
+    __asm__ __volatile__ (
+        "jmp 1f\n\t"
+        "1:jmp 2f\n\t"
+        "2:" ::: "memory");
+        */
+    _mm_pause();
+}
+
+uint16_t pic_irq_mask() {
+    return __inbyte(pic1_data) | (__inbyte(pic2_data) << 8);
+}
+
+void pic_irq_mask(uint16_t mask) {
+    __outbyte(pic1_data, mask & 0xff);
+    io_wait();
+    __outbyte(pic2_data, mask >> 8);
+    io_wait();
+}
+
+void pic_remap(uint8_t pic1_offset, uint8_t pic2_offset)
+{
+    pic_irq_mask(pic_irq_mask_all);
+
+    constexpr uint8_t pic_read_irr        = 0x0A;       // OCW3 irq ready next CMD read
+    constexpr uint8_t pic_read_isr        = 0x0B;       // OCW3 irq service next CMD read
+    constexpr uint8_t pic_icw1_icw4       = 0x01;       // ICW4 (not) needed
+    constexpr uint8_t pic_icw1_single     = 0x02;       // Single (cascade) mode
+    constexpr uint8_t pic_icw1_interval4  = 0x04;       // Call address interval 4 (8)
+    constexpr uint8_t pic_icw1_level      = 0x08;       // Level triggered (edge) mode
+    constexpr uint8_t pic_icw1_init       = 0x10;       // Initialization - required!
+
+    constexpr uint8_t pic_icw4_8086       = 0x01;       // 8086/88 (MCS-80/85) mode
+    constexpr uint8_t pic_icw4_auto       = 0x02;       // Auto (normal) EOI
+    constexpr uint8_t pic_icw4_buf_slave  = 0x08;       // Buffered mode/slave
+    constexpr uint8_t pic_icw4_buf_master = 0x0C;       // Buffered mode/master
+    constexpr uint8_t pic_icw4_sfnm       = 0x10;       // Special fully nested (not)
+
+    // Remap PIC
+    __outbyte(pic1_command, pic_icw1_init|pic_icw1_icw4);  // starts the initialization sequence (in cascade mode)
+    io_wait();
+    __outbyte(pic2_command, pic_icw1_init|pic_icw1_icw4);
+    io_wait();
+    __outbyte(pic1_data, pic1_offset);             // ICW2: Master PIC vector offset
+    io_wait();
+    __outbyte(pic2_data, pic2_offset+8);           // ICW2: Slave PIC vector offset
+    io_wait();
+    __outbyte(pic1_data, 4);                       // ICW3: tell Master PIC that there is a slave PIC at IRQ2 (0000 0100)
+    io_wait();
+    __outbyte(pic2_data, 2);                       // ICW3: tell Slave PIC its cascade identity (0000 0010)
+    io_wait();
+    __outbyte(pic1_data, pic_icw4_8086);
+    io_wait();
+    __outbyte(pic2_data, pic_icw4_8086);
+    io_wait();
+
+    pic_irq_mask(pic_irq_mask_all);
+}
+
+extern uint8_t read_key();
+
 void interrupt_service_routine(registers& r)
 {
-    bochs_magic();
 #if 0
-rax: ffffffff_ff001850 rcx: ffffffff_00007a00
-rdx: 00000000_00000060 rbx: ffffffff_ff00550c
-rsp: ffffffff_000077d8 rbp: ffffffff_00007a00
-rsi: ffffffff_ff001310 rdi: 00000000_00000009
-r8 : 00000000_000003d5 r9 : 00000000_000003d4
-r10: 00000000_00000000 r11: ffffffff_00007a70
-r12: 00000000_00000000 r13: ffffffff_ff001910
-r14: ffffffff_ff004070 r15: 00000000_00000100
-rip: ffffffff_ff0012e3
 eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
 #endif
     dbgout() << "interrupt_service_routine: interrupt 0x" << as_hex(r.interrupt_no);
@@ -146,9 +208,13 @@ eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
     PREG2(rip, rflags);
 #undef PREG2
 #undef PREG
+    if (static_cast<uint8_t>(r.interrupt_no) == 0x80) {
+        const auto key = read_key();
+        dbgout() << "key = 0x" << as_hex(key) << "\n";
+        return;
+    }
+    REQUIRE(false);
 }
-
-extern uint8_t read_key();
 
 void set_idt_entry(interrupt_gate& idt, void* code)
 {
@@ -164,7 +230,7 @@ void set_idt_entry(interrupt_gate& idt, void* code)
 
 class isr_handler_impl : public isr_handler {
 public:
-    isr_handler_impl() {
+    isr_handler_impl() : old_pic_mask_(pic_irq_mask()) {
         __sidt(&old_idt_desc_);
         dbgout() << "[isr] Loading interrupt descriptor table.\n";
         for (int i = 0; i < idt_count; ++i) {
@@ -185,13 +251,10 @@ public:
         for (int i = 0; i < isr_code_size; ++i) {
             dbgout() << as_hex(iv[i]) << " ";
         }
-        dbgout() << "\n";
-        dbgout() << "&isr_common = " << as_hex((uint64_t)&isr_common) << "\n";
-        dbgout() << "Waiting for key...\n";
-        read_key();
         __lidt(&idt_desc_);
         sw_int<0x80>();
-        //_enable();
+        pic_remap(0x30, 0x38);
+        _enable();
     }
 
     isr_handler_impl(const isr_handler_impl&) = delete;
@@ -201,6 +264,9 @@ public:
         dbgout() << "[isr] Shutting down. Restoring IDT to limit " << as_hex(old_idt_desc_.limit) << " base " << as_hex(old_idt_desc_.base) << "\n";
         _disable();
         __lidt(&old_idt_desc_);
+        bochs_magic();
+        pic_remap(0x08, 0x70);
+        pic_irq_mask(old_pic_mask_);
     }
 
 private:
@@ -209,6 +275,7 @@ private:
 
     interrupt_gate idt_[idt_count];
     idt_descriptor old_idt_desc_;
+    uint16_t       old_pic_mask_;
     idt_descriptor idt_desc_;
     uint8_t isr_code_[isr_code_size * idt_count];
 };
