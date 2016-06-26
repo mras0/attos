@@ -13,29 +13,55 @@ public:
 template<typename R, typename... Args>
 class function_base {
 public:
-    function_base() : impl_(nullptr) {
+    function_base(nullptr_t = nullptr) : impl_buffer_() {
     }
 
     template<typename F>
-    function_base(F f) : impl_(knew<impl>(f)) {
+    function_base(const F& f) {
+        new (&impl_buffer_[0]) fimpl<F>(f);
+    }
+
+    // TOOD:...
+    function_base(const function_base& f) = default;
+    function_base& operator=(const function_base& f) = default;
+    ~function_base() = default;
+
+    explicit operator bool() const {
+        return *reinterpret_cast<const uint64_t*>(impl_buffer_) != 0;
     }
 
     R operator()(Args&&... args) const {
-        return impl_->invoke(static_cast<Args&&>(args)...);
+        return f().invoke(static_cast<Args&&>(args)...);
     }
 
 private:
-    struct impl {
+    struct __declspec(novtable) impl {
         virtual R invoke(Args&&... args) const = 0;
     };
 
-    template<typename T>
+    template<typename F>
     struct fimpl;
 
-    kowned_ptr<impl> impl_;
+    template<>
+    struct fimpl<R (*)(Args...)> : impl {
+        using Fptr = R (*)(Args...);
+        explicit fimpl(Fptr fptr) : fptr_(fptr) {
+        }
+
+        virtual R invoke(Args&&... args) const override {
+            return fptr_(static_cast<Args&&>(args)...);
+        }
+    private:
+        Fptr fptr_;
+    };
+
+    static constexpr size_t impl_max_size = 16;
+    alignas(16) uint8_t impl_buffer_[impl_max_size];
+
+    impl& f() const { return *reinterpret_cast<impl*>(const_cast<uint8_t*>(impl_buffer_)); }
 };
 
-using irq_handler_t = void (*)();
+using irq_handler_t = function_base<void>;
 
 class __declspec(novtable) isr_handler {
 public:

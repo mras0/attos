@@ -293,7 +293,7 @@ public:
 
     ~isr_handler_impl() {
         dbgout() << "[isr] Shutting down. Restoring IDT to limit " << as_hex(old_idt_desc_.limit) << " base " << as_hex(old_idt_desc_.base) << "\n";
-        REQUIRE(std::none_of(irq_handlers_.begin(), irq_handlers_.end(), [](irq_handler_t h) { return h != nullptr; }));
+        REQUIRE(std::none_of(irq_handlers_.begin(), irq_handlers_.end(), [](irq_handler_t h) { return !!h; }));
         _disable();
         __lidt(&old_idt_desc_);
     }
@@ -326,7 +326,7 @@ private:
         ~isr_registration_impl() {
             dbgout() << "isr_registration_impl::~isr_registration_impl() irq = " << irq_ << "\n";
             pic_mask_irq(irq_);
-            REQUIRE(parent_.irq_handlers_[irq_] != nullptr);
+            REQUIRE(!!parent_.irq_handlers_[irq_]);
             parent_.irq_handlers_[irq_] = nullptr;
         }
         isr_registration_impl(const isr_registration_impl&) = delete;
@@ -338,7 +338,7 @@ private:
 
     virtual kowned_ptr<isr_registration> do_register_irq_handler(uint8_t irq, irq_handler_t irq_handler) override {
         dbgout() << "[isr] Unmasking IRQ " << irq << "\n";
-        REQUIRE(irq_handlers_[irq] == nullptr);
+        REQUIRE(!irq_handlers_[irq]);
         irq_handlers_[irq] = irq_handler;
         pic_unmask_irq(irq);
         return kowned_ptr<isr_registration>{knew<isr_registration_impl>(*this, irq).release()};
