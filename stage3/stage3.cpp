@@ -117,7 +117,6 @@ void stage3_entry(const arguments& args)
 
     // Initialize GDT
     auto cpu = cpu_init();
-    const physical_address orig_cr3{__readcr3()};
 
     // Construct initial memory manager
     auto mm = construct_mm(args.smap_entries(), args.image_base());
@@ -125,6 +124,6 @@ void stage3_entry(const arguments& args)
     // Initialize interrupt handlers
     auto ih = isr_init();
 
-    dbgout() << "Press any key to exit.\n";
+    dbgout() << "Main about done! Press any key to exit.\n";
     read_key();
 }

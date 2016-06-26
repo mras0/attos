@@ -167,13 +167,13 @@ void pic_remap(uint8_t pic1_offset, uint8_t pic2_offset)
     io_wait();
     __outbyte(pic2_command, pic_icw1_init|pic_icw1_icw4);
     io_wait();
-    __outbyte(pic1_data, pic1_offset);             // ICW2: Master PIC vector offset
+    __outbyte(pic1_data, pic1_offset);  // ICW2: Master PIC vector offset
     io_wait();
-    __outbyte(pic2_data, pic2_offset+8);           // ICW2: Slave PIC vector offset
+    __outbyte(pic2_data, pic2_offset);  // ICW2: Slave PIC vector offset
     io_wait();
-    __outbyte(pic1_data, 4);                       // ICW3: tell Master PIC that there is a slave PIC at IRQ2 (0000 0100)
+    __outbyte(pic1_data, 4);            // ICW3: tell Master PIC that there is a slave PIC at IRQ2 (0000 0100)
     io_wait();
-    __outbyte(pic2_data, 2);                       // ICW3: tell Slave PIC its cascade identity (0000 0010)
+    __outbyte(pic2_data, 2);            // ICW3: tell Slave PIC its cascade identity (0000 0010)
     io_wait();
     __outbyte(pic1_data, pic_icw4_8086);
     io_wait();
@@ -183,7 +183,23 @@ void pic_remap(uint8_t pic1_offset, uint8_t pic2_offset)
     pic_irq_mask(pic_irq_mask_all);
 }
 
-extern uint8_t read_key();
+class pic8259 {
+public:
+    explicit pic8259() : old_pic_mask_(pic_irq_mask()) {
+        pic_remap(0x30, 0x38);
+    }
+
+    ~pic8259() {
+        pic_remap(0x08, 0x70); // Defaults
+        pic_irq_mask(old_pic_mask_);
+    }
+
+    pic8259(const pic8259&) = delete;
+    pic8259& operator=(const pic8259&) = delete;
+
+private:
+    uint16_t  old_pic_mask_;
+};
 
 void interrupt_service_routine(registers& r)
 {
@@ -208,11 +224,6 @@ eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
     PREG2(rip, rflags);
 #undef PREG2
 #undef PREG
-    if (static_cast<uint8_t>(r.interrupt_no) == 0x80) {
-        const auto key = read_key();
-        dbgout() << "key = 0x" << as_hex(key) << "\n";
-        return;
-    }
     REQUIRE(false);
 }
 
@@ -230,7 +241,7 @@ void set_idt_entry(interrupt_gate& idt, void* code)
 
 class isr_handler_impl : public isr_handler {
 public:
-    isr_handler_impl() : old_pic_mask_(pic_irq_mask()) {
+    isr_handler_impl() {
         __sidt(&old_idt_desc_);
         dbgout() << "[isr] Loading interrupt descriptor table.\n";
         for (int i = 0; i < idt_count; ++i) {
@@ -246,14 +257,7 @@ public:
         }
         idt_desc_.limit = sizeof(idt_)-1;
         idt_desc_.base  = virtual_address::in_current_address_space(&idt_);
-        auto iv = &isr_code_[0x80*isr_code_size];
-        dbgout() << "Interrupt vector 0x80: " << as_hex(virtual_address::in_current_address_space(iv)) << "\n";
-        for (int i = 0; i < isr_code_size; ++i) {
-            dbgout() << as_hex(iv[i]) << " ";
-        }
         __lidt(&idt_desc_);
-        sw_int<0x80>();
-        pic_remap(0x30, 0x38);
         _enable();
     }
 
@@ -264,18 +268,15 @@ public:
         dbgout() << "[isr] Shutting down. Restoring IDT to limit " << as_hex(old_idt_desc_.limit) << " base " << as_hex(old_idt_desc_.base) << "\n";
         _disable();
         __lidt(&old_idt_desc_);
-        bochs_magic();
-        pic_remap(0x08, 0x70);
-        pic_irq_mask(old_pic_mask_);
     }
 
 private:
     static constexpr int idt_count     = 256;
     static constexpr int isr_code_size = 9;
 
+    pic8259        pic_;
     interrupt_gate idt_[idt_count];
     idt_descriptor old_idt_desc_;
-    uint16_t       old_pic_mask_;
     idt_descriptor idt_desc_;
     uint8_t isr_code_[isr_code_size * idt_count];
 };
