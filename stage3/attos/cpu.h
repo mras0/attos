@@ -40,6 +40,42 @@ public:
 
 owned_ptr<cpu_manager, destruct_deleter> cpu_init();
 
+enum rflag_bits {
+    rflag_bit_cf   = 0,  // carry
+    rflag_bit_res1 = 1,  // reserved (always 1)
+    rflag_bit_pf   = 2,  // parity
+                         // reserved
+    rflag_bit_af   = 4,  // adjust
+                         // reserved
+    rflag_bit_zx   = 6,  // zero
+    rflag_bit_sf   = 7,  // sign
+    rflag_bit_tf   = 8,  // trap
+    rflag_bit_if   = 9,  // interrupt
+    rflag_bit_df   = 10, // direction
+    rflag_bit_of   = 11, // overflow
+    rflag_bit_iopl = 12, // iopl
+                         // iopl
+    rflag_bit_nt   = 14, // nested task
+};
+
+constexpr auto rflag_mask_if = 1ULL << rflag_bit_if;
+
+class interrupt_disabler {
+public:
+    interrupt_disabler() : were_interrupts_enabled_((__readeflags() & rflag_mask_if) != 0) {
+        _disable();
+    }
+    ~interrupt_disabler() {
+        if (were_interrupts_enabled_) {
+            _enable();
+        }
+    }
+    interrupt_disabler(const interrupt_disabler&) = delete;
+    interrupt_disabler& operator=(const interrupt_disabler&) = delete;
+private:
+    bool were_interrupts_enabled_;
+};
+
 }  // namespace attos
 
 #endif

@@ -87,6 +87,41 @@ constexpr uint8_t scan_code_set_1[scan_code_set_1_size] = {
     /* 0x58 */ 'Z', // f12
 };
 
+template<typename T, size_t Size>
+class fixed_size_queue {
+public:
+    fixed_size_queue() {
+        static_assert((Size & (Size-1)) == 0, "");
+        static_assert(std::is_trivially_copyable_v<T>, "");
+    }
+
+    bool empty() const {
+        return size() == 0;
+    }
+
+    bool full() const {
+        return size() == Size;
+    }
+
+    size_t size() const {
+        return write_pos_ - read_pos_;
+    }
+
+    void push(T elem) {
+        elems_[(write_pos_++) & (Size - 1)] = elem;
+    }
+
+    T pop() {
+        return elems_[(read_pos_++) & (Size - 1)];
+    }
+
+private:
+    T elems_[Size];
+    uint32_t read_pos_  = 0;
+    uint32_t write_pos_ = 0;
+};
+
+
 class controller : public singleton<controller> {
 public:
     explicit controller(isr_handler& isrh) {
@@ -97,11 +132,17 @@ public:
         reg_.reset();
     }
 
+    bool key_available() const {
+        interrupt_disabler id{};
+        return !buffer_.empty();
+    }
+
     uint8_t get_scan_key() {
-        while (!(status() & status_mask_output_full)) { // wait key
+        while (!key_available()) {
             __halt();
         }
-        return data();
+        interrupt_disabler id{};
+        return buffer_.pop();
     }
 
     uint8_t read_key() {
@@ -135,11 +176,17 @@ public:
     }
 
 private:
-    isr_registration_ptr reg_;
     static constexpr uint8_t irq = 1;
+    isr_registration_ptr reg_;
+    fixed_size_queue<uint8_t, 32> buffer_;
 
     void isr() {
-        dbgout() << "[ps2] IRQ!\n";
+        REQUIRE(status() & status_mask_output_full);
+        if (!buffer_.full()) {
+            buffer_.push(data());
+        } else {
+            dbgout() << "[ps2] Keyboard buffer is full!!\n";
+        }
     }
 };
 
@@ -293,7 +340,7 @@ void stage3_entry(const arguments& args)
 
     dbgout() << "Main about done! Press any key to exit.\n";
     for (int i = 0; i < 10; ++i) {
-        auto k = read_key();
+        auto k = ps2c.read_key();
         dbgout() << "Key 0x" << as_hex(k) << " - " << (int)k << " " << (char)k << "\n";
     }
 }
