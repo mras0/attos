@@ -21,7 +21,7 @@ void sw_int() {
     ((void (*)(void))(void*)code)();
 }
 
-void fatal_error(const char* file, int line, const char* detail);
+__declspec(noreturn) void fatal_error(const char* file, int line, const char* detail);
 
 template<typename T>
 constexpr auto round_up(T val, T align)
