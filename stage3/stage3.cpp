@@ -112,13 +112,26 @@ private:
     physical_address smap_entries_;
 };
 
-std::atomic<uint64_t> pit_ticks_{0};
 
-void pit_isr()
-{
-    ++pit_ticks_;
-    ++*static_cast<uint8_t*>(physical_address{0xb8000});
-}
+class interrupt_timer {
+public:
+    explicit interrupt_timer(isr_handler& isrh) {
+        reg_ = isrh.register_irq_handler(irq, [this]() { isr(); });
+    }
+    ~interrupt_timer() {
+        reg_.reset();
+    }
+private:
+    isr_registration_ptr reg_;
+
+    static constexpr uint8_t irq = 0;
+    void isr() {
+        ++pit_ticks_;
+        ++*static_cast<uint8_t*>(physical_address{0xb8000});
+    }
+
+    std::atomic<uint64_t> pit_ticks_{0};
+};
 
 void stage3_entry(const arguments& args)
 {
@@ -140,12 +153,9 @@ void stage3_entry(const arguments& args)
 
     ata::test();
 
+    interrupt_timer it{*ih}; // IRQ0 PIT
     //IRQ1 = 0x31, // Keyboard
     //IRQE = 0x3E, // Primary ATA
-    auto pit_irq_reg = ih->register_irq_handler(0, &pit_isr); // PIT
-//    for (uint8_t i = 1; i < 16; ++i) {
-//        if (i != 2) unmask_irq(i);
-//    }
 
     dbgout() << "Main about done! Press any key to exit.\n";
     read_key();

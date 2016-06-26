@@ -336,12 +336,12 @@ private:
         uint8_t           irq_;
     };
 
-    virtual kowned_ptr<isr_registration> do_register_irq_handler(uint8_t irq, irq_handler_t irq_handler) override {
+    virtual isr_registration_ptr do_register_irq_handler(uint8_t irq, irq_handler_t irq_handler) override {
         dbgout() << "[isr] Unmasking IRQ " << irq << "\n";
         REQUIRE(!irq_handlers_[irq]);
         irq_handlers_[irq] = irq_handler;
         pic_unmask_irq(irq);
-        return kowned_ptr<isr_registration>{knew<isr_registration_impl>(*this, irq).release()};
+        return isr_registration_ptr{knew<isr_registration_impl>(*this, irq).release()};
     }
 };
 

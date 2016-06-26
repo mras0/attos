@@ -125,7 +125,7 @@ public:
     owned_ptr(owned_ptr&& other) : ptr_(other.release()) {
     }
     ~owned_ptr() {
-        if (ptr_) Deleter()(ptr_);
+        reset();
     }
     owned_ptr& operator=(owned_ptr&& rhs) {
         std::swap(ptr_, rhs.ptr_);
@@ -148,6 +148,11 @@ public:
 
     T* get() const {
         return ptr_;
+    }
+
+    void reset() {
+        if (ptr_) Deleter()(ptr_);
+        ptr_ = nullptr;
     }
 
     T* release() {

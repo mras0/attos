@@ -9,11 +9,13 @@ class __declspec(novtable) isr_registration {
 public:
     virtual ~isr_registration() {}
 };
+using isr_registration_ptr = kowned_ptr<isr_registration>;
 
 template<typename R, typename... Args>
 class function_base {
 public:
-    function_base(nullptr_t = nullptr) : impl_buffer_() {
+    function_base(nullptr_t = nullptr) {
+        reset();
     }
 
     template<typename F>
@@ -21,9 +23,18 @@ public:
         new (&impl_buffer_[0]) fimpl<F>(f);
     }
 
-    // TOOD:...
-    function_base(const function_base& f) = default;
-    function_base& operator=(const function_base& f) = default;
+    function_base(const function_base& other) {
+        *this = other;
+    }
+
+    function_base& operator=(const function_base& rhs) {
+        reset();
+        if (rhs) {
+            rhs.f().construct(&impl_buffer_[0]);
+        }
+        return *this;
+    }
+
     ~function_base() = default;
 
     explicit operator bool() const {
@@ -37,28 +48,36 @@ public:
 private:
     struct __declspec(novtable) impl {
         virtual R invoke(Args&&... args) const = 0;
+        virtual void construct(void* dest) const = 0;
     };
 
     template<typename F>
-    struct fimpl;
+    struct fimpl : impl {
+    public:
+        explicit fimpl(const F& f) : f_(f) {
+            static_assert(sizeof(fimpl) <= impl_max_size, "Too large");
+            static_assert(std::is_trivially_destructible_v<fimpl>, "Implementation is too lazy");
+        }
 
-    template<>
-    struct fimpl<R (*)(Args...)> : impl {
-        using Fptr = R (*)(Args...);
-        explicit fimpl(Fptr fptr) : fptr_(fptr) {
+        virtual void construct(void* dest) const override {
+            new (dest) fimpl(f_);
         }
 
         virtual R invoke(Args&&... args) const override {
-            return fptr_(static_cast<Args&&>(args)...);
+            return f_(static_cast<Args&&>(args)...);
         }
+
     private:
-        Fptr fptr_;
+        F f_;
     };
 
     static constexpr size_t impl_max_size = 16;
     alignas(16) uint8_t impl_buffer_[impl_max_size];
 
     impl& f() const { return *reinterpret_cast<impl*>(const_cast<uint8_t*>(impl_buffer_)); }
+    void reset() {
+        memset(impl_buffer_, 0, sizeof(impl_max_size));
+    }
 };
 
 using irq_handler_t = function_base<void>;
@@ -66,12 +85,12 @@ using irq_handler_t = function_base<void>;
 class __declspec(novtable) isr_handler {
 public:
     virtual ~isr_handler() {}
-    kowned_ptr<isr_registration> register_irq_handler(uint8_t irq, irq_handler_t irq_handler) {
+    isr_registration_ptr register_irq_handler(uint8_t irq, irq_handler_t irq_handler) {
         return do_register_irq_handler(irq, irq_handler);
     }
 
 private:
-    virtual kowned_ptr<isr_registration> do_register_irq_handler(uint8_t irq, irq_handler_t irq_handler) = 0;
+    virtual isr_registration_ptr do_register_irq_handler(uint8_t irq, irq_handler_t irq_handler) = 0;
 };
 
 owned_ptr<isr_handler, destruct_deleter> isr_init();
