@@ -17,17 +17,60 @@
 
 namespace attos {
 
-uint8_t read_key() {
-    static constexpr uint8_t ps2_data_port    = 0x60;
-    static constexpr uint8_t ps2_status_port  = 0x64; // when reading
-    static constexpr uint8_t ps2_command_port = 0x64; // when writing
-    static constexpr uint8_t ps2s_output_full = 0x01;
-    static constexpr uint8_t ps2s_input_fill  = 0x02;
+namespace ps2 {
+constexpr uint8_t data_port    = 0x60;
+constexpr uint8_t status_port  = 0x64; // when reading
+constexpr uint8_t command_port = 0x64; // when writing
 
-    while (!(__inbyte(ps2_status_port) & ps2s_output_full)) { // wait key
+constexpr uint8_t status_mask_output_full = 0x01;
+constexpr uint8_t status_mask_input_fill  = 0x02;
+
+uint8_t data() {
+    return __inbyte(ps2::data_port);
+}
+
+uint8_t status() {
+    return __inbyte(ps2::status_port);
+}
+
+class controller : public singleton<controller> {
+public:
+    explicit controller(isr_handler& isrh) {
+        reg_ = isrh.register_irq_handler(irq, [this]() { isr(); });
+    }
+
+    ~controller() {
+        reg_.reset();
+    }
+
+    uint8_t read_key() {
+        dbgout() << "ps2::controller::read_key()!\n";
+        while (!(status() & status_mask_output_full)) { // wait key
+            __halt();
+        }
+        return data();  // read key
+    }
+
+private:
+    isr_registration_ptr reg_;
+    static constexpr uint8_t irq = 1;
+
+    void isr() {
+        dbgout() << "[ps2] IRQ!\n";
+    }
+};
+
+} // namespace ps2
+
+uint8_t read_key() {
+    if (ps2::controller::has_instance()) {
+        return ps2::controller::instance().read_key();
+    }
+
+    while (!(ps2::status() & ps2::status_mask_output_full)) { // wait key
         __nop();
     }
-    return __inbyte(ps2_data_port);  // read key
+    return ps2::data();  // read key
 }
 
 enum class smap_type : uint32_t {
@@ -113,15 +156,18 @@ private:
 };
 
 
-class interrupt_timer {
+class interrupt_timer : public singleton<interrupt_timer> {
 public:
     explicit interrupt_timer(isr_handler& isrh) {
         reg_ = isrh.register_irq_handler(irq, [this]() { isr(); });
     }
     ~interrupt_timer() {
         reg_.reset();
+        dbgout() << "[pit] " << pit_ticks_ << " ticks elapsed\n";
     }
+
 private:
+    std::atomic<uint64_t> pit_ticks_{0};
     isr_registration_ptr reg_;
 
     static constexpr uint8_t irq = 0;
@@ -129,8 +175,6 @@ private:
         ++pit_ticks_;
         ++*static_cast<uint8_t*>(physical_address{0xb8000});
     }
-
-    std::atomic<uint64_t> pit_ticks_{0};
 };
 
 void stage3_entry(const arguments& args)
@@ -148,14 +192,16 @@ void stage3_entry(const arguments& args)
     // Initialize interrupt handlers
     auto ih = isr_init();
 
+    interrupt_timer timer{*ih}; // IRQ0 PIT
+
+    // PS2 controller
+    ps2::controller ps2c{*ih};
+
     // PCI
     auto pci = pci::init();
 
+    // ATA
     ata::test();
-
-    interrupt_timer it{*ih}; // IRQ0 PIT
-    //IRQ1 = 0x31, // Keyboard
-    //IRQE = 0x3E, // Primary ATA
 
     dbgout() << "Main about done! Press any key to exit.\n";
     read_key();
