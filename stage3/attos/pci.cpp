@@ -1,6 +1,9 @@
 #include "pci.h"
 #include <attos/out_stream.h>
 #include <attos/cpu.h>
+#include <attos/mm.h>
+
+namespace attos { extern uint8_t read_key(); }
 
 namespace attos { namespace pci {
 
@@ -178,51 +181,23 @@ config_area read_config_area(device_address dev)
     return u.ca;
 }
 
-void probe_bus(uint8_t bus);
-
-void probe(device_address dev_addr)
-{
-    const auto cfgdw = read_config_dword(dev_addr, 0);
-    if ((cfgdw&0xffff) == 0xffff) {
-        return;
-    }
-    auto ca = read_config_area(dev_addr);
-    const auto header_type = ca.header_type & header_type_device_mask;
-    if (header_type == 0) {
-        // 0x00 = Normal devices
-        const char* vendor_text = "Unknown vendor";
-        const char* device_text = "Unknown device";
-        if (auto vi = get_vendor_info(ca.vendor)) {
-            vendor_text = vi->text;
-        }
-        if (auto di = get_device_info(ca)) {
-            device_text = di->text;
-        }
-        dbgout() << dev_addr << " " << as_hex(ca.device_class) << ": " << as_hex(ca.vendor) << ":" << as_hex(ca.device_id) << " " << vendor_text << " " << device_text << "\n";
-    } else if (header_type == 1) {
-        // 0x01 = PCI-to-PCI bridge
-        REQUIRE(dev_addr.bus() == ca.header1.primary_bus);
-        probe_bus(ca.header1.secondary_bus);
-    } else {
-        // 0x02 = CardBus bridge
-        dbgout() << dev_addr << " Unknown header type " << as_hex(ca.header_type) << "\n";
-        REQUIRE(false);
+class device {
+public:
+    explicit device(device_address address) : address_(address), config_(read_config_area(address)) {
     }
 
-    if (dev_addr.func() == 0 && (ca.header_type & header_type_multi_function_mask)) {
-        for (uint8_t func = 1; func < 8; ++func) {
-            probe(device_address{dev_addr.bus(), dev_addr.slot(), func});
-        }
-    }
-}
+    device(const device&) = delete;
+    device& operator==(const device&) = delete;
 
-void probe_bus(uint8_t bus)
-{
-    for (int slot = 0; slot < 32; ++slot) {
-        const auto dev_addr = device_address{static_cast<uint8_t>(bus), static_cast<uint8_t>(slot), 0};
-        probe(dev_addr);
-    }
-}
+    device_address address() const { return address_; }
+    config_area    config() const  { return config_; }
+
+private:
+    device_address                   address_;
+    config_area                      config_;
+};
+using device_ptr = owned_ptr<device, kfree_deleter>;
+
 
 class manager_impl : public manager {
 public:
@@ -234,6 +209,51 @@ public:
         dbgout() << "[pci] Shutting down.\n";
     }
 private:
+    kvector<device_ptr> devices_;
+
+    void probe(device_address dev_addr) {
+        const auto cfgdw = read_config_dword(dev_addr, 0);
+        if ((cfgdw&0xffff) == 0xffff) {
+            return;
+        }
+        devices_.push_back(knew<device>(dev_addr));
+        const auto& ca = devices_.back()->config();
+        const auto header_type = ca.header_type & header_type_device_mask;
+        if (header_type == 0) {
+            // 0x00 = Normal devices
+            const char* vendor_text = "Unknown vendor";
+            const char* device_text = "Unknown device";
+            if (auto vi = get_vendor_info(ca.vendor)) {
+                vendor_text = vi->text;
+            }
+            if (auto di = get_device_info(ca)) {
+                device_text = di->text;
+            }
+            dbgout() << dev_addr << " " << as_hex(ca.device_class) << ": " << as_hex(ca.vendor) << ":" << as_hex(ca.device_id) << " " << vendor_text << " " << device_text << "\n";
+        } else if (header_type == 1) {
+            // 0x01 = PCI-to-PCI bridge
+            REQUIRE(dev_addr.bus() == ca.header1.primary_bus);
+            probe_bus(ca.header1.secondary_bus);
+        } else {
+            // 0x02 = CardBus bridge
+            dbgout() << dev_addr << " Unknown header type " << as_hex(ca.header_type) << "\n";
+            REQUIRE(false);
+        }
+
+        if (dev_addr.func() == 0 && (ca.header_type & header_type_multi_function_mask)) {
+            for (uint8_t func = 1; func < 8; ++func) {
+                probe(device_address{dev_addr.bus(), dev_addr.slot(), func});
+            }
+        }
+    }
+
+    void probe_bus(uint8_t bus) {
+        for (int slot = 0; slot < 32; ++slot) {
+            const auto dev_addr = device_address{static_cast<uint8_t>(bus), static_cast<uint8_t>(slot), 0};
+            probe(dev_addr);
+        }
+    }
+
 };
 
 object_buffer<manager_impl> manager_buffer;
