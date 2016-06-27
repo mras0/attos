@@ -69,7 +69,7 @@ PS2CO_A20_GATE     equ 0x02
     test al, %2
     %1 %%done
     dec cx
-    %1 %%poll
+    jnz %%poll
 %defstr %%mask %2
     print_lit 'ps2_wait failed for ', %%mask, 13, 10
     jmp exit

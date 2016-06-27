@@ -63,7 +63,7 @@ smap_init:
     jb .illegal
 
     ; Advance buffer pointer
-    add di, cx
+    add di, SMAP_ENTRY_MIN_SIZE
     jmp .next
 
 .illegal:

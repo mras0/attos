@@ -122,7 +122,6 @@ test_longmode:
     add esi, [esi+IMAGE_DOS_HEADER.e_lfanew]
     ; esi = IMAGE_NT_HEADERS*
 
-    ; copy stage3 to its place
     ; determine size by finding the section with the largest physical extend
     movzx edi, word [esi+IMAGE_NT_HEADERS.FileHeader+IMAGE_FILE_HEADER.SizeOfOptionalHeader]
     lea edi, [edi+esi+IMAGE_NT_HEADERS.OptionalHeader]
