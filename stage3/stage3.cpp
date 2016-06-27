@@ -115,6 +115,34 @@ public:
         return elems_[(read_pos_++) & (Size - 1)];
     }
 
+    class iterator {
+    public:
+        bool operator==(const iterator& rhs) const { return pos_ == rhs.pos_; }
+        bool operator!=(const iterator& rhs) const { return !(*this == rhs); }
+
+        iterator& operator++() {
+            ++pos_;
+            return *this;
+        }
+
+        auto* operator->() {
+            return &*this;
+        }
+
+        auto& operator*() {
+            return parent_->elems_[pos_ & (Size - 1)];
+        }
+
+    private:
+        iterator(const fixed_size_queue& parent, uint32_t pos) : parent_(&parent), pos_(pos) {}
+        friend fixed_size_queue;
+        const fixed_size_queue* parent_;
+        uint32_t pos_;
+    };
+
+    iterator begin() const { return iterator{*this, read_pos_}; }
+    iterator end() const { return iterator{*this, write_pos_}; }
+
 private:
     T elems_[Size];
     uint32_t read_pos_  = 0;
@@ -134,15 +162,8 @@ public:
 
     bool key_available() const {
         interrupt_disabler id{};
-        return !buffer_.empty();
-    }
-
-    uint8_t get_scan_key() {
-        while (!key_available()) {
-            __halt();
-        }
-        interrupt_disabler id{};
-        return buffer_.pop();
+        // Peek to see if there any key releases
+        return std::any_of(buffer_.begin(), buffer_.end(), [](uint8_t c) { return c > 0x80 && c < 0xE0; });
     }
 
     uint8_t read_key() {
@@ -177,8 +198,23 @@ public:
 
 private:
     static constexpr uint8_t irq = 1;
+
     isr_registration_ptr reg_;
     fixed_size_queue<uint8_t, 32> buffer_;
+
+    bool buffer_empty() {
+        interrupt_disabler id{};
+        return buffer_.empty();
+    }
+
+    uint8_t get_scan_key() {
+        while (buffer_empty()) {
+            __halt();
+        }
+        interrupt_disabler id{};
+        return buffer_.pop();
+    }
+
 
     void isr() {
         REQUIRE(status() & status_mask_output_full);
@@ -202,7 +238,7 @@ uint8_t read_key() {
             _mm_pause();
         }
         const uint8_t scan_code = ps2::data();  // read key
-        if (scan_code >= 0x80 && scan_code <= 0xE0) { // crude wait for release of 'normal' key
+        if (scan_code > 0x80 && scan_code < 0xE0) { // crude wait for release of 'normal' key
             return scan_code;
         }
     }
@@ -312,6 +348,68 @@ private:
     }
 };
 
+template<typename T>
+struct push_back_stream_adapter : public out_stream {
+    explicit push_back_stream_adapter(T& c) : c_(c) {
+    }
+
+    virtual void write(const void* data, size_t size) override {
+        auto src = reinterpret_cast<const uint8_t*>(data);
+        while (size--) {
+            c_.push_back(*src++);
+        }
+    }
+
+private:
+    T& c_;
+};
+
+/*
+kvector<char> read_line()
+{
+}
+*/
+
+bool string_equal(const char* a, const char* b) {
+    while (*a && *b) {
+        if (*a != *b) return false;
+        ++a;
+        ++b;
+    }
+    return *a == *b;
+}
+
+void interactive_mode(ps2::controller& ps2c)
+{
+    dbgout() << "Interactive mode. Use escape to quit.\n";
+
+    kvector<char> cmd;
+    push_back_stream_adapter<kvector<char>> cmd_stream(cmd);
+    for (;;) {
+        if (ps2c.key_available()) {
+            auto k = ps2c.read_key();
+            if (k == '\x1b') {
+                dbgout() << "\nEscape pressed\n";
+                return;
+            } else if (k == '\n') {
+                if (!cmd.empty()) {
+                    cmd.push_back('\0');
+                    if (string_equal(cmd.begin(), "EXIT")) {
+                        dbgout() << "\nExit\n";
+                        return;
+                    }
+                    dbgout() << "\nCOMMAND ENTERED!: '" << cmd.begin() << "'\n";
+                    cmd.clear();
+                }
+            } else {
+                cmd_stream << (char)k;
+                dbgout() << (char)k;
+            }
+        }
+        _mm_pause();
+    }
+}
+
 void stage3_entry(const arguments& args)
 {
     // First make sure we can output debug information
@@ -338,9 +436,5 @@ void stage3_entry(const arguments& args)
     // ATA
     ata::test();
 
-    dbgout() << "Main about done! Press any key to exit.\n";
-    for (int i = 0; i < 10; ++i) {
-        auto k = ps2c.read_key();
-        dbgout() << "Key 0x" << as_hex(k) << " - " << (int)k << " " << (char)k << "\n";
-    }
+    interactive_mode(ps2c);
 }

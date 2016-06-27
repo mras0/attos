@@ -101,6 +101,12 @@ public:
     T& front() const { return *begin_; }
     T& back() const { return *(end_-1); }
 
+    void push_back(const T& elem) {
+        ensure_room(size() + 1);
+        new (end_) T(elem);
+        ++end_;
+    }
+
     void push_back(T&& elem) {
         //dbgout () << "push_back begin{ " << as_hex((uint64_t)begin_) << ", " << as_hex((uint64_t)end_) << ", " << as_hex((uint64_t)real_end_) << "}\n";
         ensure_room(size() + 1);
