@@ -165,6 +165,23 @@ IMAGE_SCN_MEM_WRITE                 equ 0x80000000 ; The section can be written 
 %define UWOP_REG_R14   14
 %define UWOP_REG_R15   15
 
+%define UWOP_REG_rax    0
+%define UWOP_REG_rcx    1
+%define UWOP_REG_rdx    2
+%define UWOP_REG_rbx    3
+%define UWOP_REG_rsp    4
+%define UWOP_REG_rbp    5
+%define UWOP_REG_rsi    6
+%define UWOP_REG_rdi    7
+%define UWOP_REG_r8     8
+%define UWOP_REG_r9     9
+%define UWOP_REG_r10   10
+%define UWOP_REG_r11   11
+%define UWOP_REG_r12   12
+%define UWOP_REG_r13   13
+%define UWOP_REG_r14   14
+%define UWOP_REG_r15   15
+
 ; Inspired by https://gist.github.com/rygorous/f729919ff64526a46e591d8f8b52058e
 
 %macro win64_proc 1
@@ -192,47 +209,68 @@ IMAGE_SCN_MEM_WRITE                 equ 0x80000000 ; The section can be written 
     %endif
 %endmacro
 
+%macro win64_prologue_save_reg 2
+%%here:
+    %if %1 >= 0x10000/8
+        %error %1 is out of range
+    %endif
+    mov [rsp+%1], %2
+    %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_SAVE_NONVOL | (UWOP_REG_%+%2 << 4), (%1 >> 3) & 0xff, (%1 >> 11), win64_unwind_codes
+%endmacro
+
 %macro win64_prologue_end 0
 %%here:
     %define win64_proc_prologue_end %%here
 %endmacro
 
-%macro win64_pop_nonvol 1
+%macro _win64_set_reg 1
     %if %1 == UWOP_REG_RAX
-        pop rax
+        %xdefine _win64_reg rax
     %elif %1 == UWOP_REG_RCX
-        pop rcx
+        %xdefine _win64_reg rcx
     %elif %1 == UWOP_REG_RDX
-        pop rdx
+        %xdefine _win64_reg rdx
     %elif %1 == UWOP_REG_RBX
-        pop rbx
+        %xdefine _win64_reg rbx
     %elif %1 == UWOP_REG_RSP
-        pop rsp
+        %xdefine _win64_reg rsp
     %elif %1 == UWOP_REG_RBP
-        pop rbp
+        %xdefine _win64_reg rbp
     %elif %1 == UWOP_REG_RSI
-        pop rsi
+        %xdefine _win64_reg rsi
     %elif %1 == UWOP_REG_RDI
-        pop rdi
+        %xdefine _win64_reg rdi
     %elif %1 == UWOP_REG_R8
-        pop r8
+        %xdefine _win64_reg r8
     %elif %1 == UWOP_REG_R9
-        pop r9
+        %xdefine _win64_reg r9
     %elif %1 == UWOP_REG_R10
-        pop r10
+        %xdefine _win64_reg r10
     %elif %1 == UWOP_REG_R11
-        pop r11
+        %xdefine _win64_reg r11
     %elif %1 == UWOP_REG_R12
-        pop r12
+        %xdefine _win64_reg r12
     %elif %1 == UWOP_REG_R13
-        pop r13
+        %xdefine _win64_reg r13
     %elif %1 == UWOP_REG_R14
-        pop r14
+        %xdefine _win64_reg r14
     %elif %1 == UWOP_REG_R15
-        pop r15
+        %xdefine _win64_reg r15
     %else
         %error %1 is invalid
     %endif
+%endmacro
+
+%macro _win64_pop_nonvol 1
+    _win64_set_reg %1
+    pop _win64_reg
+    %undef _win64_reg
+%endmacro
+
+%macro _win64_restore_nonvol 2
+    _win64_set_reg %1
+    mov _win64_reg, [rsp + %2]
+    %undef _win64_reg
 %endmacro
 
 %macro win64_restore 2-*
@@ -243,18 +281,22 @@ IMAGE_SCN_MEM_WRITE                 equ 0x80000000 ; The section can be written 
     %rep 100
         %rotate 1
         %if ((%1)&15) == UWOP_PUSH_NONVOL
-            win64_pop_nonvol (%1>>4)
+            _win64_pop_nonvol (%1>>4)
         %elif ((%1)&15) == UWOP_ALLOC_SMALL
             add rsp, ((%1 >> 4) + 1) * 8
         %elif ((%1)&15) == UWOP_ALLOC_LARGE
             %if (%1)>>4 != 0
                 %error really large stack alloc
             %endif
-            %assign cnt cnt+2
             add rsp, (%2 + (%3 * 256)) * 8
+            %assign cnt cnt+2
+            %rotate 2
+        %elif ((%1)&15) == UWOP_SAVE_NONVOL
+            _win64_restore_nonvol (%1)>>4, (%2 + (%3 * 256)) * 8
+            %assign cnt cnt+2
             %rotate 2
         %else
-            %error "Unimplmented OP"
+            %error Unimplmented OP: %1
         %endif
         %rotate 1
         %assign cnt cnt+2

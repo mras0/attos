@@ -115,7 +115,7 @@ void print_stack()
 }
 extern "C" void test_fun(void);
 
-constexpr uint32_t my_exception_code = 0xFEDE0ABE;
+constexpr uint32_t my_exception_code = 0x0000'FEDE; // WinDBG doesn't like exceptions that use the upper 16-bits of the exception code TODO: why?
 
 extern "C" void foo(void) {
     print_stack();
