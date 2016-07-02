@@ -2,8 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <intrin.h>
+#include <algorithm>
 
-#define CHECK(expr) do { if (!(expr)) { fprintf(stderr, #expr " failed\n"); exit(-1); } } while (0)
+#define REQUIRE(expr) do { if (!(expr)) { fprintf(stderr, "%s:%d: %s failed\n", __FILE__, __LINE__, #expr); exit(-1); } } while (0)
+
+#include "../../stage3/attos/pe.h"
 
 namespace {
 
@@ -31,191 +35,22 @@ void hexdump(const void* ptr, size_t len)
 
 } // unnamed namespace
 
-#pragma pack(push, 1)
+using namespace attos;
+using namespace attos::pe;
 
-struct IMAGE_DOS_HEADER
+void handle_pe(const IMAGE_DOS_HEADER& img)
 {
-     uint16_t e_magic;
-     uint16_t e_cblp;
-     uint16_t e_cp;
-     uint16_t e_crlc;
-     uint16_t e_cparhdr;
-     uint16_t e_minalloc;
-     uint16_t e_maxalloc;
-     uint16_t e_ss;
-     uint16_t e_sp;
-     uint16_t e_csum;
-     uint16_t e_ip;
-     uint16_t e_cs;
-     uint16_t e_lfarlc;
-     uint16_t e_ovno;
-     uint16_t e_res[4];
-     uint16_t e_oemid;
-     uint16_t e_oeminfo;
-     uint16_t e_res2[10];
-     uint32_t e_lfanew;
-};
-constexpr uint16_t IMAGE_DOS_SIGNATURE = 0x5A4D; // MZ
+    auto& ioh = img.nt_headers().OptionalHeader;
+    printf("AddressOfEntryPoint = %x\n", ioh.AddressOfEntryPoint);
+    printf("ImageBase           = %llx\n", ioh.ImageBase);
+    printf("SectionAlignment    = %x\n", ioh.SectionAlignment);
+    printf("FileAlignment       = %x\n", ioh.FileAlignment);
+    printf("NumberOfRvaAndSizes = %u\n", ioh.NumberOfRvaAndSizes);
 
-struct IMAGE_FILE_HEADER {
-    uint16_t Machine;
-    uint16_t NumberOfSections;
-    uint32_t TimeDateStamp;
-    uint32_t PointerToSymbolTable;
-    uint32_t NumberOfSymbols;
-    uint16_t SizeOfOptionalHeader;
-    uint16_t Characteristics;
-};
-constexpr uint16_t IMAGE_FILE_MACHINE_I386 = 0x014c;
-constexpr uint16_t IMAGE_FILE_MACHINE_AMD64 = 0x8664;
-
-struct IMAGE_OPTIONAL_HEADER64 {
-    uint16_t Magic;
-    uint8_t  MajorLinkerVersion;
-    uint8_t  MinorLinkerVersion;
-    uint32_t SizeOfCode;
-    uint32_t SizeOfInitializedData;
-    uint32_t SizeOfUninitializedData;
-    uint32_t AddressOfEntryPoint;
-    uint32_t BaseOfCode;
-    uint64_t ImageBase;
-    uint32_t SectionAlignment;
-    uint32_t FileAlignment;
-    uint16_t MajorOperatingSystemVersion;
-    uint16_t MinorOperatingSystemVersion;
-    uint16_t MajorImageVersion;
-    uint16_t MinorImageVersion;
-    uint16_t MajorSubsystemVersion;
-    uint16_t MinorSubsystemVersion;
-    uint32_t Win32VersionValue;
-    uint32_t SizeOfImage;
-    uint32_t SizeOfHeaders;
-    uint32_t CheckSum;
-    uint16_t Subsystem;
-    uint16_t DllCharacteristics;
-    uint64_t SizeOfStackReserve;
-    uint64_t SizeOfStackCommit;
-    uint64_t SizeOfHeapReserve;
-    uint64_t SizeOfHeapCommit;
-    uint32_t LoaderFlags;
-    uint32_t NumberOfRvaAndSizes;
-    //IMAGE_DATA_DIRECTORY DataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
-};
-constexpr uint16_t IMAGE_NT_OPTIONAL_HDR64_MAGIC = 0x20b;
-
-struct IMAGE_NT_HEADERS {
-    uint32_t                Signature;
-    IMAGE_FILE_HEADER       FileHeader;
-    IMAGE_OPTIONAL_HEADER64 OptionalHeader;
-};
-constexpr uint32_t IMAGE_NT_SIGNATURE = 0x00004550; // PE00
-
-struct IMAGE_SECTION_HEADER {
-    static constexpr uint8_t IMAGE_SIZEOF_SHORT_NAME = 8;
-
-    uint8_t  Name[IMAGE_SIZEOF_SHORT_NAME];
-    union {
-        uint32_t PhysicalAddress;
-        uint32_t VirtualSize;
-    } Misc;
-    uint32_t VirtualAddress;
-    uint32_t SizeOfRawData;
-    uint32_t PointerToRawData;
-    uint32_t PointerToRelocations;
-    uint32_t PointerToLinenumbers;
-    uint16_t NumberOfRelocations;
-    uint16_t NumberOfLinenumbers;
-    uint32_t Characteristics;
-};
-constexpr uint32_t IMAGE_SCN_CNT_CODE               = 0x00000020; // The section contains executable code.
-constexpr uint32_t IMAGE_SCN_CNT_INITIALIZED_DATA   = 0x00000040; // The section contains initialized data.
-constexpr uint32_t IMAGE_SCN_CNT_UNINITIALIZED_DATA = 0x00000080; // The section contains uninitialized data.
-constexpr uint32_t IMAGE_SCN_MEM_EXECUTE            = 0x20000000; // The section can be executed as code.
-constexpr uint32_t IMAGE_SCN_MEM_READ               = 0x40000000; // The section can be read.
-constexpr uint32_t IMAGE_SCN_MEM_WRITE              = 0x80000000; // The section can be written to.
-
-#pragma pack(pop)
-
-template<class T>
-class array_view {
-public:
-    array_view(T* begin, T* end) : begin_(begin), end_(end) {
-    }
-
-    T* begin() const { return begin_; }
-    T* end() const { return end_; }
-
-    T& operator[](size_t index) const {
-        return begin_[index];
-    }
-
-private:
-    T* begin_;
-    T* end_;
-};
-
-class pe_image {
-public:
-    explicit pe_image(const void* base, size_t size)
-        : base_(reinterpret_cast<const uint8_t*>(base))
-        , size_(size) {
-        CHECK(size_ >= sizeof(IMAGE_DOS_HEADER));
-        CHECK(dos_header().e_magic == IMAGE_DOS_SIGNATURE);
-        CHECK(size_ >= dos_header().e_lfanew && size_ >= dos_header().e_lfanew + sizeof(IMAGE_NT_HEADERS));
-        CHECK(nt_headers().Signature == IMAGE_NT_SIGNATURE);
-        CHECK(file_header().Machine == IMAGE_FILE_MACHINE_AMD64);
-        CHECK(optional_header().Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
-    }
-
-    const IMAGE_DOS_HEADER& dos_header() const {
-        return rva_cast<IMAGE_DOS_HEADER>(*base_, 0);
-    }
-
-    const IMAGE_NT_HEADERS& nt_headers() const {
-        return rva_cast<IMAGE_NT_HEADERS>(dos_header(), dos_header().e_lfanew);
-    }
-
-    const IMAGE_FILE_HEADER& file_header() const {
-        return nt_headers().FileHeader;
-    }
-
-    const IMAGE_OPTIONAL_HEADER64& optional_header() const {
-        return nt_headers().OptionalHeader;
-    }
-
-    array_view<const IMAGE_SECTION_HEADER> sections() const {
-        auto begin = &rva_cast<IMAGE_SECTION_HEADER>(optional_header(), file_header().SizeOfOptionalHeader);
-        auto end   = begin + file_header().NumberOfSections;
-        return {begin, end};
-    }
-
-private:
-    template<typename T, typename Y>
-    const T& rva_cast(const Y& from_obj, size_t offset) const {
-        auto p = reinterpret_cast<const uint8_t*>(&from_obj);
-        CHECK((uintptr_t)p >= (uintptr_t)base_);
-        CHECK((uintptr_t)p <= (uintptr_t)base_ + size_);
-        CHECK((uintptr_t)p + offset <= (uintptr_t)base_ + size_);
-        CHECK((uintptr_t)p + offset + sizeof(T) <= (uintptr_t)base_ + size_);
-        return *reinterpret_cast<const T*>(p + offset);
-    }
-
-    const uint8_t* base_;
-    size_t         size_;
-};
-
-void handle_pe(const pe_image& img)
-{
-    auto& ioh = img.optional_header();
-    printf("AddressOfEntryPoint = %X\n", ioh.AddressOfEntryPoint);
-    printf("ImageBase           = %llX\n", ioh.ImageBase);
-    printf("SectionAlignment    = %X\n", ioh.SectionAlignment);
-    printf("FileAlignment       = %X\n", ioh.FileAlignment);
-
-    auto ish = img.sections();
+    auto ish = img.nt_headers().sections();
     for (const auto& s: ish) {
         printf("Section #%d: %8.8s\n", (int)(&s - ish.begin()) + 1, s.Name);
-#define P(name) printf("  %-30.30s 0x%8.8X\n", #name, s . name)
+#define P(name) printf("  %-30.30s 0x%8.8x\n", #name, s . name)
         P(Misc.VirtualSize);
         P(VirtualAddress);
         P(SizeOfRawData);
@@ -240,13 +75,160 @@ void handle_pe(const pe_image& img)
         if (!s.SizeOfRawData) continue;
         uint64_t va  = ioh.ImageBase + s.VirtualAddress;
         uint32_t rel = s.VirtualAddress - s.PointerToRawData;
-        printf("Map %8.8s 0x%08X`%08X to file offset 0x%08X [Relative 0x%X]\n", s.Name, (uint32_t)(va>>32), (uint32_t)va, s.PointerToRawData, rel);
+        printf("Map %8.8s 0x%08x`%08x to file offset 0x%08x [Relative 0x%x]\n", s.Name, (uint32_t)(va>>32), (uint32_t)va, s.PointerToRawData, rel);
+    }
+}
+
+const RUNTIME_FUNCTION* runtime_function_info(array_view<RUNTIME_FUNCTION> rfs, uint32_t function_rva)
+{
+    //printf("Searching for 0x%x\n", function_rva);
+    // TODO: Use the fact that the list is sorted to perform a binary search
+    auto it = std::find_if(rfs.begin(), rfs.end(), [function_rva](const RUNTIME_FUNCTION& rf) { return rf.BeginAddress <= function_rva && function_rva <= rf.EndAddress; });
+    if (it == rfs.end()) return nullptr;
+    return it;
+}
+
+const uint64_t* unwind(const IMAGE_DOS_HEADER& image, uint64_t rip, const uint64_t* rsp)
+{
+    const auto function_rva = static_cast<uint32_t>(reinterpret_cast<const uint8_t*>(rip) - reinterpret_cast<const uint8_t*>(&image));
+    const auto rf = runtime_function_info(image.data_directory<RUNTIME_FUNCTION>(), function_rva);
+    if (rf == nullptr) {
+        printf("\tFunction at RVA %x (RIP = %llx) is a leaf function\n", function_rva, rip);
+        // If no function table entry is found, then it is in a leaf function, and RSP will directly address the return pointer.
+        // The return pointer at [RSP] is stored in the updated context, the simulated RSP is incremented by 8
+        return rsp + 1;
+    }
+    const auto& ui = detail::rva_cast<UNWIND_INFO>(image, rf->UnwindInfoAddress);
+
+    const auto offset_in_function = function_rva - rf->BeginAddress;
+    REQUIRE(ui.Version == UNWIND_INFO_VERSION);
+    // TODO: We don't handle UNWIND_INFO_FLAG_EHANDLER / UNWIND_INFO_FLAG_UHANDLER
+    REQUIRE((ui.Flags & UNWIND_INFO_FLAG_CHAININFO) == 0);
+    REQUIRE(ui.FrameRegister == 0);
+    REQUIRE(ui.FrameOffset == 0);
+
+    if (offset_in_function <= ui.SizeOfProlog) {
+        // We don't handle unwinds inside the prolog
+        REQUIRE(false);
+    }
+    // TODO: detect if we're inside the epilog...
+
+    for (int i = 0; i < ui.CountOfCodes; ++i) {
+        const auto& uc = ui.unwind_codes()[i];
+        switch (uc.UnwindOp) {
+            case UWOP_PUSH_NONVOL:
+                // Push a nonvolatile integer register, decrementing RSP by 8
+                printf("\tpop %s\n", unwind_reg_names[uc.OpInfo]);
+                rsp += 1; // Pop
+                break;
+            case UWOP_ALLOC_LARGE:
+            {
+                REQUIRE(uc.OpInfo == 0); // No support for >512K-8 byte stacks, they use 3 nodes
+                const auto qword_size = *reinterpret_cast<const uint16_t*>(&ui.unwind_codes()[++i]); // Consume unwind code
+                printf("\tadd rsp, 0x%X\n", qword_size * 8);
+                rsp += qword_size;
+                break;
+            }
+            case UWOP_ALLOC_SMALL:
+            {
+                const auto qwords = (uc.OpInfo+1);
+                printf("\tadd rsp, 0x%X\n", qwords*8);
+                rsp += qwords;
+                break;
+            }
+            case UWOP_SET_FPREG:
+                printf("Unhandled: UWOP_SET_FPREG %d\n", uc.OpInfo);
+                REQUIRE(false);
+                break;
+            case UWOP_SAVE_NONVOL:
+            {
+                const auto offset = 8 * *reinterpret_cast<const uint16_t*>(&ui.unwind_codes()[++i]); // Consume unwind code
+                printf("\tmov %s, [rsp+0x%X]\n", unwind_reg_names[uc.OpInfo], offset);
+                break;
+            }
+            case UWOP_SAVE_NONVOL_FAR:
+            case UWOP_SAVE_XMM128:
+            case UWOP_SAVE_XMM128_FAR:
+            case UWOP_PUSH_MACHFRAME:
+                printf("Unhandled unwind OP %d\n", uc.UnwindOp);
+                REQUIRE(false);
+                break;
+        }
+    }
+    return rsp + 1; // Finally 'pop' return address
+}
+
+extern "C" IMAGE_DOS_HEADER __ImageBase;
+extern "C" int GetModuleHandleExA(uint32_t flags, const void* module_name, void** module_handle);
+constexpr uint32_t GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT = 0x00000002;
+constexpr uint32_t GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS       = 0x00000004;
+extern "C" uint32_t GetModuleFileNameA(const void* module, char* filename, uint32_t size);
+
+#define FMT64   "%08x`%08x"
+#define PR64(x) (uint32_t)(((uint64_t)(x)) >> 32), (uint32_t)(((uint64_t)(x)))
+
+const IMAGE_DOS_HEADER& find_image(uint64_t virtual_address)
+{
+    const auto& ioh = __ImageBase.nt_headers().OptionalHeader;
+    if (virtual_address >= ioh.ImageBase && virtual_address < ioh.ImageBase + ioh.SizeOfImage) {
+        return __ImageBase;
+    }
+
+    //printf("Searching for image for " FMT64 "\n", PR64(virtual_address));
+
+    void* module_handle;
+    REQUIRE(GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (void*)virtual_address, &module_handle));
+    const auto& image = *reinterpret_cast<const IMAGE_DOS_HEADER*>(module_handle);
+    REQUIRE(image.e_magic == IMAGE_DOS_SIGNATURE);
+    return image;
+}
+
+// Warning: returns pointer to static buffer
+const char* image_filename(const IMAGE_DOS_HEADER& image)
+{
+    REQUIRE(image.e_magic == IMAGE_DOS_SIGNATURE);
+    static char filename[261];
+    REQUIRE(GetModuleFileNameA((void*)&image, filename, sizeof(filename)) != 0);
+    char* p = filename;
+    // Move to end
+    while (*p) p++;
+    // Erase extension
+    for (; p >= filename && *p != '\\'; --p) {
+        const char old = *p;
+        *p = 0;
+        if (old == '.') break;
+    }
+    // Find start of filename
+    while (p > filename && *(p-1) != '\\') --p;
+    return p;
+}
+
+void print_line(uint64_t rip, const uint64_t* child_rsp, uint64_t return_address)
+{
+    const auto& image = find_image(rip);
+    printf(FMT64 " " FMT64 " %s!+0x%04x\n", PR64(child_rsp), PR64(return_address), image_filename(image), (uint32_t)(rip - (uint64_t)&image));
+}
+
+void walk_stack()
+{
+    uint64_t rip = []{ return reinterpret_cast<uint64_t>(_ReturnAddress()); }();
+    auto child_rsp = reinterpret_cast<const uint64_t*>(_AddressOfReturnAddress());
+
+    printf("Child-SP          RetAddr           Call Site\n");
+    // Handle first tricky entry
+    print_line(rip, child_rsp, *child_rsp);
+    auto rsp = child_rsp;
+    while (*rsp) {
+        rip = *rsp;
+        child_rsp = rsp + 1;
+        rsp = unwind(find_image(rip), rip, rsp);
+        print_line(rip, child_rsp, *rsp);
     }
 }
 
 int main(int argc, const char* argv[])
 {
-    const char* const filename = argc >= 2 ? argv[1] : "../stage3/stage3.exe";
+    const char* const filename = argc >= 2 ? argv[1] : argv[0];
     FILE* fp = fopen(filename, "rb");
     if (!fp) {
         fprintf(stderr, "Error opening '%s'\n", filename);
@@ -258,6 +240,8 @@ int main(int argc, const char* argv[])
     auto buf = malloc(size);
     fread(buf, size, 1, fp);
     fclose(fp);
-    handle_pe(pe_image{buf, size});
+    handle_pe(*reinterpret_cast<const IMAGE_DOS_HEADER*>(buf));
     free(buf);
+
+    walk_stack();
 }
