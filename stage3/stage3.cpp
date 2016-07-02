@@ -382,8 +382,12 @@ bool string_equal(const char* a, const char* b) {
 __declspec(noinline) void test_func()
 {
     __debugbreak();
-    dbgout() << "Trigger interrupt 0x55\n";
-    sw_int<0x55>();
+}
+
+__declspec(noinline) void test_func2()
+{
+    dbgout() << "Trigger interrupt 0x80\n";
+    sw_int<0x80>();
 }
 
 void interactive_mode(ps2::controller& ps2c)
@@ -405,9 +409,14 @@ void interactive_mode(ps2::controller& ps2c)
                         dbgout() << "\nExit\n";
                         return;
                     } else if (string_equal(cmd.begin(), "B")) {
+                        dbgout() << "\nBreak\n";
                         test_func();
+                    } else if (string_equal(cmd.begin(), "T")) {
+                        dbgout() << "\nTest\n";
+                        test_func2();
+                    } else {
+                        dbgout() << "\nCOMMAND IGNORED: '" << cmd.begin() << "'\n";
                     }
-                    dbgout() << "\nCOMMAND ENTERED!: '" << cmd.begin() << "'\n";
                     cmd.clear();
                 }
             } else {

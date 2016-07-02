@@ -22,6 +22,8 @@ struc registers
     .r13             resq 1
     .r14             resq 1
     .r15             resq 1
+    .fx_state        resb 512
+    .reserved        resq 1 ; For alignment
 registers_saved_size: ; only the above are saved by code
     .interrupt_no    resq 1 ; pushed by isr
     .error_code      resq 1 ; pushed by system (or isr)
@@ -70,15 +72,17 @@ isr_common:
     save_reg r14
     save_reg r15
 
+    ; save fx state
+    fxsave [rsp+registers.fx_state]
+
     cld                  ; ensure direction flag is cleared
-    mov  rbp, rsp        ; save stack pointer
-    and  rsp, -16        ; align stack
-    sub  rsp, 512 + 0x20 ; make room for the function to preserve rcx, rdx, r8 and r9 and fx state
-    fxsave [rsp+0x20]    ; save fx state
-    mov  rcx, rbp        ; arg = registers*
+    mov  rcx, rsp        ; arg = registers*
+    sub  rsp,  0x20      ; make room for the function to preserve rcx, rdx, r8 and r9 and fx state
     call interrupt_service_routine
-    fxrstor [rsp+0x20]   ; restore fx state
-    mov  rsp, rbp        ; restore stack pointer
+    add  rsp, 0x20
+
+    ; restore fx state
+    fxrstor [rsp+registers.fx_state]
 
     ; restore registers
     restore_reg rax

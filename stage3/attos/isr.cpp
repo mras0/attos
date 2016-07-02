@@ -103,6 +103,8 @@ struct registers {
     uint64_t r13;
     uint64_t r14;
     uint64_t r15;
+    uint8_t  fx_state[512];
+    uint64_t reserved;
     interrupt_number interrupt_no;
     uint8_t  reservered[7];
     uint64_t error_code;
@@ -375,7 +377,7 @@ void print_stack(const registers& r)
 {
     dbgout() << "Child-SP          RetAddr           Call Site\n";
 
-#if 0
+#if 1
     auto rip = r.rip;
     auto child_rsp = unwind_once(find_image(rip), rip, reinterpret_cast<const uint64_t*>(r.rsp));
 #else
@@ -428,6 +430,11 @@ void interrupt_service_routine(registers& r)
     dbgout() << "eflags " << as_hex(r.rflags).width(8) << "\n"; // eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
 
     print_stack(r);
+
+    if ((int)r.interrupt_no == 0x80) {
+        dbgout() << "HACK: Ignoring interrupt 0x80\n";
+        return;
+    }
 
     REQUIRE(!"Unhandled interrupt");
 }
