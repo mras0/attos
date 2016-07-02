@@ -31,44 +31,68 @@
 %define UWOP_REG_R14   14
 %define UWOP_REG_R15   15
 
-; struct UNWIND_CODE {
-;    uint8_t CodeOffset; // Offset in prolog
-;    uint8_t UnwindOp:4; // Unwind operation code
-;    uint8_t OpInfo:4;   // Operation information
-; };
-
     [section .text]
 
-%xdefine unwind_codes
 
-test_fun:
-lab0:
-%xdefine unwind_codes (lab0-test_fun), UWOP_PUSH_NONVOL | (UWOP_REG_RBP << 4), unwind_codes
-    push rbp
+%macro win64_proc 1
+%xdefine win64_proc_name %1
+%xdefine win64_unwind_codes
+%1:
+%endmacro
+
+%macro win64_prologue_push 1
+%%here:
+%xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_PUSH_NONVOL | (UWOP_REG_ %+ %1 << 4), win64_unwind_codes
+    push %1
+%endmacro
+
+%macro win64_prologue_alloc 1
+%if %1 <= 128
+%%here:
+%xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_ALLOC_SMALL | (((%1 / 8)-1) << 4), win64_unwind_codes
+    sub rsp, %1
+%else
+%error "Not implemented"
+%endif
+%endmacro
+
+%macro win64_prologue_end 0
+%%here:
+%define win64_proc_prologue_end %%here
+%endmacro
+
+win64_proc test_fun
+    win64_prologue_push RBP
     mov rbp, rsp
-lab1:
-%xdefine unwind_codes (lab1-test_fun), UWOP_ALLOC_SMALL | (((0x20 / 8)-1) << 4), unwind_codes
-    sub rsp, 0x20
-test_fun_prolog_end:
+    win64_prologue_alloc 0x20
+    win64_prologue_end
     call foo
     add rsp, 0x20
     pop rbp
     ret
-test_fun_end:
+%macro win64_proc_end 0
+%%end:
 
     [section .pdata rdata align=4]
     ; RUNTIME_FUNCTION
-    dd test_fun wrt ..imagebase
-    dd test_fun_end wrt ..imagebase
-    dd test_fun_unwind wrt ..imagebase
+    dd win64_proc_name wrt ..imagebase
+    dd %%end wrt ..imagebase
+    dd %%unwind wrt ..imagebase
 
     [section .xdata rdata align=8]
-test_fun_unwind:
+%%unwind:
     db 1 | (0 << 3)                                          ; Version = 1, Flags = 0
-    db test_fun_prolog_end-test_fun                          ; SizeOfProlog
-    db (test_fun_unwind_codes_end-test_fun_unwind_codes) / 2 ; CountOfCodes
+    db win64_proc_prologue_end-win64_proc_name               ; SizeOfProlog
+    db (%%codes_end-%%codes) / 2 ; CountOfCodes
     db 0 | (0 << 4)                                          ; FrameRegister=0, FrameOffset=0
-test_fun_unwind_codes:
-    db unwind_codes
-test_fun_unwind_codes_end:
-    align 4
+%%codes:
+    db win64_unwind_codes
+%%codes_end:
+    align 8
+    __SECT__
+
+%undef win64_proc_prologue_end
+%undef win64_unwind_codes
+%undef win64_proc_name
+%endmacro
+    win64_proc_end
