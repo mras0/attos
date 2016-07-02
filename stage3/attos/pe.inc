@@ -192,21 +192,24 @@ IMAGE_SCN_MEM_WRITE                 equ 0x80000000 ; The section can be written 
 
 %macro win64_prologue_push 1
 %%here:
-    %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_PUSH_NONVOL | (UWOP_REG_%+%1 << 4), win64_unwind_codes
+    %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_PUSH_NONVOL | ((UWOP_REG_%+%1) << 4), win64_unwind_codes
     push %1
 %endmacro
 
-%macro win64_prologue_alloc 1
+%macro win64_prologue_alloc_unwind 1
 %%here:
     %if %1 <= 128 ; 8 to 128 bytes
-        %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_ALLOC_SMALL | (((%1 / 8)-1) << 4), win64_unwind_codes
-        sub rsp, %1
+        %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_ALLOC_SMALL | ((((%1) / 8)-1) << 4), win64_unwind_codes
     %elif %1 <= 512<<10 ; 136 to 512K-8 bytes
-        %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_ALLOC_LARGE | 0, (%1 >> 3) & 0xff, (%1 >> 11), win64_unwind_codes
-        sub rsp, %1
+        %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_ALLOC_LARGE | 0, ((%1) >> 3) & 0xff, ((%1) >> 11), win64_unwind_codes
     %else
         %error "Not implemented"
     %endif
+%endmacro
+
+%macro win64_prologue_alloc 1
+    win64_prologue_alloc_unwind %1
+    sub rsp, %1
 %endmacro
 
 %macro win64_prologue_save_reg 2
@@ -215,7 +218,7 @@ IMAGE_SCN_MEM_WRITE                 equ 0x80000000 ; The section can be written 
         %error %1 is out of range
     %endif
     mov [rsp+%1], %2
-    %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_SAVE_NONVOL | (UWOP_REG_%+%2 << 4), (%1 >> 3) & 0xff, (%1 >> 11), win64_unwind_codes
+    %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_SAVE_NONVOL | ((UWOP_REG_%+%2) << 4), ((%1) >> 3) & 0xff, ((%1) >> 11), win64_unwind_codes
 %endmacro
 
 %macro win64_prologue_end 0
@@ -281,18 +284,18 @@ IMAGE_SCN_MEM_WRITE                 equ 0x80000000 ; The section can be written 
     %rep 100
         %rotate 1
         %if ((%1)&15) == UWOP_PUSH_NONVOL
-            _win64_pop_nonvol (%1>>4)
+            _win64_pop_nonvol ((%1)>>4)
         %elif ((%1)&15) == UWOP_ALLOC_SMALL
-            add rsp, ((%1 >> 4) + 1) * 8
+            add rsp, (((%1) >> 4) + 1) * 8
         %elif ((%1)&15) == UWOP_ALLOC_LARGE
             %if (%1)>>4 != 0
                 %error really large stack alloc
             %endif
-            add rsp, (%2 + (%3 * 256)) * 8
+            add rsp, ((%2) + ((%3) * 256)) * 8
             %assign cnt cnt+2
             %rotate 2
         %elif ((%1)&15) == UWOP_SAVE_NONVOL
-            _win64_restore_nonvol (%1)>>4, (%2 + (%3 * 256)) * 8
+            _win64_restore_nonvol (%1)>>4, ((%2) + ((%3) * 256)) * 8
             %assign cnt cnt+2
             %rotate 2
         %else

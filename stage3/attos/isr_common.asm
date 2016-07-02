@@ -47,24 +47,20 @@ struc interrupt_gate
 endstruc
 
 %define win64_shadow_space_size 32
-;%define isr_common_reg_offset rsp + win64_shadow_space_size
 %define isr_common_stack_alloc registers_saved_size + win64_shadow_space_size
-%define isr_common_stack_adjust isr_common_stack_alloc + 2 * 8 ; error_code and interrupt_no
 
 %define isr_common_reg_offset(REG) win64_shadow_space_size + registers.%+REG
 
 %macro save_reg 1
-    mov [rsp + isr_common_reg_offset(%1)], %1
-%endmacro
-
-%macro restore_reg 1
-    mov %1, [rsp + isr_common_reg_offset(%1)]
+    ;mov [rsp + isr_common_reg_offset(%1)], %1
+    win64_prologue_save_reg isr_common_reg_offset(%1), %1
 %endmacro
 
     align 16
-isr_common:
+win64_proc isr_common
+    win64_prologue_alloc_unwind 2*8 ; error_code and interrupt_no
     ; save registers
-    sub rsp, isr_common_stack_alloc
+    win64_prologue_alloc isr_common_stack_alloc
     save_reg rax
     save_reg rbx
     save_reg rcx
@@ -81,32 +77,22 @@ isr_common:
     save_reg r14
     save_reg r15
 
+    win64_prologue_end
+
     ; save fx state
     fxsave [rsp+isr_common_reg_offset(fx_state)]
 
-    cld                  ; ensure direction flag is cleared
-    lea  rcx, [rsp+win64_shadow_space_size]         ; arg = registers*
+    ; ensure direction flag is cleared
+    cld
+
+    lea  rcx, [rsp+win64_shadow_space_size] ; arg = registers*
     call interrupt_service_routine
 
     ; restore fx state
     fxrstor [rsp+isr_common_reg_offset(fx_state)]
 
     ; restore registers
-    restore_reg rax
-    restore_reg rbx
-    restore_reg rcx
-    restore_reg rdx
-    restore_reg rbp
-    restore_reg rsi
-    restore_reg rdi
-    restore_reg r8
-    restore_reg r9
-    restore_reg r10
-    restore_reg r11
-    restore_reg r12
-    restore_reg r13
-    restore_reg r14
-    restore_reg r15
-    add         rsp, isr_common_stack_adjust
-
+    win64_epilogue
     iretq
+
+win64_prologue_end
