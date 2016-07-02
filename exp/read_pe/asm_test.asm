@@ -47,11 +47,11 @@ lab0:
     push rbp
     mov rbp, rsp
 lab1:
-%xdefine unwind_codes (lab1-test_fun), UWOP_ALLOC_SMALL | (((0x28 / 8)-1) << 4), unwind_codes
-    sub rsp, 0x28
+%xdefine unwind_codes (lab1-test_fun), UWOP_ALLOC_SMALL | (((0x20 / 8)-1) << 4), unwind_codes
+    sub rsp, 0x20
 test_fun_prolog_end:
     call foo
-    add rsp, 0x28
+    add rsp, 0x20
     pop rbp
     ret
 test_fun_end:
@@ -70,5 +70,5 @@ test_fun_unwind:
     db 0 | (0 << 4)                                          ; FrameRegister=0, FrameOffset=0
 test_fun_unwind_codes:
     db unwind_codes
-    align 4
 test_fun_unwind_codes_end:
+    align 4

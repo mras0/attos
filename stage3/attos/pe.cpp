@@ -2,7 +2,7 @@
 #include <attos/cpu.h>
 #include <attos/out_stream.h>
 
-#define SHOW_OPS_VERBOSE 0
+#define SHOW_OPS_VERBOSE 1
 
 namespace attos { namespace pe {
 

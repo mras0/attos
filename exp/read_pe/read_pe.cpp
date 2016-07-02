@@ -41,6 +41,13 @@ extern "C" int GetModuleHandleExA(uint32_t flags, const void* module_name, void*
 constexpr uint32_t GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT = 0x00000002;
 constexpr uint32_t GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS       = 0x00000004;
 extern "C" uint32_t GetModuleFileNameA(const void* module, char* filename, uint32_t size);
+extern "C" void RaiseException(uint32_t code, uint32_t flags, uint32_t num_args, const uintptr_t* args);
+extern "C" uint32_t GetLastError();
+extern "C" unsigned long _exception_code();
+constexpr uint32_t EXCEPTION_EXECUTE_HANDLER    =   1;
+constexpr uint32_t EXCEPTION_CONTINUE_SEARCH    =   0;
+constexpr uint32_t EXCEPTION_CONTINUE_EXECUTION = ~0U;
+
 
 #define FMT64   "%08x`%08x"
 #define PR64(x) (uint32_t)(((uint64_t)(x)) >> 32), (uint32_t)(((uint64_t)(x)))
@@ -55,7 +62,10 @@ const IMAGE_DOS_HEADER& find_image(uint64_t virtual_address)
     //printf("Searching for image for " FMT64 "\n", PR64(virtual_address));
 
     void* module_handle;
-    REQUIRE(GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (void*)virtual_address, &module_handle));
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (void*)virtual_address, &module_handle)) {
+        const auto error = GetLastError();
+        dbgout() << "GetModuleHandleExA failed for " << as_hex(virtual_address) << ": " << error << "\n";
+    }
     const auto& image = *reinterpret_cast<const IMAGE_DOS_HEADER*>(module_handle);
     REQUIRE(image.e_magic == IMAGE_DOS_SIGNATURE);
     return image;
@@ -104,12 +114,24 @@ void print_stack()
     }
 }
 extern "C" void test_fun(void);
+
+constexpr uint32_t my_exception_code = 0xFEDE0ABE;
+
 extern "C" void foo(void) {
     print_stack();
+    dbgout() << "\nRaising exception " << as_hex(my_exception_code) << "\n";
+    RaiseException(my_exception_code, 0, 0, nullptr);
 }
 
 int main()
 {
     attos_stream_wrapper asw{std::cout};
-    test_fun();
+    __try {
+        test_fun();
+    } __except(_exception_code() == my_exception_code ?  EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        dbgout() << "Caught exception!\n";
+        return 0;
+    }
+    dbgout() << "We didn't execute our handler!\n";
+    abort();
 }

@@ -6,4 +6,4 @@ call compile.cmd || exit /b 1
 @set srcpath=%~dp0
 @set exe=%~dp0read_pe.exe
 
-cdb -y %sympath% -srcpath %srcpath% -i %exe% -c "$$><1.dbg" %exe%
+windbg -y %sympath% -srcpath %srcpath% -i %exe% -c "$$><1.dbg" %exe%
