@@ -1,6 +1,8 @@
     bits 64
     default rel
 
+%include "attos/pe.inc"
+
     section .text
 
     global isr_common
@@ -44,18 +46,25 @@ struc interrupt_gate
     .reserved    resd 1
 endstruc
 
+%define win64_shadow_space_size 32
+;%define isr_common_reg_offset rsp + win64_shadow_space_size
+%define isr_common_stack_alloc registers_saved_size + win64_shadow_space_size
+%define isr_common_stack_adjust isr_common_stack_alloc + 2 * 8 ; error_code and interrupt_no
+
+%define isr_common_reg_offset(REG) win64_shadow_space_size + registers.%+REG
+
 %macro save_reg 1
-    mov [rsp+registers.%1], %1
+    mov [rsp + isr_common_reg_offset(%1)], %1
 %endmacro
 
 %macro restore_reg 1
-    mov %1, [rsp+registers.%1]
+    mov %1, [rsp + isr_common_reg_offset(%1)]
 %endmacro
 
     align 16
 isr_common:
     ; save registers
-    sub rsp, registers_saved_size
+    sub rsp, isr_common_stack_alloc
     save_reg rax
     save_reg rbx
     save_reg rcx
@@ -73,16 +82,14 @@ isr_common:
     save_reg r15
 
     ; save fx state
-    fxsave [rsp+registers.fx_state]
+    fxsave [rsp+isr_common_reg_offset(fx_state)]
 
     cld                  ; ensure direction flag is cleared
-    mov  rcx, rsp        ; arg = registers*
-    sub  rsp,  0x20      ; make room for the function to preserve rcx, rdx, r8 and r9 and fx state
+    lea  rcx, [rsp+win64_shadow_space_size]         ; arg = registers*
     call interrupt_service_routine
-    add  rsp, 0x20
 
     ; restore fx state
-    fxrstor [rsp+registers.fx_state]
+    fxrstor [rsp+isr_common_reg_offset(fx_state)]
 
     ; restore registers
     restore_reg rax
@@ -100,6 +107,6 @@ isr_common:
     restore_reg r13
     restore_reg r14
     restore_reg r15
-    add         rsp, registers_saved_size + 2 * 8 ; error_code and interrupt_no
+    add         rsp, isr_common_stack_adjust
 
     iretq
