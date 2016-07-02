@@ -99,7 +99,7 @@ void print_stack()
     while (*rsp) {
         rip = *rsp;
         child_rsp = rsp + 1;
-        rsp = unwind_once(find_image(rip), rip, rsp);
+        rsp = unwind_once(find_image(rip), rip, rsp) + 1;
         print_line(reinterpret_cast<uint64_t>(child_rsp), *rsp, rip);
     }
 }

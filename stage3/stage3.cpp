@@ -381,6 +381,7 @@ bool string_equal(const char* a, const char* b) {
 
 __declspec(noinline) void test_func()
 {
+    __debugbreak();
     dbgout() << "Trigger interrupt 0x55\n";
     sw_int<0x55>();
 }

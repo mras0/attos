@@ -84,7 +84,7 @@ const uint64_t* unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const u
                 break;
         }
     }
-    return rsp + 1; // Finally 'pop' return address
+    return rsp;
 }
 
 

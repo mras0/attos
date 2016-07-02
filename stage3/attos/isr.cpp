@@ -369,21 +369,31 @@ void print_line(uint64_t child_rsp, uint64_t return_address, uint64_t rip)
     dbgout() << as_hex(child_rsp) << " " << as_hex(return_address) << " kernel!+0x" << as_hex(static_cast<uint32_t>(rip - reinterpret_cast<uint64_t>(&image))).width(4) << "\n";
 }
 
+__declspec(noinline) auto get_rip() { return reinterpret_cast<uint64_t>(_ReturnAddress()); }
+
 void print_stack(const registers& r)
 {
     dbgout() << "Child-SP          RetAddr           Call Site\n";
 
+#if 0
     auto rip = r.rip;
     auto child_rsp = unwind_once(find_image(rip), rip, reinterpret_cast<const uint64_t*>(r.rsp));
+#else
+    (void)r;
+    uint64_t rip = get_rip();
+    auto child_rsp = reinterpret_cast<const uint64_t*>(_AddressOfReturnAddress());
+#endif
 
     // Handle first tricky entry
     print_line(reinterpret_cast<uint64_t>(child_rsp), *child_rsp, rip);
     auto rsp = child_rsp;
+    int frame = 1;
     while (*rsp && in_image(*rsp)) {
         rip = *rsp;
         child_rsp = rsp + 1;
-        rsp = unwind_once(find_image(rip), rip, rsp);
+        rsp = unwind_once(find_image(rip), rip, rsp) + 1;
         print_line(reinterpret_cast<uint64_t>(child_rsp), *rsp, rip);
+        REQUIRE(frame++ < 10);
     }
 }
 
