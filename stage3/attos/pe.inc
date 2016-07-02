@@ -180,9 +180,12 @@ IMAGE_SCN_MEM_WRITE                 equ 0x80000000 ; The section can be written 
 %endmacro
 
 %macro win64_prologue_alloc 1
-    %if %1 <= 128
 %%here:
+    %if %1 <= 128 ; 8 to 128 bytes
         %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_ALLOC_SMALL | (((%1 / 8)-1) << 4), win64_unwind_codes
+        sub rsp, %1
+    %elif %1 <= 512<<10 ; 136 to 512K-8 bytes
+        %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_ALLOC_LARGE | 0, (%1 >> 3) & 0xff, (%1 >> 11), win64_unwind_codes
         sub rsp, %1
     %else
         %error "Not implemented"
@@ -233,16 +236,33 @@ IMAGE_SCN_MEM_WRITE                 equ 0x80000000 ; The section can be written 
 %endmacro
 
 %macro win64_restore 2-*
-    %rep  %0 / 2
+    %if %0 % 2 == 1
+        %error %0 is odd
+    %endif
+    %assign cnt 0
+    %rep 100
         %rotate 1
         %if ((%1)&15) == UWOP_PUSH_NONVOL
             win64_pop_nonvol (%1>>4)
         %elif ((%1)&15) == UWOP_ALLOC_SMALL
             add rsp, ((%1 >> 4) + 1) * 8
+        %elif ((%1)&15) == UWOP_ALLOC_LARGE
+            %if (%1)>>4 != 0
+                %error really large stack alloc
+            %endif
+            %assign cnt cnt+2
+            add rsp, (%2 + (%3 * 256)) * 8
+            %rotate 2
         %else
             %error "Unimplmented OP"
         %endif
         %rotate 1
+        %assign cnt cnt+2
+        %if cnt == %0
+            %exitrep
+        %elif cnt > %0
+            %error too many arguments popped
+        %endif
     %endrep
 %endmacro
 
