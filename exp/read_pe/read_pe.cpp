@@ -1,5 +1,5 @@
 #define _CRT_SECURE_NO_WARNINGS
-#include <stdio.h>
+#include <iostream>
 #include <stdlib.h>
 #include <stdint.h>
 #include <intrin.h>
@@ -7,30 +7,21 @@
 
 #include <attos/pe.h>
 #include <attos/cpu.h>
+#include <attos/out_stream.h>
 
 namespace {
 
-void hexdump(const void* ptr, size_t len)
-{
-    if (!len) {
-        printf("hexdump: empty\n");
-        return;
+class attos_stream_wrapper : public attos::out_stream {
+public:
+    explicit attos_stream_wrapper(std::ostream& os) : os_(os) {
+        attos::set_dbgout(*this);
     }
-    const uintptr_t beg = reinterpret_cast<uintptr_t>(ptr);
-    const uintptr_t end = beg + len - 1;
-    for (uintptr_t a = beg & ~0xf; a < ((end+15) & ~0xf); a += 16) {
-        for (unsigned i = 0; i < 16; i++) if (a+i >= beg && a+i <= end) printf("%02X ", *reinterpret_cast<const uint8_t*>(a+i)); else printf("   ");
-        for (unsigned i = 0; i < 16; i++) {
-            uint8_t c = ' ';
-            if (a+i >= beg && a+i <= end) {
-                uint8_t rc = *reinterpret_cast<const uint8_t*>(a+i);
-                if (rc > ' ') c = rc; // poor mans isprint
-            }
-            printf("%c", c);
-        }
-        printf("\n");
+    virtual void write(const void* data, size_t n) {
+        os_.write(reinterpret_cast<const char*>(data), n);
     }
-}
+private:
+    std::ostream& os_;
+};
 
 } // unnamed namespace
 
@@ -44,47 +35,6 @@ void fatal_error(const char* file, int line, const char* detail) {
 
 using namespace attos;
 using namespace attos::pe;
-
-void handle_pe(const IMAGE_DOS_HEADER& img)
-{
-    auto& ioh = img.nt_headers().OptionalHeader;
-    printf("AddressOfEntryPoint = %x\n", ioh.AddressOfEntryPoint);
-    printf("ImageBase           = %llx\n", ioh.ImageBase);
-    printf("SectionAlignment    = %x\n", ioh.SectionAlignment);
-    printf("FileAlignment       = %x\n", ioh.FileAlignment);
-    printf("NumberOfRvaAndSizes = %u\n", ioh.NumberOfRvaAndSizes);
-
-    auto ish = img.nt_headers().sections();
-    for (const auto& s: ish) {
-        printf("Section #%d: %8.8s\n", (int)(&s - ish.begin()) + 1, s.Name);
-#define P(name) printf("  %-30.30s 0x%8.8x\n", #name, s . name)
-        P(Misc.VirtualSize);
-        P(VirtualAddress);
-        P(SizeOfRawData);
-        P(PointerToRawData);
-        P(PointerToRelocations);
-        P(PointerToLinenumbers);
-        P(NumberOfRelocations);
-        P(NumberOfLinenumbers);
-        P(Characteristics);
-#undef P
-#define C(f) if (s.Characteristics & IMAGE_SCN_ ## f) printf("    " #f "\n")
-        C(CNT_CODE);
-        C(CNT_INITIALIZED_DATA);
-        C(CNT_UNINITIALIZED_DATA);
-        C(MEM_EXECUTE);
-        C(MEM_READ);
-        C(MEM_WRITE);
-#undef C
-    }
-
-    for (const auto& s: ish) {
-        if (!s.SizeOfRawData) continue;
-        uint64_t va  = ioh.ImageBase + s.VirtualAddress;
-        uint32_t rel = s.VirtualAddress - s.PointerToRawData;
-        printf("Map %8.8s 0x%08x`%08x to file offset 0x%08x [Relative 0x%x]\n", s.Name, (uint32_t)(va>>32), (uint32_t)va, s.PointerToRawData, rel);
-    }
-}
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 extern "C" int GetModuleHandleExA(uint32_t flags, const void* module_name, void** module_handle);
@@ -131,11 +81,10 @@ const char* image_filename(const IMAGE_DOS_HEADER& image)
     return p;
 }
 
-bool print_line(uint64_t child_rsp, uint64_t return_address, uint64_t rip)
+void print_line(uint64_t child_rsp, uint64_t return_address, uint64_t rip)
 {
     const auto& image = find_image(rip);
     printf(FMT64 " " FMT64 " %s!+0x%04x\n", PR64(child_rsp), PR64(return_address), image_filename(image), (uint32_t)(rip - (uint64_t)&image));
-    return true;
 }
 
 void print_stack()
@@ -155,22 +104,8 @@ void print_stack()
     }
 }
 
-int main(int argc, const char* argv[])
+int main()
 {
-    const char* const filename = argc >= 2 ? argv[1] : argv[0];
-    FILE* fp = fopen(filename, "rb");
-    if (!fp) {
-        fprintf(stderr, "Error opening '%s'\n", filename);
-        exit(1);
-    }
-    fseek(fp, 0, SEEK_END);
-    const auto size = static_cast<size_t>(ftell(fp));
-    fseek(fp, 0, SEEK_SET);
-    auto buf = malloc(size);
-    fread(buf, size, 1, fp);
-    fclose(fp);
-    handle_pe(*reinterpret_cast<const IMAGE_DOS_HEADER*>(buf));
-    free(buf);
-
+    attos_stream_wrapper asw{std::cout};
     print_stack();
 }

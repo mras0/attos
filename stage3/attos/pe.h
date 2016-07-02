@@ -297,7 +297,7 @@ inline array_view<IMAGE_SECTION_HEADER> IMAGE_NT_HEADERS::sections() const {
     return {begin, end};
 }
 
-// Unwind the stack once.
+// Unwind the stack once. It returns `rsp' updated to point to the next return address on the stack.
 const uint64_t* unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const uint64_t* rsp);
 
 } } // namespace attos::pe

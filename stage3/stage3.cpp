@@ -379,6 +379,12 @@ bool string_equal(const char* a, const char* b) {
     return *a == *b;
 }
 
+__declspec(noinline) void test_func()
+{
+    dbgout() << "Trigger interrupt 0x55\n";
+    sw_int<0x55>();
+}
+
 void interactive_mode(ps2::controller& ps2c)
 {
     dbgout() << "Interactive mode. Use escape to quit.\n";
@@ -397,6 +403,8 @@ void interactive_mode(ps2::controller& ps2c)
                     if (string_equal(cmd.begin(), "EXIT")) {
                         dbgout() << "\nExit\n";
                         return;
+                    } else if (string_equal(cmd.begin(), "B")) {
+                        test_func();
                     }
                     dbgout() << "\nCOMMAND ENTERED!: '" << cmd.begin() << "'\n";
                     cmd.clear();

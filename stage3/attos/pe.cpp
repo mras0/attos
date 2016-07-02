@@ -1,5 +1,6 @@
 #include "pe.h"
-#include "cpu.h"
+#include <attos/cpu.h>
+#include <attos/out_stream.h>
 
 namespace attos { namespace pe {
 
@@ -7,9 +8,12 @@ const char* const unwind_reg_names[16] = { "rax", "rcx", "rdx", "rbx", "rsp", "r
 
 const RUNTIME_FUNCTION* runtime_function_info(array_view<RUNTIME_FUNCTION> rfs, uint32_t function_rva)
 {
-    //printf("Searching for 0x%x\n", function_rva);
+    //dbgout() << "Searching for " << as_hex(function_rva) << "\n";
     // TODO: Use the fact that the list is sorted to perform a binary search
-    auto it = std::find_if(rfs.begin(), rfs.end(), [function_rva](const RUNTIME_FUNCTION& rf) { return rf.BeginAddress <= function_rva && function_rva <= rf.EndAddress; });
+    auto it = std::find_if(rfs.begin(), rfs.end(), [function_rva](const RUNTIME_FUNCTION& rf) {
+            //dbgout() << " checking " << as_hex(rf.BeginAddress) << " " << as_hex(rf.EndAddress) << "\n";
+            return rf.BeginAddress <= function_rva && function_rva <= rf.EndAddress;
+    });
     if (it == rfs.end()) return nullptr;
     return it;
 }
@@ -19,10 +23,9 @@ const uint64_t* unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const u
     const auto function_rva = static_cast<uint32_t>(reinterpret_cast<const uint8_t*>(rip) - reinterpret_cast<const uint8_t*>(&image));
     const auto rf = runtime_function_info(image.data_directory<RUNTIME_FUNCTION>(), function_rva);
     if (rf == nullptr) {
-        //printf("\tFunction at RVA %x (RIP = %llx) is a leaf function\n", function_rva, rip);
+        dbgout() << "    Assuming function at RVA " << as_hex(function_rva) << " (RIP = " << as_hex(rip) << ") is a leaf function\n";
         // If no function table entry is found, then it is in a leaf function, and RSP will directly address the return pointer.
-        // The return pointer at [RSP] is stored in the updated context, the simulated RSP is incremented by 8
-        return rsp + 1;
+        return rsp;
     }
     const auto& ui = detail::rva_cast<UNWIND_INFO>(image, rf->UnwindInfoAddress);
 
@@ -44,21 +47,21 @@ const uint64_t* unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const u
         switch (uc.UnwindOp) {
             case UWOP_PUSH_NONVOL:
                 // Push a nonvolatile integer register, decrementing RSP by 8
-                //printf("\tpop %s\n", unwind_reg_names[uc.OpInfo]);
+                //dbgout() << "    pop " << unwind_reg_names[uc.OpInfo] << "\n";
                 rsp += 1; // Pop
                 break;
             case UWOP_ALLOC_LARGE:
             {
                 REQUIRE(uc.OpInfo == 0); // No support for >512K-8 byte stacks, they use 3 nodes
                 const auto qword_size = *reinterpret_cast<const uint16_t*>(&ui.unwind_codes()[++i]); // Consume unwind code
-                //printf("\tadd rsp, 0x%X\n", qword_size * 8);
+                //dbgout() << "    add rsp, 0x" << as_hex(qword_size*8).width(0) << "\n";
                 rsp += qword_size;
                 break;
             }
             case UWOP_ALLOC_SMALL:
             {
                 const auto qwords = (uc.OpInfo+1);
-                //printf("\tadd rsp, 0x%X\n", qwords*8);
+                //dbgout() << "    add rsp, 0x" << as_hex(qwords*8).width(0) << "\n";
                 rsp += qwords;
                 break;
             }
@@ -69,7 +72,7 @@ const uint64_t* unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const u
             case UWOP_SAVE_NONVOL:
             {
                 const auto offset = 8 * *reinterpret_cast<const uint16_t*>(&ui.unwind_codes()[++i]); // Consume unwind code
-                //printf("\tmov %s, [rsp+0x%X]\n", unwind_reg_names[uc.OpInfo], offset);
+                //dbgout() << "    mov " << unwind_reg_names[uc.OpInfo] << ", [rsp+0x" << as_hex(offset).width(0) << "]\n";
                 break;
             }
             case UWOP_SAVE_NONVOL_FAR:

@@ -5,6 +5,7 @@
 #include <attos/cpu.h>
 #include <attos/mm.h>
 #include <attos/out_stream.h>
+#include <attos/pe.h>
 
 namespace attos {
 
@@ -345,6 +346,47 @@ private:
     }
 };
 
+extern "C" pe::IMAGE_DOS_HEADER __ImageBase;
+
+bool in_image(uint64_t rip)
+{
+    const auto& ioh = __ImageBase.nt_headers().OptionalHeader;
+    return (rip >= ioh.ImageBase && rip < ioh.ImageBase + ioh.SizeOfImage);
+}
+
+pe::IMAGE_DOS_HEADER& find_image(uint64_t rip)
+{
+    if (!in_image(rip)) {
+        dbgout() << "RIP = " << as_hex(rip) << "\n";
+        REQUIRE(false);
+    }
+    return __ImageBase;
+}
+
+void print_line(uint64_t child_rsp, uint64_t return_address, uint64_t rip)
+{
+    const auto& image = find_image(rip);
+    dbgout() << as_hex(child_rsp) << " " << as_hex(return_address) << " kernel!+0x" << as_hex(static_cast<uint32_t>(rip - reinterpret_cast<uint64_t>(&image))).width(4) << "\n";
+}
+
+void print_stack(const registers& r)
+{
+    dbgout() << "Child-SP          RetAddr           Call Site\n";
+
+    auto rip = r.rip;
+    auto child_rsp = unwind_once(find_image(rip), rip, reinterpret_cast<const uint64_t*>(r.rsp));
+
+    // Handle first tricky entry
+    print_line(reinterpret_cast<uint64_t>(child_rsp), *child_rsp, rip);
+    auto rsp = child_rsp;
+    while (*rsp && in_image(*rsp)) {
+        rip = *rsp;
+        child_rsp = rsp + 1;
+        rsp = unwind_once(find_image(rip), rip, rsp);
+        print_line(reinterpret_cast<uint64_t>(child_rsp), *rsp, rip);
+    }
+}
+
 void interrupt_service_routine(registers& r)
 {
     if (is_irq(r.interrupt_no) && isr_handler_impl::instance().on_irq(irq_number(r.interrupt_no))) {
@@ -359,6 +401,7 @@ void interrupt_service_routine(registers& r)
         dbgout() << " IRQ#" << irq << "\n";
     }
     dbgout() << "\n";
+
 #define PREG(reg, s) dbgout() << format_str(#reg).width(3) << ": " << as_hex(r.reg) << s
 #define PREG2(reg1, reg2) PREG(reg1, ' '); PREG(reg2, '\n')
     PREG2(rax, rcx);
@@ -373,7 +416,10 @@ void interrupt_service_routine(registers& r)
 #undef PREG2
 #undef PREG
     dbgout() << "eflags " << as_hex(r.rflags).width(8) << "\n"; // eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
-    REQUIRE(false);
+
+    print_stack(r);
+
+    REQUIRE(!"Unhandled interrupt");
 }
 
 object_buffer<isr_handler_impl> isr_handler_buffer;
