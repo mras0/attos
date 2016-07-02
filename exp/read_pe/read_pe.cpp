@@ -103,9 +103,13 @@ void print_stack()
         print_line(reinterpret_cast<uint64_t>(child_rsp), *rsp, rip);
     }
 }
+extern "C" void test_fun(void);
+extern "C" void foo(void) {
+    print_stack();
+}
 
 int main()
 {
     attos_stream_wrapper asw{std::cout};
-    print_stack();
+    test_fun();
 }

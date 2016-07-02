@@ -2,13 +2,18 @@
 #include <attos/cpu.h>
 #include <attos/out_stream.h>
 
+#define SHOW_OPS_VERBOSE 0
+
 namespace attos { namespace pe {
 
 const char* const unwind_reg_names[16] = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8 ", "r9 ", "r10", "r11", "r12", "r13", "r14", "r15" };
 
 const RUNTIME_FUNCTION* runtime_function_info(array_view<RUNTIME_FUNCTION> rfs, uint32_t function_rva)
 {
-    //dbgout() << "Searching for " << as_hex(function_rva) << "\n";
+#if SHOW_OPS_VERBOSE >= 2
+    dbgout() << "Searching for " << as_hex(function_rva) << "\n";
+#endif
+
     // TODO: Use the fact that the list is sorted to perform a binary search
     auto it = std::find_if(rfs.begin(), rfs.end(), [function_rva](const RUNTIME_FUNCTION& rf) {
             //dbgout() << " checking " << as_hex(rf.BeginAddress) << " " << as_hex(rf.EndAddress) << "\n";
@@ -47,21 +52,27 @@ const uint64_t* unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const u
         switch (uc.UnwindOp) {
             case UWOP_PUSH_NONVOL:
                 // Push a nonvolatile integer register, decrementing RSP by 8
-                //dbgout() << "    pop " << unwind_reg_names[uc.OpInfo] << "\n";
+#if SHOW_OPS_VERBOSE >= 1
+                dbgout() << "    pop " << unwind_reg_names[uc.OpInfo] << "\n";
+#endif
                 rsp += 1; // Pop
                 break;
             case UWOP_ALLOC_LARGE:
             {
                 REQUIRE(uc.OpInfo == 0); // No support for >512K-8 byte stacks, they use 3 nodes
                 const auto qword_size = *reinterpret_cast<const uint16_t*>(&ui.unwind_codes()[++i]); // Consume unwind code
-                //dbgout() << "    add rsp, 0x" << as_hex(qword_size*8).width(0) << "\n";
+#if SHOW_OPS_VERBOSE >= 1
+                dbgout() << "    add rsp, 0x" << as_hex(qword_size*8).width(0) << "\n";
+#endif
                 rsp += qword_size;
                 break;
             }
             case UWOP_ALLOC_SMALL:
             {
                 const auto qwords = (uc.OpInfo+1);
-                //dbgout() << "    add rsp, 0x" << as_hex(qwords*8).width(0) << "\n";
+#if SHOW_OPS_VERBOSE >= 1
+                dbgout() << "    add rsp, 0x" << as_hex(qwords*8).width(0) << "\n";
+#endif
                 rsp += qwords;
                 break;
             }
@@ -72,7 +83,9 @@ const uint64_t* unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const u
             case UWOP_SAVE_NONVOL:
             {
                 const auto offset = 8 * *reinterpret_cast<const uint16_t*>(&ui.unwind_codes()[++i]); // Consume unwind code
-                //dbgout() << "    mov " << unwind_reg_names[uc.OpInfo] << ", [rsp+0x" << as_hex(offset).width(0) << "]\n";
+#if SHOW_OPS_VERBOSE >= 1
+                dbgout() << "    mov " << unwind_reg_names[uc.OpInfo] << ", [rsp+0x" << as_hex(offset).width(0) << "]\n";
+#endif
                 break;
             }
             case UWOP_SAVE_NONVOL_FAR:
