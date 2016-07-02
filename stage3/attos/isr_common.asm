@@ -58,6 +58,7 @@ endstruc
 
     align 16
 win64_proc isr_common
+    win64_prologue_push_machineframe_unwind
     win64_prologue_alloc_unwind 2*8 ; error_code and interrupt_no
     ; save registers
     win64_prologue_alloc isr_common_stack_alloc
@@ -93,6 +94,5 @@ win64_proc isr_common
 
     ; restore registers
     win64_epilogue
-    iretq
 
-win64_prologue_end
+win64_proc_end

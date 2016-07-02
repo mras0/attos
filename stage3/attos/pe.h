@@ -297,8 +297,23 @@ inline array_view<IMAGE_SECTION_HEADER> IMAGE_NT_HEADERS::sections() const {
     return {begin, end};
 }
 
+struct unwind_information {
+    const uint64_t* child_rsp;
+    const uint64_t* rsp;
+    uint64_t rip;
+};
+
+enum class unwind_frame_type {
+    leaf, normal, iret
+};
+
+struct unwind_result {
+    const uint64_t*   rsp;
+    unwind_frame_type frame_type;
+};
+
 // Unwind the stack once. Returns `rsp' ready to pop the next return address
-const uint64_t* unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const uint64_t* rsp);
+unwind_result unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const uint64_t* rsp);
 
 } } // namespace attos::pe
 

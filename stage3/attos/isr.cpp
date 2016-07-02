@@ -365,10 +365,10 @@ pe::IMAGE_DOS_HEADER& find_image(uint64_t rip)
     return __ImageBase;
 }
 
-void print_line(uint64_t child_rsp, uint64_t return_address, uint64_t rip)
+void print_line(uint64_t child_rsp, uint64_t return_address, uint64_t rip, const char* extra)
 {
     const auto& image = find_image(rip);
-    dbgout() << as_hex(child_rsp) << " " << as_hex(return_address) << " kernel!+0x" << as_hex(static_cast<uint32_t>(rip - reinterpret_cast<uint64_t>(&image))).width(4) << "\n";
+    dbgout() << as_hex(child_rsp) << " " << as_hex(return_address) << " kernel!+0x" << as_hex(static_cast<uint32_t>(rip - reinterpret_cast<uint64_t>(&image))).width(4) << " " << extra << "\n";
 }
 
 __declspec(noinline) auto get_rip() { return reinterpret_cast<uint64_t>(_ReturnAddress()); }
@@ -378,24 +378,43 @@ void print_stack(const registers& r)
     dbgout() << "Child-SP          RetAddr           Call Site\n";
 
 #if 1
+    // Start stack trace from fault address
     auto rip = r.rip;
-    auto child_rsp = unwind_once(find_image(rip), rip, reinterpret_cast<const uint64_t*>(r.rsp));
+    auto child_rsp = unwind_once(find_image(rip), rip, reinterpret_cast<const uint64_t*>(r.rsp)).rsp;
 #else
+    // Start stack trace from here
     (void)r;
     uint64_t rip = get_rip();
     auto child_rsp = reinterpret_cast<const uint64_t*>(_AddressOfReturnAddress());
 #endif
 
     // Handle first tricky entry
-    print_line(reinterpret_cast<uint64_t>(child_rsp), *child_rsp, rip);
+    print_line(reinterpret_cast<uint64_t>(child_rsp), *child_rsp, rip, "");
     auto rsp = child_rsp;
-    int frame = 1;
+    int frame_number = 1;
+    uint64_t next_rip = *rsp;
     while (*rsp && in_image(*rsp)) {
-        rip = *rsp;
+        rip = next_rip;
         child_rsp = rsp + 1;
-        rsp = unwind_once(find_image(rip), rip, rsp) + 1;
-        print_line(reinterpret_cast<uint64_t>(child_rsp), *rsp, rip);
-        REQUIRE(frame++ < 10);
+        auto frame = unwind_once(find_image(rip), rip, rsp);
+        const char* extra =  "";
+        if (frame.frame_type == pe::unwind_frame_type::leaf) {
+            extra = "Leaf";
+            rsp = frame.rsp + 1;
+            next_rip = *rsp;
+        } else if (frame.frame_type == pe::unwind_frame_type::normal) {
+            rsp = frame.rsp + 1;
+            next_rip = *rsp;
+            extra = "";
+        } else {
+            REQUIRE (frame.frame_type == pe::unwind_frame_type::iret);
+            frame.rsp++; // TODO: HACK: Why is this necessary?
+            extra = "Intr";
+            next_rip = frame.rsp[0];
+            rsp = reinterpret_cast<const uint64_t*>(frame.rsp[3]); // TODO: Needs unwind?
+        }
+        print_line(reinterpret_cast<uint64_t>(child_rsp), *rsp, rip, extra);
+        REQUIRE(frame_number++ < 10);
     }
 }
 
@@ -429,7 +448,13 @@ void interrupt_service_routine(registers& r)
 #undef PREG
     dbgout() << "eflags " << as_hex(r.rflags).width(8) << "\n"; // eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
 
+    static bool isr_recurse_flag;
+    REQUIRE(!isr_recurse_flag);
+    isr_recurse_flag = true;
+
     print_stack(r);
+
+    isr_recurse_flag = false;
 
     if ((int)r.interrupt_no == 0x80) {
         dbgout() << "HACK: Ignoring interrupt 0x80\n";

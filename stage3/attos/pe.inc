@@ -221,6 +221,11 @@ IMAGE_SCN_MEM_WRITE                 equ 0x80000000 ; The section can be written 
     %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_SAVE_NONVOL | ((UWOP_REG_%+%2) << 4), ((%1) >> 3) & 0xff, ((%1) >> 11), win64_unwind_codes
 %endmacro
 
+%macro win64_prologue_push_machineframe_unwind 0
+%%here:
+    %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_PUSH_MACHFRAME | 0, win64_unwind_codes
+%endmacro
+
 %macro win64_prologue_end 0
 %%here:
     %define win64_proc_prologue_end %%here
@@ -298,6 +303,11 @@ IMAGE_SCN_MEM_WRITE                 equ 0x80000000 ; The section can be written 
             _win64_restore_nonvol (%1)>>4, ((%2) + ((%3) * 256)) * 8
             %assign cnt cnt+2
             %rotate 2
+        %elif ((%1)&15) == UWOP_PUSH_MACHFRAME
+            %if (%1)>>4 != 0
+                %error %1 is not implemeneted for UWOP_PUSH_MACHFRAME
+            %endif
+            iretq ; !!
         %else
             %error Unimplmented OP: %1
         %endif

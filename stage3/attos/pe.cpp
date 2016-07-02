@@ -2,14 +2,13 @@
 #include <attos/cpu.h>
 #include <attos/out_stream.h>
 
-#define SHOW_OPS_VERBOSE 1
+#define SHOW_OPS_VERBOSE 0
 
 namespace attos { namespace pe {
 
 const char* const unwind_reg_names[16] = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8 ", "r9 ", "r10", "r11", "r12", "r13", "r14", "r15" };
 
-const RUNTIME_FUNCTION* runtime_function_info(array_view<RUNTIME_FUNCTION> rfs, uint32_t function_rva)
-{
+const RUNTIME_FUNCTION* runtime_function_info(array_view<RUNTIME_FUNCTION> rfs, uint32_t function_rva) {
 #if SHOW_OPS_VERBOSE >= 2
     dbgout() << "Searching for " << as_hex(function_rva) << "\n";
 #endif
@@ -23,14 +22,15 @@ const RUNTIME_FUNCTION* runtime_function_info(array_view<RUNTIME_FUNCTION> rfs, 
     return it;
 }
 
-const uint64_t* unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const uint64_t* rsp)
-{
+unwind_result unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const uint64_t* rsp) {
     const auto function_rva = static_cast<uint32_t>(reinterpret_cast<const uint8_t*>(rip) - reinterpret_cast<const uint8_t*>(&image));
     const auto rf = runtime_function_info(image.data_directory<RUNTIME_FUNCTION>(), function_rva);
     if (rf == nullptr) {
+#if SHOW_OPS_VERBOSE >= 1
         dbgout() << "    Assuming function at RVA " << as_hex(function_rva) << " (RIP = " << as_hex(rip) << ") is a leaf function\n";
+#endif
         // If no function table entry is found, then it is in a leaf function, and RSP will directly address the return pointer.
-        return rsp;
+        return { rsp, unwind_frame_type::leaf };
     }
     const auto& ui = detail::rva_cast<UNWIND_INFO>(image, rf->UnwindInfoAddress);
 
@@ -91,13 +91,19 @@ const uint64_t* unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const u
             case UWOP_SAVE_NONVOL_FAR:
             case UWOP_SAVE_XMM128:
             case UWOP_SAVE_XMM128_FAR:
-            case UWOP_PUSH_MACHFRAME:
                 //printf("Unhandled unwind OP %d\n", uc.UnwindOp);
                 REQUIRE(false);
                 break;
+            case UWOP_PUSH_MACHFRAME:
+                REQUIRE(uc.OpInfo == 0);
+                // RIP, CS, EFLAGS, Old RSP, SS
+#if SHOW_OPS_VERBOSE >= 1
+                dbgout() << "    iretq ; !!!!\n";
+#endif
+                return { rsp, unwind_frame_type::iret };
         }
     }
-    return rsp;
+    return { rsp, unwind_frame_type::normal };
 }
 
 
