@@ -132,3 +132,147 @@ IMAGE_SCN_CNT_UNINITIALIZED_DATA    equ 0x00000080 ; The section contains uninit
 IMAGE_SCN_MEM_EXECUTE               equ 0x20000000 ; The section can be executed as code.
 IMAGE_SCN_MEM_READ                  equ 0x40000000 ; The section can be read.
 IMAGE_SCN_MEM_WRITE                 equ 0x80000000 ; The section can be written to.
+
+
+;
+; Unwind information
+;
+
+%define UWOP_PUSH_NONVOL       0; 1 node.    Push a nonvolatile integer register, decrementing RSP by 8. The operation info is the number of the register.
+%define UWOP_ALLOC_LARGE       1; 2/3 nodes. Allocate a large-sized area on the stack.
+%define UWOP_ALLOC_SMALL       2; 1 node.    Allocate a small-sized area on the stack.
+%define UWOP_SET_FPREG         3; 1 node.    Establish the frame pointer register by setting the register to some offset of the current RSP.
+%define UWOP_SAVE_NONVOL       4; 2 nodes.   Save a nonvolatile integer register on the stack using a MOV instead of a PUSH.
+%define UWOP_SAVE_NONVOL_FAR   5; 3 nodes.   Save a nonvolatile integer register on the stack with a long offset, using a MOV instead of a PUSH.
+%define UWOP_SAVE_XMM128       8; 2 nodes.   Save all 128 bits of a nonvolatile XMM register on the stack.
+%define UWOP_SAVE_XMM128_FAR   9; 3 nodes.   Save all 128 bits of a nonvolatile XMM register on the stack with a long offset.
+%define UWOP_PUSH_MACHFRAME   10; 1 node.    Push a machine frame.
+
+%define UWOP_REG_RAX    0
+%define UWOP_REG_RCX    1
+%define UWOP_REG_RDX    2
+%define UWOP_REG_RBX    3
+%define UWOP_REG_RSP    4
+%define UWOP_REG_RBP    5
+%define UWOP_REG_RSI    6
+%define UWOP_REG_RDI    7
+%define UWOP_REG_R8     8
+%define UWOP_REG_R9     9
+%define UWOP_REG_R10   10
+%define UWOP_REG_R11   11
+%define UWOP_REG_R12   12
+%define UWOP_REG_R13   13
+%define UWOP_REG_R14   14
+%define UWOP_REG_R15   15
+
+; Inspired by https://gist.github.com/rygorous/f729919ff64526a46e591d8f8b52058e
+
+%macro win64_proc 1
+    %xdefine win64_proc_name %1
+    %xdefine win64_unwind_codes
+%1:
+%endmacro
+
+%macro win64_prologue_push 1
+%%here:
+    %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_PUSH_NONVOL | (UWOP_REG_%+%1 << 4), win64_unwind_codes
+    push %1
+%endmacro
+
+%macro win64_prologue_alloc 1
+    %if %1 <= 128
+%%here:
+        %xdefine win64_unwind_codes (%%here-win64_proc_name), UWOP_ALLOC_SMALL | (((%1 / 8)-1) << 4), win64_unwind_codes
+        sub rsp, %1
+    %else
+        %error "Not implemented"
+    %endif
+%endmacro
+
+%macro win64_prologue_end 0
+%%here:
+    %define win64_proc_prologue_end %%here
+%endmacro
+
+%macro win64_pop_nonvol 1
+    %if %1 == UWOP_REG_RAX
+        pop rax
+    %elif %1 == UWOP_REG_RCX
+        pop rcx
+    %elif %1 == UWOP_REG_RDX
+        pop rdx
+    %elif %1 == UWOP_REG_RBX
+        pop rbx
+    %elif %1 == UWOP_REG_RSP
+        pop rsp
+    %elif %1 == UWOP_REG_RBP
+        pop rbp
+    %elif %1 == UWOP_REG_RSI
+        pop rsi
+    %elif %1 == UWOP_REG_RDI
+        pop rdi
+    %elif %1 == UWOP_REG_R8
+        pop r8
+    %elif %1 == UWOP_REG_R9
+        pop r9
+    %elif %1 == UWOP_REG_R10
+        pop r10
+    %elif %1 == UWOP_REG_R11
+        pop r11
+    %elif %1 == UWOP_REG_R12
+        pop r12
+    %elif %1 == UWOP_REG_R13
+        pop r13
+    %elif %1 == UWOP_REG_R14
+        pop r14
+    %elif %1 == UWOP_REG_R15
+        pop r15
+    %else
+        %error %1 is invalid
+    %endif
+%endmacro
+
+%macro win64_restore 2-*
+    %rep  %0 / 2
+        %rotate 1
+        %if ((%1)&15) == UWOP_PUSH_NONVOL
+            win64_pop_nonvol (%1>>4)
+        %elif ((%1)&15) == UWOP_ALLOC_SMALL
+            add rsp, ((%1 >> 4) + 1) * 8
+        %else
+            %error "Unimplmented OP"
+        %endif
+        %rotate 1
+    %endrep
+%endmacro
+
+%macro win64_epilogue 0
+    win64_restore win64_unwind_codes
+%endmacro
+
+%macro win64_proc_end 0
+%%end:
+
+    [section .pdata rdata align=4]
+    ; RUNTIME_FUNCTION
+    dd win64_proc_name wrt ..imagebase
+    dd %%end wrt ..imagebase
+    dd %%unwind wrt ..imagebase
+
+    [section .xdata rdata align=8]
+%%unwind:
+    db 1 | (0 << 3)                                          ; Version = 1, Flags = 0
+    db win64_proc_prologue_end-win64_proc_name               ; SizeOfProlog
+    db (%%codes_end-%%codes) / 2 ; CountOfCodes
+    db 0 | (0 << 4)                                          ; FrameRegister=0, FrameOffset=0
+%%codes:
+    db win64_unwind_codes
+%%codes_end:
+    align 8
+    __SECT__
+
+%undef win64_proc_prologue_end
+%undef win64_unwind_codes
+%undef win64_proc_name
+%endmacro
+

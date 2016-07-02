@@ -1,4 +1,4 @@
-%include "pe.inc"
+%include "../stage3/attos/pe.inc"
 
 %macro pe_check_u16 2
     cmp word [%1], %2
