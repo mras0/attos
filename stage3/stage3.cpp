@@ -463,5 +463,6 @@ void stage3_entry(const arguments& args)
     // ATA
     ata::test();
 
+    sw_int<0x80>();
     interactive_mode(ps2c);
 }

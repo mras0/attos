@@ -299,11 +299,14 @@ inline array_view<IMAGE_SECTION_HEADER> IMAGE_NT_HEADERS::sections() const {
     return {begin, end};
 }
 
-using find_image_function_type = const IMAGE_DOS_HEADER* (*)(uint64_t);
-using print_address_function_type = void (out_stream&, uint64_t);
-void print_stack(out_stream& os, find_image_function_type find_image, print_address_function_type print_address);
-
 uint32_t file_size_from_header(const IMAGE_DOS_HEADER& image);
+
+//
+// Unwind
+//
+using find_image_function_type = const IMAGE_DOS_HEADER* (*)(uint64_t);
+using print_address_function_type = void (out_stream&, const IMAGE_DOS_HEADER&, uint64_t);
+void print_stack(out_stream& os, find_image_function_type find_image, print_address_function_type print_address);
 
 } } // namespace attos::pe
 

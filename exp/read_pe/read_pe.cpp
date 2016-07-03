@@ -91,13 +91,9 @@ const char* image_filename(const IMAGE_DOS_HEADER& image)
     return p;
 }
 
-void print_address(out_stream& os, uint64_t rip)
+void print_address(out_stream& os, const IMAGE_DOS_HEADER& image, uint64_t rip)
 {
-    if (auto image = find_image(rip)) {
-        os << image_filename(*image) << "!+0x" << as_hex(rip - (uint64_t)image).width(4);
-    } else {
-        os << as_hex(rip);
-    }
+    os << image_filename(image) << "!+0x" << as_hex(rip - (uint64_t)&image).width(6);
 }
 
 extern "C" void test_fun(void);

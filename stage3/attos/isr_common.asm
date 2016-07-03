@@ -25,7 +25,7 @@ struc registers
     .r14             resq 1
     .r15             resq 1
     .fx_state        resb 512
-    .reserved        resq 1 ; For alignment
+    .reserved2       resq 1 ; For alignment of fx state
 registers_saved_size: ; only the above are saved by code
     .interrupt_no    resq 1 ; pushed by isr
     .error_code      resq 1 ; pushed by system (or isr)
@@ -46,10 +46,11 @@ struc interrupt_gate
     .reserved    resd 1
 endstruc
 
-%define win64_shadow_space_size 32
-%define isr_common_stack_alloc registers_saved_size + win64_shadow_space_size
+%define isr_local_size (32+8) ; 32 bytes for the shadow space and 8 bytes to ensure alignment
+%define isr_common_stack_alloc registers_saved_size + isr_local_size
+%define isr_registers_offset isr_local_size
 
-%define isr_common_reg_offset(REG) win64_shadow_space_size + registers.%+REG
+%define isr_common_reg_offset(REG)  isr_registers_offset + registers.%+REG
 
 %macro save_reg 1
     ;mov [rsp + isr_common_reg_offset(%1)], %1
@@ -86,7 +87,7 @@ win64_proc isr_common
     ; ensure direction flag is cleared
     cld
 
-    lea  rcx, [rsp+win64_shadow_space_size] ; arg = registers*
+    lea  rcx, [rsp+isr_registers_offset] ; arg = registers*
     call interrupt_service_routine
 
     ; restore fx state

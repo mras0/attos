@@ -421,7 +421,7 @@ const pe::IMAGE_DOS_HEADER* find_image(uint64_t rip)
     return &__ImageBase;
 }
 
-void print_address(out_stream& os, uint64_t address)
+void print_address(out_stream& os, const pe::IMAGE_DOS_HEADER&, uint64_t address)
 {
     const auto& symbol = closest_symbol(address);
     os << symbol.text << "+0x" << as_hex(static_cast<uint32_t>(address - symbol.address)).width(4);
