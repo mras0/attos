@@ -55,12 +55,26 @@ public:
     explicit kvector() {
     }
 
+    kvector(kvector&& other) : begin_(other.begin_), end_(other.end_), real_end_(other.real_end_) {
+        other.begin_    = nullptr;
+        other.end_      = nullptr;
+        other.real_end_ = nullptr;
+    }
+
+    kvector(const kvector&) = delete;
+
     ~kvector() {
         clear();
     }
 
-    kvector(const kvector&) = delete;
     kvector& operator=(const kvector&) = delete;
+
+    kvector& operator=(kvector&& other) {
+        std::swap(begin_, other.begin_);
+        std::swap(end_, other.end_);
+        std::swap(real_end_, other.real_end_);
+        return *this;
+    }
 
     bool empty() const {
         return size() == 0;
@@ -100,6 +114,9 @@ public:
 
     T& front() const { return *begin_; }
     T& back() const { return *(end_-1); }
+
+    const T& operator[](size_t index) const { return *(begin_ + index); }
+    T& operator[](size_t index) { return *(begin_ + index); }
 
     void push_back(const T& elem) {
         ensure_room(size() + 1);

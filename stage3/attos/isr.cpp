@@ -256,6 +256,62 @@ private:
     uint16_t old_pic_mask_;
 };
 
+struct symbol_info {
+    uint64_t    address;
+    const char* text;
+};
+
+class debug_info_manager : public singleton<debug_info_manager> {
+public:
+    explicit debug_info_manager(char* data) {
+        while (*data) {
+            // TODO: Don't modify text data...
+            const auto symval = process_hex_number(data);
+            data += 16;
+            REQUIRE(*data == ' ');
+            const char* text = data;
+            while (*data != '\r') data++;
+            *data = '\0';
+            REQUIRE(*++data == '\n');
+            ++data;
+            symbols.push_back(symbol_info{symval, text});
+        }
+        REQUIRE(symbols.size() != 0);
+        REQUIRE(symbols[0].address == 0);
+        REQUIRE(symbols.back().address == ~0ULL);
+    }
+
+    const symbol_info& closest_symbol(uint64_t addr) const {
+        const symbol_info* best = &symbols[0];
+        for (const auto& s : symbols) {
+            if (s.address > addr) break;
+            best = &s;
+        }
+        return *best;
+    }
+
+private:
+    kvector<symbol_info> symbols;
+
+    static uint64_t hex_val(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+        if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+        REQUIRE(false);
+        return 0;
+    }
+
+    static uint64_t process_hex_number(const char* s) {
+        uint64_t n = 0;
+        for (int i = 0; i < 16; ++i) n = (n << 4) | hex_val(s[i]);
+        return n;
+    }
+};
+
+const symbol_info& closest_symbol(uint64_t addr) {
+    return debug_info_manager::instance().closest_symbol(addr);
+}
+
 void interrupt_service_routine(registers& r);
 void set_idt_entry(interrupt_gate& idt, void* code)
 {
@@ -271,7 +327,7 @@ void set_idt_entry(interrupt_gate& idt, void* code)
 
 class isr_handler_impl : public isr_handler, public singleton<isr_handler_impl> {
 public:
-    isr_handler_impl() : irq_handlers_() {
+    explicit isr_handler_impl(char* debug_info_text) : debug_info_(debug_info_text), irq_handlers_() {
         __sidt(&old_idt_desc_);
         dbgout() << "[isr] Loading interrupt descriptor table.\n";
         for (int i = 0; i < idt_count; ++i) {
@@ -314,12 +370,13 @@ private:
     static constexpr int idt_count     = 256;
     static constexpr int isr_code_size = 9;
 
-    pic_state      pic_state_;
-    interrupt_gate idt_[idt_count];
-    idt_descriptor old_idt_desc_;
-    idt_descriptor idt_desc_;
-    uint8_t isr_code_[isr_code_size * idt_count];
-    std::array<irq_handler_t, 16>  irq_handlers_;
+    debug_info_manager              debug_info_;
+    pic_state                       pic_state_;
+    interrupt_gate                  idt_[idt_count];
+    idt_descriptor                  old_idt_desc_;
+    idt_descriptor                  idt_desc_;
+    uint8_t                         isr_code_[isr_code_size * idt_count];
+    std::array<irq_handler_t, 16>   irq_handlers_;
 
     class isr_registration_impl : public isr_registration {
     public:
@@ -367,8 +424,8 @@ pe::IMAGE_DOS_HEADER& find_image(uint64_t rip)
 
 void print_line(uint64_t child_rsp, uint64_t return_address, uint64_t rip, const char* extra)
 {
-    const auto& image = find_image(rip);
-    dbgout() << as_hex(child_rsp) << " " << as_hex(return_address) << " kernel!+0x" << as_hex(static_cast<uint32_t>(rip - reinterpret_cast<uint64_t>(&image))).width(4) << " " << extra << "\n";
+    const auto& symbol = closest_symbol(rip);
+    dbgout() << as_hex(child_rsp) << " " << as_hex(return_address) << " " << symbol.text << "+0x" << as_hex(static_cast<uint32_t>(rip - symbol.address)).width(4) << " " << extra << "\n";
 }
 
 __declspec(noinline) auto get_rip() { return reinterpret_cast<uint64_t>(_ReturnAddress()); }
@@ -466,8 +523,8 @@ void interrupt_service_routine(registers& r)
 
 object_buffer<isr_handler_impl> isr_handler_buffer;
 
-owned_ptr<isr_handler, destruct_deleter> isr_init() {
-    return owned_ptr<isr_handler, destruct_deleter>{isr_handler_buffer.construct().release()};
+owned_ptr<isr_handler, destruct_deleter> isr_init(char* debug_info_text) {
+    return owned_ptr<isr_handler, destruct_deleter>{isr_handler_buffer.construct(debug_info_text).release()};
 }
 
 } // namespace attos

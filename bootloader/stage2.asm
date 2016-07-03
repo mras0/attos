@@ -1,4 +1,5 @@
-PAGE_TABLES_ADDRESS EQU 0x70000
+SCRATCH_ADDRESS EQU 0x00030000
+SCRATCH_SIZE    EQU 0x00090000-SCRATCH_ADDRESS
 
     org 0x7e00
     bits 16
@@ -105,9 +106,9 @@ test_longmode:
     mov es, ax
     mov ss, ax
 
-    ; clear page tabls
-    mov edi, PAGE_TABLES_ADDRESS
-    mov ecx, PAGE_TABLES_SIZE/4
+    ; clear scratch area
+    mov edi, SCRATCH_ADDRESS
+    mov ecx, SCRATCH_SIZE/4
     xor eax, eax
     rep stosd
 
@@ -141,6 +142,13 @@ test_longmode:
     dec eax
     jnz .sections
 .sectionsdone:
+
+    ; copy stage3 to new position
+    pushad
+    mov edi, stage3_copy
+    mov esi, stage3
+    rep movsb
+    popad
 
     ; map stage3
     ; TODO: Handle sections, e.g. initialize BSS...
@@ -176,7 +184,7 @@ test_longmode:
     mov ecx, [esi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.SizeOfImage]
     shr ecx, 12
     mov edi, pt_program
-    mov esi, stage3
+    mov esi, stage3_copy
 .initpage2:
     set_page_entry edi, 0, esi
     add esi, 4096
@@ -233,10 +241,11 @@ test_longmode:
     mov rbp, rsp  ; preserve old stack pointer
 
     ; build argument structure
-    sub rsp, 0x10
+    sub rsp, 0x18
     mov rcx, rsp
-    mov qword [rcx+0x00], IDENTITY_MAP_START+stage3
-    mov qword [rcx+0x08], IDENTITY_MAP_START+smap_buffer
+    mov qword [rcx+0x00], IDENTITY_MAP_START+stage3_copy
+    mov qword [rcx+0x08], IDENTITY_MAP_START+stage3
+    mov qword [rcx+0x10], IDENTITY_MAP_START+smap_buffer
 
     mov rax, IDENTITY_MAP_START
     add rcx, rax
@@ -244,7 +253,7 @@ test_longmode:
     and rsp, -16  ; in 64-bit the stack must be 16 byte aligned before a call
     sub rsp, 0x20 ; make room for the function to preserve rcx, rdx, r8 and r9
 
-    mov esi, stage3
+    mov esi, stage3_copy
     add esi, [rsi+IMAGE_DOS_HEADER.e_lfanew]
     ; rsi = IMAGE_NT_HEADERS*
     mov eax, [rsi+IMAGE_NT_HEADERS.OptionalHeader+IMAGE_OPTIONAL_HEADER64.AddressOfEntryPoint]
@@ -378,7 +387,7 @@ stage3: ; incbin "../stage3/stage3.exe"
 ; +------------------------------+--------+------+
 ;
 
-    absolute PAGE_TABLES_ADDRESS
+    absolute SCRATCH_ADDRESS
     align 4096, resb 1 ; page tables must be 4K aligned
 pml4         resb 4096 ; Page Map Level 4
 pdpt0        resb 4096 ; First Directory Pointer Table
@@ -387,5 +396,5 @@ pdt0         resb 4096 ; 0 Page Directory Table
 pdt_program  resb 4096 ; Program Page Directory Table
 pt_program   resb 4096 ; Program Page Table
 
-PAGE_TABLES_SIZE EQU $-$$
-
+    align 4096, resb 1
+stage3_copy:

@@ -315,6 +315,8 @@ struct unwind_result {
 // Unwind the stack once. Returns `rsp' ready to pop the next return address
 unwind_result unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const uint64_t* rsp);
 
+uint32_t file_size_from_header(const IMAGE_DOS_HEADER& image);
+
 } } // namespace attos::pe
 
 #endif

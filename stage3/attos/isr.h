@@ -93,7 +93,7 @@ private:
     virtual isr_registration_ptr do_register_irq_handler(uint8_t irq, irq_handler_t irq_handler) = 0;
 };
 
-owned_ptr<isr_handler, destruct_deleter> isr_init();
+owned_ptr<isr_handler, destruct_deleter> isr_init(char* debug_info_text);
 
 } // namespace attos
 

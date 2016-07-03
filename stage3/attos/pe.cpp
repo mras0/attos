@@ -106,5 +106,16 @@ unwind_result unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const uin
     return { rsp, unwind_frame_type::normal };
 }
 
+uint32_t file_size_from_header(const IMAGE_DOS_HEADER& image) {
+    REQUIRE(image.e_magic == IMAGE_DOS_SIGNATURE);
+    uint32_t size = 0;
+    for (const auto& s : image.nt_headers().sections()) {
+        if (s.SizeOfRawData) {
+            size = std::max(size, s.PointerToRawData + s.SizeOfRawData);
+        }
+    }
+    return size;
+}
+
 
 } } // namespace attos::pe

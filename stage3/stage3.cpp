@@ -317,12 +317,18 @@ struct arguments {
     const pe::IMAGE_DOS_HEADER& image_base() const {
         return *static_cast<const pe::IMAGE_DOS_HEADER*>(image_base_);
     }
+
+    const uint8_t* orig_file_data() const {
+        return static_cast<const uint8_t*>(orig_file_data_);
+    }
+
     const smap_entry* smap_entries() const {
         return static_cast<const smap_entry*>(smap_entries_);
     }
 
 private:
     physical_address image_base_;
+    physical_address orig_file_data_;
     physical_address smap_entries_;
 };
 
@@ -440,8 +446,11 @@ void stage3_entry(const arguments& args)
     // Construct initial memory manager
     auto mm = construct_mm(args.smap_entries(), args.image_base());
 
+    // Prepare debugging data
+    const auto file_size = file_size_from_header(args.image_base());
+    auto debug_info_text = (char*)args.orig_file_data() + file_size;
     // Initialize interrupt handlers
-    auto ih = isr_init();
+    auto ih = isr_init(debug_info_text);
 
     interrupt_timer timer{*ih}; // IRQ0 PIT
 
