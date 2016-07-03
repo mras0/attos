@@ -22,6 +22,17 @@ const RUNTIME_FUNCTION* runtime_function_info(array_view<RUNTIME_FUNCTION> rfs, 
     return it;
 }
 
+namespace {
+enum class unwind_frame_type {
+    leaf, normal, iret
+};
+
+struct unwind_result {
+    const uint64_t*   rsp;
+    unwind_frame_type frame_type;
+};
+
+// Unwind the stack once. Returns `rsp' ready to pop the next return address
 unwind_result unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const uint64_t* rsp) {
     const auto function_rva = static_cast<uint32_t>(reinterpret_cast<const uint8_t*>(rip) - reinterpret_cast<const uint8_t*>(&image));
     const auto rf = runtime_function_info(image.data_directory<RUNTIME_FUNCTION>(), function_rva);
@@ -106,6 +117,67 @@ unwind_result unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const uin
     return { rsp, unwind_frame_type::normal };
 }
 
+inline uint64_t read_stack(uint64_t rsp, uint64_t byte_offset) {
+    REQUIRE((rsp & 7) == 0);
+    REQUIRE((byte_offset & 7) == 0);
+    return *reinterpret_cast<const uint64_t*>(rsp + byte_offset);
+}
+
+class unwind_context {
+public:
+    uint64_t rsp() const { return rsp_; }
+    uint64_t rip() const { return rip_; }
+
+    unwind_context unwind() const {
+        auto image = find_image_(rip());
+        if (!image) {
+            return unwind_context{0, 0, find_image_};
+        }
+        auto frame = unwind_once(*image, rip(), reinterpret_cast<const uint64_t*>(rsp()));
+
+        if (frame.frame_type == unwind_frame_type::iret) {
+            return { frame.rsp[3], frame.rsp[0], find_image_ };
+        } else {
+            REQUIRE(frame.frame_type == unwind_frame_type::normal || frame.frame_type == unwind_frame_type::leaf);
+            auto next_rsp = reinterpret_cast<uint64_t>(frame.rsp);
+            return { next_rsp + 8, read_stack(next_rsp, 0), find_image_ };
+        }
+    }
+
+    // The very first from won't show exactly as WinDBG, but it's close enough.
+    static unwind_context from_current_context(find_image_function_type find_image) {
+        auto rsp_here = reinterpret_cast<uint64_t>(_AddressOfReturnAddress());
+        return unwind_context{ rsp_here + 8, read_stack(rsp_here, 0), find_image };
+    }
+
+private:
+    unwind_context(uint64_t rsp, uint64_t rip, find_image_function_type find_image) : rsp_(rsp), rip_(rip), find_image_(find_image) {
+    }
+
+    uint64_t rsp_;
+    uint64_t rip_;
+    find_image_function_type find_image_;
+};
+
+void default_print_address(out_stream& os, uint64_t addr) {
+    os << as_hex(addr);
+}
+
+} // unnamed namespace
+
+void print_stack(out_stream& os, find_image_function_type find_image, print_address_function_type print_address) {
+    if (!print_address) print_address = &default_print_address;
+
+    os << "Child-SP          RetAddr           Call Site\n";
+    for (auto context = unwind_context::from_current_context(find_image); context.rip();) {
+        auto next = context.unwind();
+        os << as_hex(context.rsp()) << " " << as_hex(next.rip()) << " ";
+        print_address(os, context.rip());
+        os << "\n";
+        context = next;
+    }
+}
+
 uint32_t file_size_from_header(const IMAGE_DOS_HEADER& image) {
     REQUIRE(image.e_magic == IMAGE_DOS_SIGNATURE);
     uint32_t size = 0;
@@ -116,6 +188,5 @@ uint32_t file_size_from_header(const IMAGE_DOS_HEADER& image) {
     }
     return size;
 }
-
 
 } } // namespace attos::pe

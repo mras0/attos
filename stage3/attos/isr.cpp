@@ -268,7 +268,7 @@ public:
             // TODO: Don't modify text data...
             const auto symval = process_hex_number(data);
             data += 16;
-            REQUIRE(*data == ' ');
+            REQUIRE(*data++ == ' ');
             const char* text = data;
             while (*data != '\r') data++;
             *data = '\0';
@@ -413,66 +413,18 @@ bool in_image(uint64_t rip)
     return (rip >= ioh.ImageBase && rip < ioh.ImageBase + ioh.SizeOfImage);
 }
 
-pe::IMAGE_DOS_HEADER& find_image(uint64_t rip)
+const pe::IMAGE_DOS_HEADER* find_image(uint64_t rip)
 {
     if (!in_image(rip)) {
-        dbgout() << "RIP = " << as_hex(rip) << "\n";
-        REQUIRE(false);
+        return nullptr;
     }
-    return __ImageBase;
+    return &__ImageBase;
 }
 
-void print_line(uint64_t child_rsp, uint64_t return_address, uint64_t rip, const char* extra)
+void print_address(out_stream& os, uint64_t address)
 {
-    const auto& symbol = closest_symbol(rip);
-    dbgout() << as_hex(child_rsp) << " " << as_hex(return_address) << " " << symbol.text << "+0x" << as_hex(static_cast<uint32_t>(rip - symbol.address)).width(4) << " " << extra << "\n";
-}
-
-__declspec(noinline) auto get_rip() { return reinterpret_cast<uint64_t>(_ReturnAddress()); }
-
-void print_stack(const registers& r)
-{
-    dbgout() << "Child-SP          RetAddr           Call Site\n";
-
-#if 1
-    // Start stack trace from fault address
-    auto rip = r.rip;
-    auto child_rsp = unwind_once(find_image(rip), rip, reinterpret_cast<const uint64_t*>(r.rsp)).rsp;
-#else
-    // Start stack trace from here
-    (void)r;
-    uint64_t rip = get_rip();
-    auto child_rsp = reinterpret_cast<const uint64_t*>(_AddressOfReturnAddress());
-#endif
-
-    // Handle first tricky entry
-    print_line(reinterpret_cast<uint64_t>(child_rsp), *child_rsp, rip, "");
-    auto rsp = child_rsp;
-    int frame_number = 1;
-    uint64_t next_rip = *rsp;
-    while (*rsp && in_image(*rsp)) {
-        rip = next_rip;
-        child_rsp = rsp + 1;
-        auto frame = unwind_once(find_image(rip), rip, rsp);
-        const char* extra =  "";
-        if (frame.frame_type == pe::unwind_frame_type::leaf) {
-            extra = "Leaf";
-            rsp = frame.rsp + 1;
-            next_rip = *rsp;
-        } else if (frame.frame_type == pe::unwind_frame_type::normal) {
-            rsp = frame.rsp + 1;
-            next_rip = *rsp;
-            extra = "";
-        } else {
-            REQUIRE (frame.frame_type == pe::unwind_frame_type::iret);
-            frame.rsp++; // TODO: HACK: Why is this necessary?
-            extra = "Intr";
-            next_rip = frame.rsp[0];
-            rsp = reinterpret_cast<const uint64_t*>(frame.rsp[3]); // TODO: Needs unwind?
-        }
-        print_line(reinterpret_cast<uint64_t>(child_rsp), *rsp, rip, extra);
-        REQUIRE(frame_number++ < 10);
-    }
+    const auto& symbol = closest_symbol(address);
+    os << symbol.text << "+0x" << as_hex(static_cast<uint32_t>(address - symbol.address)).width(4);
 }
 
 void interrupt_service_routine(registers& r)
@@ -509,7 +461,7 @@ void interrupt_service_routine(registers& r)
     REQUIRE(!isr_recurse_flag);
     isr_recurse_flag = true;
 
-    print_stack(r);
+    print_stack(dbgout(), find_image, print_address);
 
     isr_recurse_flag = false;
 

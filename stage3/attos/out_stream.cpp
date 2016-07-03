@@ -10,7 +10,7 @@ void format_number(out_stream& os, uint64_t number, unsigned base = 10, int min_
     int pos = sizeof(buffer);
     do {
         char c = static_cast<char>(number % base);
-        buffer[--pos] = c + (c > 9 ? 'A' - 10 : '0');
+        buffer[--pos] = c + (c > 9 ? 'a' - 10 : '0');
         number /= base;
     } while (number);
     int count = sizeof(buffer) - pos;

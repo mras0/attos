@@ -1,2 +1,2 @@
-bp read_pe!print_stack "r;k;g"
+bp read_pe!attos::pe::print_stack "r;k;g"
 g

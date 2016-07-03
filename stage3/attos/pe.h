@@ -5,6 +5,8 @@
 
 namespace attos {
 
+class out_stream;
+
 template<typename T>
 struct array_view {
 public:
@@ -297,23 +299,9 @@ inline array_view<IMAGE_SECTION_HEADER> IMAGE_NT_HEADERS::sections() const {
     return {begin, end};
 }
 
-struct unwind_information {
-    const uint64_t* child_rsp;
-    const uint64_t* rsp;
-    uint64_t rip;
-};
-
-enum class unwind_frame_type {
-    leaf, normal, iret
-};
-
-struct unwind_result {
-    const uint64_t*   rsp;
-    unwind_frame_type frame_type;
-};
-
-// Unwind the stack once. Returns `rsp' ready to pop the next return address
-unwind_result unwind_once(const IMAGE_DOS_HEADER& image, uint64_t rip, const uint64_t* rsp);
+using find_image_function_type = const IMAGE_DOS_HEADER* (*)(uint64_t);
+using print_address_function_type = void (out_stream&, uint64_t);
+void print_stack(out_stream& os, find_image_function_type find_image, print_address_function_type print_address);
 
 uint32_t file_size_from_header(const IMAGE_DOS_HEADER& image);
 

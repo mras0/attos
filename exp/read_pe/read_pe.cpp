@@ -52,11 +52,11 @@ constexpr uint32_t EXCEPTION_CONTINUE_EXECUTION = ~0U;
 #define FMT64   "%08x`%08x"
 #define PR64(x) (uint32_t)(((uint64_t)(x)) >> 32), (uint32_t)(((uint64_t)(x)))
 
-const IMAGE_DOS_HEADER& find_image(uint64_t virtual_address)
+const IMAGE_DOS_HEADER* find_image(uint64_t virtual_address)
 {
     const auto& ioh = __ImageBase.nt_headers().OptionalHeader;
     if (virtual_address >= ioh.ImageBase && virtual_address < ioh.ImageBase + ioh.SizeOfImage) {
-        return __ImageBase;
+        return &__ImageBase;
     }
 
     //printf("Searching for image for " FMT64 "\n", PR64(virtual_address));
@@ -66,8 +66,8 @@ const IMAGE_DOS_HEADER& find_image(uint64_t virtual_address)
         const auto error = GetLastError();
         dbgout() << "GetModuleHandleExA failed for " << as_hex(virtual_address) << ": " << error << "\n";
     }
-    const auto& image = *reinterpret_cast<const IMAGE_DOS_HEADER*>(module_handle);
-    REQUIRE(image.e_magic == IMAGE_DOS_SIGNATURE);
+    auto image = reinterpret_cast<const IMAGE_DOS_HEADER*>(module_handle);
+    REQUIRE(image->e_magic == IMAGE_DOS_SIGNATURE);
     return image;
 }
 
@@ -91,36 +91,21 @@ const char* image_filename(const IMAGE_DOS_HEADER& image)
     return p;
 }
 
-void print_line(uint64_t child_rsp, uint64_t return_address, uint64_t rip)
+void print_address(out_stream& os, uint64_t rip)
 {
-    const auto& image = find_image(rip);
-    printf(FMT64 " " FMT64 " %s!+0x%04x\n", PR64(child_rsp), PR64(return_address), image_filename(image), (uint32_t)(rip - (uint64_t)&image));
-}
-
-void print_stack()
-{
-    uint64_t rip = []{ return reinterpret_cast<uint64_t>(_ReturnAddress()); }();
-    auto child_rsp = reinterpret_cast<const uint64_t*>(_AddressOfReturnAddress());
-
-    printf("Child-SP          RetAddr           Call Site\n");
-    // Handle first tricky entry
-    print_line(reinterpret_cast<uint64_t>(child_rsp), *child_rsp, rip);
-    auto rsp = child_rsp;
-    while (*rsp) {
-        rip = *rsp;
-        child_rsp = rsp + 1;
-        auto frame = unwind_once(find_image(rip), rip, rsp);
-        REQUIRE(frame.frame_type == unwind_frame_type::normal || frame.frame_type == unwind_frame_type::leaf);
-        rsp = frame.rsp + 1;
-        print_line(reinterpret_cast<uint64_t>(child_rsp), *rsp, rip);
+    if (auto image = find_image(rip)) {
+        os << image_filename(*image) << "!+0x" << as_hex(rip - (uint64_t)image).width(4);
+    } else {
+        os << as_hex(rip);
     }
 }
+
 extern "C" void test_fun(void);
 
 constexpr uint32_t my_exception_code = 0x0000'FEDE; // WinDBG doesn't like exceptions that use the upper 16-bits of the exception code TODO: why?
 
 extern "C" void foo(void) {
-    print_stack();
+    print_stack(dbgout(), find_image, print_address);
     dbgout() << "\nRaising exception " << as_hex(my_exception_code) << "\n";
     RaiseException(my_exception_code, 0, 0, nullptr);
 }
