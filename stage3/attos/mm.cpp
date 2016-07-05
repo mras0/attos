@@ -243,14 +243,6 @@ private:
     uint64_t*                              pml4_;
     simple_heap                            kernel_heap_;
 
-    physical_address saved_cr3() const {
-        return saved_cr3_;
-    }
-
-    physical_address pml4() const {
-        return physical_address::from_identity_mapped_ptr(pml4_);
-    }
-
     physical_address alloc_physical(uint64_t size) {
         size = round_up(size, page_size);
         auto ptr = physical_pages_.alloc(size);
@@ -274,9 +266,8 @@ private:
         return table;
     }
 
-    virtual void do_ready() override {
-        REQUIRE(__readcr3() == saved_cr3());
-        __writecr3(pml4());
+    virtual physical_address do_pml4() const override {
+        return physical_address::from_identity_mapped_ptr(pml4_);
     }
 
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
@@ -326,10 +317,10 @@ owned_ptr<memory_manager, destruct_deleter> mm_init(physical_address base, uint6
     return owned_ptr<memory_manager, destruct_deleter>{mm.release()};
 }
 
-void print_page_tables(physical_address cr3)
+void print_page_tables(physical_address pml4_address)
 {
-    dbgout() << "cr3 = " << as_hex(cr3) << "\n";
-    auto pml4 = table_entry(cr3);
+    dbgout() << "pml4 = " << as_hex(pml4_address) << "\n";
+    auto pml4 = table_entry(pml4_address);
     for (int i = 0; i < 512; ++i ) {
         if (pml4[i] & PAGEF_PRESENT) {
             dbgout() << as_hex(i) << " " << as_hex(pml4[i]) << "\n";
@@ -359,11 +350,11 @@ void print_page_tables(physical_address cr3)
     }
 }
 
-physical_address virt_to_phys(physical_address cr3, virtual_address virt)
+physical_address virt_to_phys(physical_address pml4, virtual_address virt)
 {
-    //dbgout() << "virt_to_phys(" << as_hex(cr3) << ", " << as_hex(virt) << ")\n";
+    //dbgout() << "virt_to_phys(" << as_hex(pml4) << ", " << as_hex(virt) << ")\n";
 
-    const auto pml4e = table_entry(cr3)[virt.pml4e()];
+    const auto pml4e = table_entry(pml4)[virt.pml4e()];
     //dbgout() << "PML4 " << as_hex(pml4e) << "\n";
     REQUIRE(pml4e & PAGEF_PRESENT);
 

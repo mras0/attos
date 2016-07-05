@@ -11,8 +11,8 @@ public:
 
     static constexpr uint64_t page_size = 4096;
 
-    void ready() {
-        do_ready();
+    physical_address pml4() const {
+        return do_pml4();
     }
 
     void map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) {
@@ -20,14 +20,14 @@ public:
     }
 
 private:
-    virtual void do_ready() = 0;
+    virtual physical_address do_pml4() const = 0;
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) = 0;
 };
 
 owned_ptr<memory_manager, destruct_deleter> mm_init(physical_address base, uint64_t length);
-void print_page_tables(physical_address cr3);
+void print_page_tables(physical_address pml4);
 
-physical_address virt_to_phys(physical_address cr3, virtual_address virt);
+physical_address virt_to_phys(physical_address pml4, virtual_address virt);
 
 
 void* kalloc(uint64_t size);

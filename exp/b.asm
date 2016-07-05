@@ -1,5 +1,7 @@
     bits 64
 
+    ltr cx
+
     mov ax, cs
     mov ax, ds
     mov ax, es

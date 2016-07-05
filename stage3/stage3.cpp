@@ -305,7 +305,7 @@ owned_ptr<memory_manager, destruct_deleter> construct_mm(const smap_entry* smap,
     mm->map_memory(virtual_address{nth.OptionalHeader.ImageBase}, image_size, memory_type_rwx, image_phys);
 
     // Switch to the new PML4
-    mm->ready();
+    __writecr3(mm->pml4());
     return mm;
 }
 
@@ -434,6 +434,10 @@ void interactive_mode(ps2::controller& ps2c)
     }
 }
 
+void usermode_test()
+{
+}
+
 void stage3_entry(const arguments& args)
 {
     // First make sure we can output debug information
@@ -463,6 +467,7 @@ void stage3_entry(const arguments& args)
     // ATA
     ata::test();
 
-    sw_int<0x80>();
+    usermode_test();
+
     interactive_mode(ps2c);
 }
