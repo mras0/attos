@@ -66,6 +66,7 @@ inline F* make_fun(const char* code) {
 
 #define C_MOV_AX_CS         C_OPSIZE "\x8C\xC8"
 #define C_MOV_RAX_RSP       C_REX_W "\x89\xE0"
+
 #define C_PUSH_IMM8         "\x6A"
 #define C_PUSH_IMM32        "\x68"
 #define C_PUSH_RAX          "\x50"
@@ -83,6 +84,7 @@ void (*bochs_magic)() = make_fun<void (void)>(C_XCHG_BX_BX C_RET);
 const auto read_cs = make_fun<uint16_t ()>(C_MOV_AX_CS C_RET);
 const auto ltr = make_fun<void (uint16_t)>(C_LTR_CX C_RET);
 
+// RIP, CS, EFLAGS, Old RSP, SS
 const auto iretq = make_fun<void (uint64_t)>(
     C_MOV_RAX_RSP
     C_PUSH_IMM8 "\x00"      // ss
@@ -94,34 +96,6 @@ const auto iretq = make_fun<void (uint64_t)>(
     C_PUSH_QWORD_RAX        // rip
     C_IRETQ
 );
-
-
-#if 0
-template<uint8_t InterruptNo>
-void sw_int() {
-    static constexpr uint8_t code[] = { 0xCD, InterruptNo, 0xC3 }; // int InterruptNo; ret
-    ((void (*)(void))(void*)code)();
-}
-
-00000000  668CC8            mov ax,cs
-00000003  668CD8            mov ax,ds
-00000006  668CC0            mov ax,es
-00000009  8ED8              mov ds,eax
-0000000B  8EC0              mov es,eax
-0000000D  4889E0            mov rax,rsp
-00000010  6A10              push byte +0x10
-00000012  50                push rax
-00000013  6A02              push byte +0x2
-00000015  6A08              push byte +0x8
-00000017  6878563412        push qword 0x12345678
-0000001C  48CF              iretq
-0000001E  90                nop
-0000001F  51                push rcx
-00000020  52                push rdx
-00000021  4150              push r8
-00000023  4151              push r9
-00000025  55                push rbp
-#endif
 
 class cpu_manager_impl : public cpu_manager {
 public:

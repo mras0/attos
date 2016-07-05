@@ -434,8 +434,32 @@ void interactive_mode(ps2::controller& ps2c)
     }
 }
 
+extern "C" void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags); // crt.asm - yeah doesn't belong there...
+
+class process_memory_manager : public memory_manager {
+public:
+    process_memory_manager() {
+        dbgout() << "process_memory_manager starting\n";
+    }
+    ~process_memory_manager() {
+        dbgout() << "process_memory_manager stopping\n";
+    }
+private:
+
+    virtual physical_address do_pml4() const override {
+        REQUIRE(false);
+        return physical_address{0};
+    }
+
+    virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
+        (void) virt; (void) length; (void) type; (void) phys;
+        REQUIRE(false);
+    }
+};
+
 void usermode_test()
 {
+    process_memory_manager pmm;
 }
 
 void stage3_entry(const arguments& args)

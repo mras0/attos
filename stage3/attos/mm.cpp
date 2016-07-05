@@ -12,6 +12,44 @@ inline uint64_t* table_entry(uint64_t table_value) {
     return static_cast<uint64_t*>(physical_address{table_value & ~(memory_manager::page_size - 1)});
 }
 
+template<uint64_t Alignment>
+class no_free_heap {
+public:
+    explicit no_free_heap(uint8_t* base, uint64_t length) : base_(base), end_(base + length), cur_(base) {
+        REQUIRE(!((uint64_t)base & (Alignment-1)));
+        REQUIRE(length >= Alignment);
+    }
+    no_free_heap(const no_free_heap&) = delete;
+    no_free_heap& operator=(const no_free_heap&) = delete;
+
+    uint8_t* alloc(uint64_t size) {
+        size = round_up(size, Alignment);
+        REQUIRE(cur_ + size <= end_);
+        auto ptr = cur_;
+        cur_ += size;
+        return ptr;
+    }
+
+private:
+    uint8_t* const base_;
+    uint8_t* const end_;
+    uint8_t* cur_;
+};
+
+template<typename T>
+class fixed_size_object_heap {
+public:
+    explicit fixed_size_object_heap(uint8_t* base, uint64_t length) : heap_{base, length} {
+    }
+
+    template<typename... Args>
+    T* construct(Args&&... args) {
+        return new (heap_.alloc(sizeof(T))) T(static_cast<Args&&>(args)...);
+    }
+
+private:
+    no_free_heap<alignof(T)> heap_;
+};
 
 class memory_mapping {
 private:
@@ -39,29 +77,90 @@ public:
     using tree_type = tree<memory_mapping, &memory_mapping::link_, compare>;
 };
 
+auto find_mapping(memory_mapping::tree_type& t, virtual_address addr, uint64_t length) {
+    //auto it = memory_map_tree_.lower_bound(memory_mapping{addr, length, memory_type_rwx});
+    //or something smarter
+    return std::find_if(t.begin(), t.end(), [addr, length](const auto& m) { return memory_areas_overlap(addr, length, m.address(), m.length()); });
+}
 
-template<uint64_t Alignment>
-class no_free_heap {
+physical_address alloc_physical_page();
+
+class memory_manager_base : public memory_manager {
 public:
-    explicit no_free_heap(uint8_t* base, uint64_t length) : base_(base), end_(base + length), cur_(base) {
-        REQUIRE(!((uint64_t)base & (Alignment-1)));
-        REQUIRE(length >= Alignment);
+    explicit memory_manager_base()
+        : memory_mappings_{alloc_physical_page(), page_size}
+        , pml4_{static_cast<uint64_t*>(alloc_physical_page())} {
     }
-    no_free_heap(const no_free_heap&) = delete;
-    no_free_heap& operator=(const no_free_heap&) = delete;
 
-    uint8_t* alloc(uint64_t size) {
-        size = round_up(size, Alignment);
-        REQUIRE(cur_ + size <= end_);
-        auto ptr = cur_;
-        cur_ += size;
-        return ptr;
+    ~memory_manager_base() {
+        // TODO: Free stuff...
     }
+
+    memory_manager_base(const memory_manager_base&) = delete;
+    memory_manager_base& operator=(const memory_manager_base&) = delete;
 
 private:
-    uint8_t* const base_;
-    uint8_t* const end_;
-    uint8_t* cur_;
+    fixed_size_object_heap<memory_mapping> memory_mappings_;
+    memory_mapping::tree_type              memory_map_tree_;
+    uint64_t*                              pml4_;
+
+    uint64_t* alloc_if_not_present(uint64_t& parent, uint64_t flags) {
+        if (parent & PAGEF_PRESENT) {
+            // TODO: Check flags
+            return table_entry(parent);
+        }
+        return alloc_table_entry(parent, flags);
+    }
+
+    uint64_t* alloc_table_entry(uint64_t& parent, uint64_t flags) {
+        auto table = static_cast<uint64_t*>(alloc_physical_page());
+        parent = physical_address::from_identity_mapped_ptr(table) | PAGEF_PRESENT | flags;
+        dbgout() << "[mem] Allocated page table. parent " << as_hex((uint64_t)&parent) << " <- " << as_hex(parent) << "\n";
+        return table;
+    }
+
+    virtual physical_address do_pml4() const override {
+        return physical_address::from_identity_mapped_ptr(pml4_);
+    }
+
+    virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
+        dbgout() << "[mem] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << " type = " << as_hex(type).width(0) << "\n";
+
+        const uint64_t map_page_size = static_cast<uint32_t>(type & memory_type::ps_1gb) ? (1<<30) : (1<<12);
+
+        // Check address alignment
+        REQUIRE((virt & (map_page_size - 1)) == 0);
+        REQUIRE((phys & (map_page_size - 1)) == 0);
+
+        // Check length
+        REQUIRE(length > 0);
+        REQUIRE(virt + length > virt && "No wraparound allowed");
+        REQUIRE((length & (map_page_size - 1)) == 0);
+
+        auto it = find_mapping(memory_map_tree_, virt, length);
+        if (it != memory_map_tree_.end()) {
+            dbgout() << "[mem] FATAL ERROR overlaps " << as_hex(it->address()) << "\n";
+            REQUIRE(false);
+        }
+
+        const uint64_t flags = PAGEF_WRITE;
+
+        auto mm = memory_mappings_.construct(virt, length, type);
+        memory_map_tree_.insert(*mm);
+
+        for (; length; length -= map_page_size, virt += map_page_size, phys += map_page_size) {
+            auto* pdp = alloc_if_not_present(pml4_[virt.pml4e()], flags);
+
+            if (static_cast<uint32_t>(type & memory_type::ps_1gb)) {
+                pdp[virt.pdpe()] = phys | PAGEF_PAGESIZE | PAGEF_PRESENT | flags;
+            } else {
+                auto* pd = alloc_if_not_present(pdp[virt.pdpe()], flags);
+                auto* pt = alloc_if_not_present(pd[virt.pde()], flags);
+                pt[virt.pte()] = phys | PAGEF_PRESENT | flags;
+            }
+            dbgout() << "[mem] " << as_hex(virt) << " " << as_hex(phys) << "\n";
+        }
+    }
 };
 
 // Simple heap. The free blocks are kept in list sorted according to memory address. Memory blocks are coalesced on free().
@@ -182,41 +281,16 @@ private:
 
 };
 
-
-template<typename T>
-class fixed_size_object_heap {
-public:
-    explicit fixed_size_object_heap(uint8_t* base, uint64_t length) : heap_{base, length} {
-    }
-
-    template<typename... Args>
-    T* construct(Args&&... args) {
-        return new (heap_.alloc(sizeof(T))) T(static_cast<Args&&>(args)...);
-    }
-
-private:
-    no_free_heap<alignof(T)> heap_;
-};
-
-
-auto find_mapping(memory_mapping::tree_type& t, virtual_address addr, uint64_t length)
-{
-    //auto it = memory_map_tree_.lower_bound(memory_mapping{addr, length, memory_type_rwx});
-    //or something smarter
-    return std::find_if(t.begin(), t.end(), [addr, length](const auto& m) { return memory_areas_overlap(addr, length, m.address(), m.length()); });
-}
-
 constexpr uint64_t initial_heap_size = 1<<20;
 
 class kernel_memory_manager : public memory_manager, public singleton<kernel_memory_manager> {
 public:
     explicit kernel_memory_manager(physical_address base, uint64_t length)
-        : physical_pages_{base, length}
-        , memory_mappings_{alloc_physical(page_size), page_size}
-        , saved_cr3_(__readcr3())
+        : saved_cr3_(__readcr3())
+        , physical_pages_{base, length}
         , kernel_heap_{alloc_physical(initial_heap_size), initial_heap_size} {
         dbgout() << "[mem] Starting. Base 0x" << as_hex(base) << " Length " << (length>>20) << " MB\n";
-        pml4_ = static_cast<uint64_t*>(alloc_physical(page_size));
+        mm_ = mm_buffer_.construct();
     }
 
     ~kernel_memory_manager() {
@@ -235,14 +309,6 @@ public:
         kernel_heap_.free(reinterpret_cast<uint8_t*>(ptr));
     }
 
-private:
-    no_free_heap<page_size>                physical_pages_;
-    fixed_size_object_heap<memory_mapping> memory_mappings_;
-    memory_mapping::tree_type              memory_map_tree_;
-    physical_address                       saved_cr3_;
-    uint64_t*                              pml4_;
-    simple_heap                            kernel_heap_;
-
     physical_address alloc_physical(uint64_t size) {
         size = round_up(size, page_size);
         auto ptr = physical_pages_.alloc(size);
@@ -250,63 +316,19 @@ private:
         return physical_address::from_identity_mapped_ptr(ptr);
     }
 
-
-    uint64_t* alloc_if_not_present(uint64_t& parent, uint64_t flags) {
-        if (parent & PAGEF_PRESENT) {
-            // TODO: Check flags
-            return table_entry(parent);
-        }
-        return alloc_table_entry(parent, flags);
-    }
-
-    uint64_t* alloc_table_entry(uint64_t& parent, uint64_t flags) {
-        auto table = static_cast<uint64_t*>(alloc_physical(page_size));
-        parent = physical_address::from_identity_mapped_ptr(table) | PAGEF_PRESENT | flags;
-        dbgout() << "[mem] Allocated page table. parent " << as_hex((uint64_t)&parent) << " <- " << as_hex(parent) << "\n";
-        return table;
-    }
+private:
+    physical_address                                 saved_cr3_;
+    no_free_heap<page_size>                          physical_pages_;
+    simple_heap                                      kernel_heap_;
+    object_buffer<memory_manager_base>               mm_buffer_;
+    owned_ptr<memory_manager_base, destruct_deleter> mm_;
 
     virtual physical_address do_pml4() const override {
-        return physical_address::from_identity_mapped_ptr(pml4_);
+        return mm_->pml4();
     }
 
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
-        dbgout() << "[mem] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << " type = " << as_hex(type).width(0) << "\n";
-
-        const uint64_t map_page_size = static_cast<uint32_t>(type & memory_type::ps_1gb) ? (1<<30) : (1<<12);
-
-        // Check address alignment
-        REQUIRE((virt & (map_page_size - 1)) == 0);
-        REQUIRE((phys & (map_page_size - 1)) == 0);
-
-        // Check length
-        REQUIRE(length > 0);
-        REQUIRE(virt + length > virt && "No wraparound allowed");
-        REQUIRE((length & (map_page_size - 1)) == 0);
-
-        auto it = find_mapping(memory_map_tree_, virt, length);
-        if (it != memory_map_tree_.end()) {
-            dbgout() << "[mem] FATAL ERROR overlaps " << as_hex(it->address()) << "\n";
-            REQUIRE(false);
-        }
-
-        const uint64_t flags = PAGEF_WRITE;
-
-        auto mm = memory_mappings_.construct(virt, length, type);
-        memory_map_tree_.insert(*mm);
-
-        for (; length; length -= map_page_size, virt += map_page_size, phys += map_page_size) {
-            auto* pdp = alloc_if_not_present(pml4_[virt.pml4e()], flags);
-
-            if (static_cast<uint32_t>(type & memory_type::ps_1gb)) {
-                pdp[virt.pdpe()] = phys | PAGEF_PAGESIZE | PAGEF_PRESENT | flags;
-            } else {
-                auto* pd = alloc_if_not_present(pdp[virt.pdpe()], flags);
-                auto* pt = alloc_if_not_present(pd[virt.pde()], flags);
-                pt[virt.pte()] = phys | PAGEF_PRESENT | flags;
-            }
-            dbgout() << "[mem] " << as_hex(virt) << " " << as_hex(phys) << "\n";
-        }
+        return mm_->map_memory(virt, length, type, phys);
     }
 };
 object_buffer<kernel_memory_manager> mm_buffer;
@@ -381,14 +403,17 @@ physical_address virt_to_phys(physical_address pml4, virtual_address virt)
     return physical_address{(pte & ~(memory_manager::page_size-1)) | (virt & (memory_manager::page_size-1)) };
 }
 
-void* kalloc(uint64_t size)
-{
+void* kalloc(uint64_t size) {
     return kernel_memory_manager::instance().kalloc(size);
 }
 
-void kfree(void* ptr)
-{
+void kfree(void* ptr) {
     kernel_memory_manager::instance().kfree(ptr);
+}
+
+// Internal use only
+physical_address alloc_physical_page() {
+    return kernel_memory_manager::instance().alloc_physical(memory_manager::page_size);
 }
 
 } // namespace attos
