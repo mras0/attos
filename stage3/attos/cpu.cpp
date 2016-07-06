@@ -100,7 +100,9 @@ const auto iretq = make_fun<void (uint64_t)>(
     C_IRETQ
 );
 
-class cpu_manager_impl : public cpu_manager {
+extern "C" void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags); // crt.asm - yeah doesn't belong there...
+
+class cpu_manager_impl : public cpu_manager, public singleton<cpu_manager_impl> {
 public:
     cpu_manager_impl() : old_cs_(read_cs()) {
         dbgout() << "[cpu] Initializing. Old CS=" << as_hex(old_cs_) << "\n";
@@ -123,11 +125,13 @@ public:
         ltr(gdt_tss0_low * 8);
         iretq(kernel_cs);
     }
+
     ~cpu_manager_impl() {
         dbgout() << "[cpu] Shutting down. Restoring GDT to limit " << as_hex(old_gdt_desc_.limit) << " base " << as_hex(old_gdt_desc_.base) << " CS " << as_hex(old_cs_) << "\n";
         _lgdt(&old_gdt_desc_);
         iretq(old_cs_);
     }
+
 private:
     gdt_descriptor old_gdt_desc_;
     uint16_t       old_cs_;
@@ -147,8 +151,19 @@ private:
 
     static_assert(gdt_kernel_cs*8 == kernel_cs, "");
     static_assert(gdt_kernel_ds*8 == kernel_ds, "");
+    static_assert(gdt_user_cs*8+3 == user_cs, "");
+    static_assert(gdt_user_ds*8+3 == user_ds, "");
 
     uint64_t gdt[gdt_entries_count];
+
+    void do_switch_to_context(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags) {
+        REQUIRE(tss_.rsp0 == 0);
+        REQUIRE(tss_.rsp1 == 0);
+        REQUIRE(tss_.rsp2 == 0);
+        tss_.rsp0 = ((uint64_t)_AddressOfReturnAddress());
+        switch_to(cs, rip, ss, rsp, flags);
+    }
+
 };
 
 object_buffer<cpu_manager_impl> cpu_manager_buffer;

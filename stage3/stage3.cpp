@@ -434,13 +434,11 @@ void interactive_mode(ps2::controller& ps2c)
     }
 }
 
-extern "C" void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags); // crt.asm - yeah doesn't belong there...
-
-__declspec(noinline) void foo() {
-    switch_to(cpu_manager::kernel_cs, (uint64_t)_ReturnAddress(), cpu_manager::kernel_ds, ((uint64_t)_AddressOfReturnAddress())+8, __readeflags());
+__declspec(noinline) void foo(cpu_manager& cpum) {
+    cpum.switch_to_context(kernel_cs, (uint64_t)_ReturnAddress(), kernel_ds, ((uint64_t)_AddressOfReturnAddress())+8, __readeflags());
 }
 
-void usermode_test()
+void usermode_test(cpu_manager& cpum)
 {
 #if 0
     auto mm = create_default_memory_manager();
@@ -448,14 +446,14 @@ void usermode_test()
     print_page_tables(mm->pml4());
 #endif
 #define P(x) dbgout() << #x << " " << as_hex(x) << "\n"
-    P(cpu_manager::kernel_cs);
+    P(kernel_cs);
     P((uint64_t)_ReturnAddress());
-    P(cpu_manager::kernel_ds);
+    P(kernel_ds);
     P((uint64_t)_AddressOfReturnAddress());
     P(0x02);
 #undef P
     dbgout() << "Doing magic!\n";
-    foo();
+    foo(cpum);
     dbgout() << "Bach from magic!\n";
 }
 
@@ -488,7 +486,7 @@ void stage3_entry(const arguments& args)
     // ATA
     ata::test();
 
-    usermode_test();
+    usermode_test(*cpu);
 
     interactive_mode(ps2c);
 }

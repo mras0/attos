@@ -317,7 +317,7 @@ void set_idt_entry(interrupt_gate& idt, void* code)
 {
     const uint64_t base = virtual_address::in_current_address_space(code);
     idt.offset_low  = base & 0xffff;
-    idt.selector    = cpu_manager::kernel_cs;
+    idt.selector    = kernel_cs;
     idt.ist         = 0;
     idt.type        = 0x8E; // (32-bit) Interrupt gate, present
     idt.offset_mid  = (base >> 16) & 0xffff;
@@ -436,6 +436,7 @@ void interrupt_service_routine(registers& r)
     if (has_error_code(r.interrupt_no)) {
         dbgout() << " error_code = " << as_hex(r.error_code);
     }
+
     if (is_irq(r.interrupt_no)) {
         const auto irq = irq_number(r.interrupt_no);
         dbgout() << " IRQ#" << irq << "\n";
@@ -456,6 +457,10 @@ void interrupt_service_routine(registers& r)
 #undef PREG2
 #undef PREG
     dbgout() << "eflags " << as_hex(r.rflags).width(8) << "\n"; // eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
+
+    if (r.interrupt_no == interrupt_number::PF) {
+        dbgout() << "Page fault. cr2 = " << as_hex(__readcr2()) << "\n";
+    }
 
     static bool isr_recurse_flag;
     REQUIRE(!isr_recurse_flag);
