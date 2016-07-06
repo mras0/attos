@@ -149,7 +149,7 @@ private:
         memory_map_tree_.insert(*mm);
 
         for (; length; length -= map_page_size, virt += map_page_size, phys += map_page_size) {
-            auto* pdp = alloc_if_not_present(pml4_[virt.pml4e()], flags);
+            auto* pdp = alloc_if_not_present(pml4_[virt.pml4e()], flags | (virt>>63 ? PAGEF_GLOBAL : 0)); // Hackish, if the high bit of the virtual address is set (= kernel memory) make the mapping global
 
             if (static_cast<uint32_t>(type & memory_type::ps_1gb)) {
                 pdp[virt.pdpe()] = phys | PAGEF_PAGESIZE | PAGEF_PRESENT | flags;
@@ -333,10 +333,10 @@ private:
 };
 object_buffer<kernel_memory_manager> mm_buffer;
 
-owned_ptr<memory_manager, destruct_deleter> mm_init(physical_address base, uint64_t length)
+memory_manager_ptr mm_init(physical_address base, uint64_t length)
 {
     auto mm = mm_buffer.construct(base, length);
-    return owned_ptr<memory_manager, destruct_deleter>{mm.release()};
+    return memory_manager_ptr{mm.release()};
 }
 
 void print_page_tables(physical_address pml4_address)
@@ -414,6 +414,13 @@ void kfree(void* ptr) {
 // Internal use only
 physical_address alloc_physical_page() {
     return kernel_memory_manager::instance().alloc_physical(memory_manager::page_size);
+}
+
+kowned_ptr<memory_manager> create_default_memory_manager() {
+    auto mmb = knew<memory_manager_base>();
+    // The mm is born with the current high mem (kernel) mapping
+    move_memory(static_cast<uint64_t*>(mmb->pml4()) + 256, static_cast<const uint64_t*>(kernel_memory_manager::instance().pml4()) + 256, 256 * sizeof(uint64_t));
+    return kowned_ptr<memory_manager>{mmb.release()};
 }
 
 } // namespace attos

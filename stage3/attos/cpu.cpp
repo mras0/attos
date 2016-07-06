@@ -38,6 +38,9 @@ struct tss : tss_header {
     static constexpr unsigned io_bitmap_bytes = io_bitmap_bits / 8;
     static constexpr unsigned io_bitmap_elems = io_bitmap_bytes / sizeof(uint64_t);
 
+    // AMD24593 - AMD64 Architecture Programmer's Manual Volume 2 - System Programming, 12.2.4, pg. 336
+    // An extra byte must be present after the last IOPB byte. This byte must have all bits set to 1 (0FFh).
+    // This allows the processor to read two IOPB bytes each time an I/O port is accessed.
     uint64_t io_bitmap[io_bitmap_elems + 1];
 
     void allow_port(uint16_t port) {

@@ -24,11 +24,12 @@ private:
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) = 0;
 };
 
-owned_ptr<memory_manager, destruct_deleter> mm_init(physical_address base, uint64_t length);
+using memory_manager_ptr = owned_ptr<memory_manager, destruct_deleter>;
+
+memory_manager_ptr mm_init(physical_address base, uint64_t length);
 void print_page_tables(physical_address pml4);
 
 physical_address virt_to_phys(physical_address pml4, virtual_address virt);
-
 
 void* kalloc(uint64_t size);
 void kfree(void* ptr);
@@ -156,6 +157,8 @@ private:
         kfree(beg);
     }
 };
+
+kowned_ptr<memory_manager> create_default_memory_manager();
 
 } // namespace attos
 #endif

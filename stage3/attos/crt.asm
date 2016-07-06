@@ -22,15 +22,15 @@ memset:
 
 
 switch_to:
-    ; rsp-0x20 <- rip
-    ; rsp-0x18 <- cs
-    ; rsp-0x10 <- flags
-    ; rsp-0x08 <- ss
-    ; rsp-0x00 <- rsp
-    mov [rsp-0x20], rdx ; rip
-    mov [rsp-0x18], rcx ; cs
-    mov rcx, [rsp-0x08] ; rcx <- flags
-    mov [rsp-0x10], rcx ; flags
-    mov [rsp-0x08], r9  ; rsp
-    mov [rsp-0x00], r8  ; ss (overwriting return address!)
+    ; rsp+0x00 <- rip
+    mov [rsp+0x00], rdx ; rip (overwriting return address!)
+    ; rsp+0x08 <- cs
+    mov [rsp+0x08], rcx ; cs
+    ; rsp+0x10 <- flags
+    mov rcx, [rsp+0x28] ; rcx <- flags (parameter)
+    mov [rsp+0x10], rcx ; flags
+    ; rsp+0x18 <- rsp
+    mov [rsp+0x18], r9  ; rsp
+    ; rsp+0x20 <- ss
+    mov [rsp+0x20], r8  ; ss
     iretq
