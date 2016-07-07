@@ -74,10 +74,6 @@ constexpr bool is_irq(interrupt_number n) {
     return  n >= interrupt_number::IRQ0 && n <= interrupt_number::IRQF;
 }
 
-constexpr bool is_user_callable(interrupt_number n) {
-    return n == interrupt_number::TEST;
-}
-
 constexpr uint8_t irq_number(interrupt_number n) {
     return static_cast<uint8_t>(n) - static_cast<uint8_t>(interrupt_number::IRQ0);
 }
@@ -92,34 +88,10 @@ constexpr bool has_error_code(interrupt_number n) {
            n == interrupt_number::AC;
 }
 
-// Must match the structure in isr_common.asm
-struct registers {
-    uint64_t rax;
-    uint64_t rbx;
-    uint64_t rcx;
-    uint64_t rdx;
-    uint64_t rbp;
-    uint64_t rsi;
-    uint64_t rdi;
-    uint64_t r8;
-    uint64_t r9;
-    uint64_t r10;
-    uint64_t r11;
-    uint64_t r12;
-    uint64_t r13;
-    uint64_t r14;
-    uint64_t r15;
-    uint8_t  fx_state[512];
-    uint64_t reserved;
-    interrupt_number interrupt_no;
-    uint8_t  reservered[7];
-    uint64_t error_code;
-    uint64_t rip;
-    uint64_t cs;
-    uint64_t rflags;
-    uint64_t rsp;
-    uint64_t ss;
-};
+constexpr bool is_user_callable(interrupt_number n) {
+    return n == interrupt_number::TEST;
+}
+
 
 extern "C" void isr_common(void);
 extern "C" void interrupt_service_routine(registers&);
@@ -434,14 +406,9 @@ void print_address(out_stream& os, const pe::IMAGE_DOS_HEADER&, uint64_t address
     os << symbol.text << "+0x" << as_hex(static_cast<uint32_t>(address - symbol.address)).width(4);
 }
 
-extern uint64_t hack_user_mode_return_rip;
-
-void interrupt_service_routine(registers& r)
+__declspec(noreturn) void unhandled_interrupt(const registers& r)
 {
-    if (is_irq(r.interrupt_no) && isr_handler_impl::instance().on_irq(irq_number(r.interrupt_no))) {
-        return;
-    }
-    dbgout() << "interrupt_service_routine: interrupt 0x" << as_hex(r.interrupt_no);
+    dbgout() << "Unhandled interrupt 0x" << as_hex(r.interrupt_no);
     if (has_error_code(r.interrupt_no)) {
         dbgout() << " error_code = " << as_hex(r.error_code);
     }
@@ -465,7 +432,7 @@ void interrupt_service_routine(registers& r)
     PREG(rip, ' ');
 #undef PREG2
 #undef PREG
-    dbgout() << "eflags " << as_hex(r.rflags).width(8) << "\n"; // eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
+    dbgout() << "eflags " << as_hex(r.eflags) << "\n"; // eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
     dbgout() << "cs: " << as_hex(r.cs).width(2) << " ss: " << as_hex(r.ss).width(2) << "\n";
 
     if (r.interrupt_no == interrupt_number::PF) {
@@ -480,21 +447,22 @@ void interrupt_service_routine(registers& r)
 
     isr_recurse_flag = false;
 
-    if (r.interrupt_no == interrupt_number::TEST) {
+    REQUIRE(!"Unhandled interrupt");
+}
+
+void interrupt_service_routine(registers& r)
+{
+    if (is_irq(r.interrupt_no) && isr_handler_impl::instance().on_irq(irq_number(r.interrupt_no))) {
+    } else if (r.interrupt_no == interrupt_number::TEST) {
         if (r.cs == user_cs) {
             dbgout() << "Returning from user mode\n";
-            r.ss  = kernel_ds;
-            r.rsp = tss_rsp0();
-            r.cs  = kernel_cs;
-            r.rip = hack_user_mode_return_rip;
-            return;
+            restore_switch_to_context(r);
+        } else {
+            dbgout() << "HACK: Ignoring interrupt 0x" << as_hex(static_cast<uint8_t>(interrupt_number::TEST)) << "\n";
         }
-
-        dbgout() << "HACK: Ignoring interrupt 0x" << as_hex(static_cast<uint8_t>(interrupt_number::TEST)) << "\n";
-        return;
+    } else {
+        unhandled_interrupt(r);
     }
-
-    REQUIRE(!"Unhandled interrupt");
 }
 
 object_buffer<isr_handler_impl> isr_handler_buffer;

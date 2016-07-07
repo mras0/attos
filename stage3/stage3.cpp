@@ -439,18 +439,14 @@ void interactive_mode(ps2::controller& ps2c)
     }
 }
 
-__declspec(noinline) void foo(cpu_manager& cpum) {
-    //cpum.switch_to_context(kernel_cs, (uint64_t)_ReturnAddress(), kernel_ds, ((uint64_t)_AddressOfReturnAddress())+8, __readeflags());
-    cpum.switch_to_context(user_cs, (uint64_t)(void*)&sw_int<0x80>, user_ds, identity_map_start+(4<<20), __readeflags());
-}
-
 void usermode_test(cpu_manager& cpum)
 {
-    //auto mm = create_default_memory_manager();
-    //print_page_tables(mm->pml4());
+    auto mm = create_default_memory_manager();
+    print_page_tables(mm->pml4());
 
     dbgout() << "Doing magic!\n";
-    foo(cpum);
+    const uint64_t user_rsp = identity_map_start+(4<<20);
+    cpum.switch_to_context(user_cs, (uint64_t)(void*)&sw_int<0x80>, user_ds, user_rsp, __readeflags());
     dbgout() << "Bach from magic!\n";
     read_key();
 }

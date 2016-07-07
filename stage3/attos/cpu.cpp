@@ -101,7 +101,7 @@ const auto iretq = make_fun<void (uint64_t)>(
 );
 
 extern "C" void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags); // crt.asm - yeah doesn't belong there...
-uint64_t hack_user_mode_return_rip;
+
 class cpu_manager_impl : public cpu_manager, public singleton<cpu_manager_impl> {
 public:
     cpu_manager_impl() : old_cs_(read_cs()) {
@@ -136,10 +136,20 @@ public:
         return tss_.rsp0;
     }
 
+    void restore_switch_to_context(registers& r) {
+        REQUIRE(switch_to_context_rip_ != 0);
+        r.ss  = kernel_ds;
+        r.rsp = tss_.rsp0;
+        r.cs  = kernel_cs;
+        r.rip = switch_to_context_rip_;
+        switch_to_context_rip_ = 0;
+    }
+
 private:
     gdt_descriptor old_gdt_desc_;
     uint16_t       old_cs_;
     tss            tss_;
+    uint64_t       switch_to_context_rip_ = 0;
 
     enum gdt_entries {
         gdt_null,
@@ -164,8 +174,9 @@ private:
         REQUIRE(tss_.rsp0 == 0);
         REQUIRE(tss_.rsp1 == 0);
         REQUIRE(tss_.rsp2 == 0);
+        REQUIRE(switch_to_context_rip_ == 0);
         tss_.rsp0 = ((uint64_t)_AddressOfReturnAddress());
-        hack_user_mode_return_rip = (uint64_t)_ReturnAddress();
+        switch_to_context_rip_ = (uint64_t)_ReturnAddress();
         switch_to(cs, rip, ss, rsp, flags);
     }
 
@@ -177,8 +188,8 @@ owned_ptr<cpu_manager, destruct_deleter> cpu_init() {
     return owned_ptr<cpu_manager, destruct_deleter>{cpu_manager_buffer.construct().release()};
 }
 
-uint64_t& tss_rsp0() {
-    return cpu_manager_impl::instance().tss_rsp0();
+void restore_switch_to_context(registers& r) {
+    cpu_manager_impl::instance().restore_switch_to_context(r);
 }
 
 } // namespace attos
