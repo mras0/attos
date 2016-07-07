@@ -86,6 +86,13 @@ private:
     bool were_interrupts_enabled_;
 };
 
+enum class descriptor_privilege_level : uint8_t {
+    kernel = 0,
+    user   = 3
+};
+
+uint64_t& tss_rsp0(); // TEMP
+
 }  // namespace attos
 
 #endif

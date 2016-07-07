@@ -143,7 +143,7 @@ private:
             REQUIRE(false);
         }
 
-        const uint64_t flags = PAGEF_WRITE;
+        const uint64_t flags = PAGEF_WRITE | PAGEF_USER; // MONSTER HACK(s)!!
 
         auto mm = memory_mappings_.construct(virt, length, type);
         memory_map_tree_.insert(*mm);

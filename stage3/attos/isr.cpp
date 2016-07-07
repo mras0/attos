@@ -66,10 +66,16 @@ enum class interrupt_number : uint8_t {
     IRQD = 0x3D, // FPU
     IRQE = 0x3E, // Primary ATA
     IRQF = 0x3F, // Secondary ATA
+
+    TEST = 0x80,
 };
 
 constexpr bool is_irq(interrupt_number n) {
     return  n >= interrupt_number::IRQ0 && n <= interrupt_number::IRQF;
+}
+
+constexpr bool is_user_callable(interrupt_number n) {
+    return n == interrupt_number::TEST;
 }
 
 constexpr uint8_t irq_number(interrupt_number n) {
@@ -313,13 +319,14 @@ const symbol_info& closest_symbol(uint64_t addr) {
 }
 
 void interrupt_service_routine(registers& r);
-void set_idt_entry(interrupt_gate& idt, void* code)
+
+void set_idt_entry(interrupt_gate& idt, void* code, descriptor_privilege_level dpl)
 {
     const uint64_t base = virtual_address::in_current_address_space(code);
     idt.offset_low  = base & 0xffff;
     idt.selector    = kernel_cs;
     idt.ist         = 0;
-    idt.type        = 0x8E; // (32-bit) Interrupt gate, present
+    idt.type        = 0x8E | (static_cast<uint8_t>(dpl)<<5); // (32-bit) Interrupt gate, present
     idt.offset_mid  = (base >> 16) & 0xffff;
     idt.offset_high = base >> 32;
     idt.reserved    = 0;
@@ -339,7 +346,7 @@ public:
             }
             c.push_imm8(static_cast<uint8_t>(i));
             c.call_rel32(&isr_common);
-            set_idt_entry(idt_[i], code);
+            set_idt_entry(idt_[i], code, is_user_callable(n) ? descriptor_privilege_level::user : descriptor_privilege_level::kernel);
         }
         idt_desc_.limit = sizeof(idt_)-1;
         idt_desc_.base  = virtual_address::in_current_address_space(&idt_);
@@ -427,6 +434,8 @@ void print_address(out_stream& os, const pe::IMAGE_DOS_HEADER&, uint64_t address
     os << symbol.text << "+0x" << as_hex(static_cast<uint32_t>(address - symbol.address)).width(4);
 }
 
+extern uint64_t hack_user_mode_return_rip;
+
 void interrupt_service_routine(registers& r)
 {
     if (is_irq(r.interrupt_no) && isr_handler_impl::instance().on_irq(irq_number(r.interrupt_no))) {
@@ -457,6 +466,7 @@ void interrupt_service_routine(registers& r)
 #undef PREG2
 #undef PREG
     dbgout() << "eflags " << as_hex(r.rflags).width(8) << "\n"; // eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
+    dbgout() << "cs: " << as_hex(r.cs).width(2) << " ss: " << as_hex(r.ss).width(2) << "\n";
 
     if (r.interrupt_no == interrupt_number::PF) {
         dbgout() << "Page fault. cr2 = " << as_hex(__readcr2()) << "\n";
@@ -470,8 +480,17 @@ void interrupt_service_routine(registers& r)
 
     isr_recurse_flag = false;
 
-    if ((int)r.interrupt_no == 0x80) {
-        dbgout() << "HACK: Ignoring interrupt 0x80\n";
+    if (r.interrupt_no == interrupt_number::TEST) {
+        if (r.cs == user_cs) {
+            dbgout() << "Returning from user mode\n";
+            r.ss  = kernel_ds;
+            r.rsp = tss_rsp0();
+            r.cs  = kernel_cs;
+            r.rip = hack_user_mode_return_rip;
+            return;
+        }
+
+        dbgout() << "HACK: Ignoring interrupt 0x" << as_hex(static_cast<uint8_t>(interrupt_number::TEST)) << "\n";
         return;
     }
 

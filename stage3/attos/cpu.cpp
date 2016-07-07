@@ -101,7 +101,7 @@ const auto iretq = make_fun<void (uint64_t)>(
 );
 
 extern "C" void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags); // crt.asm - yeah doesn't belong there...
-
+uint64_t hack_user_mode_return_rip;
 class cpu_manager_impl : public cpu_manager, public singleton<cpu_manager_impl> {
 public:
     cpu_manager_impl() : old_cs_(read_cs()) {
@@ -130,6 +130,10 @@ public:
         dbgout() << "[cpu] Shutting down. Restoring GDT to limit " << as_hex(old_gdt_desc_.limit) << " base " << as_hex(old_gdt_desc_.base) << " CS " << as_hex(old_cs_) << "\n";
         _lgdt(&old_gdt_desc_);
         iretq(old_cs_);
+    }
+
+    uint64_t& tss_rsp0() {
+        return tss_.rsp0;
     }
 
 private:
@@ -161,6 +165,7 @@ private:
         REQUIRE(tss_.rsp1 == 0);
         REQUIRE(tss_.rsp2 == 0);
         tss_.rsp0 = ((uint64_t)_AddressOfReturnAddress());
+        hack_user_mode_return_rip = (uint64_t)_ReturnAddress();
         switch_to(cs, rip, ss, rsp, flags);
     }
 
@@ -170,6 +175,10 @@ object_buffer<cpu_manager_impl> cpu_manager_buffer;
 
 owned_ptr<cpu_manager, destruct_deleter> cpu_init() {
     return owned_ptr<cpu_manager, destruct_deleter>{cpu_manager_buffer.construct().release()};
+}
+
+uint64_t& tss_rsp0() {
+    return cpu_manager_impl::instance().tss_rsp0();
 }
 
 } // namespace attos

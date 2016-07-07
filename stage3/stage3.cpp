@@ -217,7 +217,12 @@ private:
 
 
     void isr() {
-        REQUIRE(status() & status_mask_output_full);
+        const auto st = status();
+        REQUIRE(st & status_mask_output_full);
+        if (st & ~status_mask_output_full) {
+            dbgout() << "[ps2] Status = 0x" << as_hex(st) << "\n";
+        }
+
         if (!buffer_.full()) {
             buffer_.push(data());
         } else {
@@ -435,26 +440,19 @@ void interactive_mode(ps2::controller& ps2c)
 }
 
 __declspec(noinline) void foo(cpu_manager& cpum) {
-    cpum.switch_to_context(kernel_cs, (uint64_t)_ReturnAddress(), kernel_ds, ((uint64_t)_AddressOfReturnAddress())+8, __readeflags());
+    //cpum.switch_to_context(kernel_cs, (uint64_t)_ReturnAddress(), kernel_ds, ((uint64_t)_AddressOfReturnAddress())+8, __readeflags());
+    cpum.switch_to_context(user_cs, (uint64_t)(void*)&sw_int<0x80>, user_ds, identity_map_start+(4<<20), __readeflags());
 }
 
 void usermode_test(cpu_manager& cpum)
 {
-#if 0
-    auto mm = create_default_memory_manager();
+    //auto mm = create_default_memory_manager();
+    //print_page_tables(mm->pml4());
 
-    print_page_tables(mm->pml4());
-#endif
-#define P(x) dbgout() << #x << " " << as_hex(x) << "\n"
-    P(kernel_cs);
-    P((uint64_t)_ReturnAddress());
-    P(kernel_ds);
-    P((uint64_t)_AddressOfReturnAddress());
-    P(0x02);
-#undef P
     dbgout() << "Doing magic!\n";
     foo(cpum);
     dbgout() << "Bach from magic!\n";
+    read_key();
 }
 
 void stage3_entry(const arguments& args)

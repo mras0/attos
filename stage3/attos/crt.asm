@@ -20,17 +20,19 @@ memset:
     pop rsi
     ret
 
-
 switch_to:
+    mov rax, [rsp+0x28] ; rax <- flags (parameter)
+
     ; rsp+0x00 <- rip
     mov [rsp+0x00], rdx ; rip (overwriting return address!)
     ; rsp+0x08 <- cs
     mov [rsp+0x08], rcx ; cs
     ; rsp+0x10 <- flags
-    mov rcx, [rsp+0x28] ; rcx <- flags (parameter)
-    mov [rsp+0x10], rcx ; flags
+    mov [rsp+0x10], rax ; flags
     ; rsp+0x18 <- rsp
     mov [rsp+0x18], r9  ; rsp
     ; rsp+0x20 <- ss
     mov [rsp+0x20], r8  ; ss
+
+    ;xchg bx, bx ;bochs_magic
     iretq
