@@ -441,14 +441,23 @@ void interactive_mode(ps2::controller& ps2c)
 
 void usermode_test(cpu_manager& cpum)
 {
+    const auto old_cr3 = __readcr3();
+
+    const physical_address user_area{4<<20};
+    auto user_area_ptr = static_cast<uint8_t*>(user_area);
+    user_area_ptr[0] = 0xCD; user_area_ptr[1] = 0x80; // int 0x80
+
+    const virtual_address user_area_virt{1<<16};
+    const auto user_rsp = static_cast<uint64_t>(user_area + (1<<20));
     auto mm = create_default_memory_manager();
+    mm->map_memory(user_area_virt, memory_manager::page_size, memory_type_rwx | memory_type::user, user_area);
     print_page_tables(mm->pml4());
 
+    __writecr3(mm->pml4()); // set user process PML4
     dbgout() << "Doing magic!\n";
-    const uint64_t user_rsp = identity_map_start+(4<<20);
-    cpum.switch_to_context(user_cs, (uint64_t)(void*)&sw_int<0x80>, user_ds, user_rsp, __readeflags());
+    cpum.switch_to_context(user_cs, user_area_virt, user_ds, user_rsp, __readeflags());
+    __writecr3(old_cr3); // restore CR3
     dbgout() << "Bach from magic!\n";
-    read_key();
 }
 
 void stage3_entry(const arguments& args)

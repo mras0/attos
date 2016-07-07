@@ -11,7 +11,8 @@ extern "C" void* memset(void* dest, int c, size_t count); // crt.asm
 
 #include <attos/mem.h>
 
-#define REQUIRE(expr) do { if (!(expr)) { ::attos::fatal_error(__FILE__, __LINE__, #expr " failed"); } } while (0)
+#define FATAL_ERROR(msg) ::attos::fatal_error(__FILE__, __LINE__, (msg))
+#define REQUIRE(expr) do { if (!(expr)) { FATAL_ERROR(#expr " failed"); } } while (0)
 
 namespace attos {
 

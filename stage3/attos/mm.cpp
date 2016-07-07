@@ -106,7 +106,12 @@ private:
 
     uint64_t* alloc_if_not_present(uint64_t& parent, uint64_t flags) {
         if (parent & PAGEF_PRESENT) {
-            // TODO: Check flags
+            constexpr uint64_t check_mask = (PAGEF_NX | 0xFFF) & ~(PAGEF_ACCESSED | PAGEF_DIRTY);
+            if ((parent & check_mask) != (flags & check_mask)) {
+                dbgout() << "parent = " << as_hex(parent) << "\n";
+                dbgout() << "flags  = " << as_hex(flags) << "\n";
+                FATAL_ERROR("Page flags incompatible");
+            }
             return table_entry(parent);
         }
         return alloc_table_entry(parent, flags);
@@ -114,7 +119,7 @@ private:
 
     uint64_t* alloc_table_entry(uint64_t& parent, uint64_t flags) {
         auto table = static_cast<uint64_t*>(alloc_physical_page());
-        parent = physical_address::from_identity_mapped_ptr(table) | PAGEF_PRESENT | flags;
+        parent = physical_address::from_identity_mapped_ptr(table) | flags;
         dbgout() << "[mem] Allocated page table. parent " << as_hex((uint64_t)&parent) << " <- " << as_hex(parent) << "\n";
         return table;
     }
@@ -143,13 +148,13 @@ private:
             REQUIRE(false);
         }
 
-        const uint64_t flags = PAGEF_WRITE | PAGEF_USER; // MONSTER HACK(s)!!
+        const uint64_t flags = PAGEF_PRESENT | PAGEF_WRITE | (static_cast<uint32_t>(type & memory_type::user) ? PAGEF_USER : 0);
 
         auto mm = memory_mappings_.construct(virt, length, type);
         memory_map_tree_.insert(*mm);
 
         for (; length; length -= map_page_size, virt += map_page_size, phys += map_page_size) {
-            auto* pdp = alloc_if_not_present(pml4_[virt.pml4e()], flags | (virt>>63 ? PAGEF_GLOBAL : 0)); // Hackish, if the high bit of the virtual address is set (= kernel memory) make the mapping global
+            auto* pdp = alloc_if_not_present(pml4_[virt.pml4e()], flags);
 
             if (static_cast<uint32_t>(type & memory_type::ps_1gb)) {
                 pdp[virt.pdpe()] = phys | PAGEF_PAGESIZE | PAGEF_PRESENT | flags;

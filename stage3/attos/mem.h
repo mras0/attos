@@ -30,6 +30,8 @@ enum class memory_type : uint32_t {
     write   = 0x02,
     execute = 0x04,
 
+    user    = 0x08,
+
     //ps_2mb  = 0x1000,
     ps_1gb  = 0x2000,
 };
