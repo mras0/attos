@@ -55,12 +55,6 @@ R The R / M field of the ModR / M byte may refer only to a general register (for
 S The reg field of the ModR / M byte selects a segment register (for example, MOV(8C, 8E)).
 U The R / M field of the ModR / M byte selects a 128 - bit XMM register or a 256 - bit YMM register, determined by
 operand type.
-V The reg field of the ModR / M byte selects a 128 - bit XMM register or a 256 - bit YMM register, determined by
-operand type.
-W A ModR / M byte follows the opcode and specifies the operand.The operand is either a 128 - bit XMM register,
-a 256 - bit YMM register (determined by operand type), or a memory address.If it is a memory address, the
-address is computed from a segment register and any of the following values : a base register, an index
-register, a scaling factor, and a displacement.
 X Memory addressed by the DS : rSI register pair(for example, MOVS, CMPS, OUTS, or LODS).
 Y Memory addressed by the ES : rDI register pair(for example, MOVS, CMPS, INS, STOS, or SCAS).
 
@@ -72,7 +66,6 @@ dq Double - quadword, regardless of operand - size attribute.
 p 32 - bit, 48 - bit, or 80 - bit pointer, depending on operand - size attribute.
 pd 128 - bit or 256 - bit packed double - precision floating - point data.
 pi Quadword MMX technology register (for example: mm0).
-ps 128 - bit or 256 - bit packed single - precision floating - point data.
 qq Quad - Quadword(256 - bits), regardless of operand - size attribute.
 s 6 - byte or 10 - byte pseudo - descriptor.
 sd Scalar element of a 128 - bit double - precision floating data.
@@ -92,6 +85,8 @@ enum class addressing_mode : uint8_t {
     I, // Immediate data : the operand value is encoded in subsequent bytes of the instruction.
     J, // The instruction contains a relative offset to be added to the instruction pointer register (for example, JMP(0E9), LOOP).
     M, // The ModR / M byte may refer only to memory(for example, BOUND, LES, LDS, LSS, LFS, LGS, CMPXCHG8B).
+    V, // The reg field of the ModR / M byte selects a 128 - bit XMM register or a 256 - bit YMM register, determined by operand type.
+    W, // A ModR / M byte follows the opcode and specifies the operand. The operand is either a 128 - bit XMM register, a 256 - bit YMM register (determined by operand type), or a memory address.If it is a memory address, the address is computed from a segment register and any of the following values : a base register, an index register, a scaling factor, and a displacement.
 };
 
 enum class operand_type : uint8_t {
@@ -102,6 +97,7 @@ enum class operand_type : uint8_t {
     w, // Word, regardless of operand - size attribute.
     q, // Quadword, regardless of operand - size attribute.
     z, // Word for 16 - bit operand - size or doubleword for 32 or 64 - bit operand - size.
+    ps, // 128 - bit or 256 - bit packed single - precision floating - point data.
 };
 
 struct instruction_operand_info {
@@ -153,6 +149,7 @@ enum class decoded_operand_type {
     reg16,
     reg32,
     reg64,
+    xmmreg,
     disp8,
     disp32,
     imm8,
@@ -163,8 +160,8 @@ enum class decoded_operand_type {
 
 struct mem_op {
     uint8_t reg;
-    //uint8_t reg2;
-    //uint8_t reg2scale;
+    uint8_t reg2;
+    uint8_t reg2scale;
     int     dispbits;
     int32_t disp;
 };
@@ -226,6 +223,8 @@ bool has_modrm(const instruction_info& ii)
             case addressing_mode::E:
             case addressing_mode::G:
             case addressing_mode::M:
+            case addressing_mode::V:
+            case addressing_mode::W:
                 return true;
             case addressing_mode::low_instruction_bits:
             case addressing_mode::rax:
@@ -244,7 +243,7 @@ constexpr uint8_t modrm_mod(uint8_t modrm) { return (modrm >> 6) & 3; }
 constexpr uint8_t modrm_reg(uint8_t modrm) { return (modrm >> 3) & 7; }
 constexpr uint8_t modrm_rm(uint8_t modrm) { return modrm & 7; }
 
-const char* const reg8_rex[32]  = {
+const char* const reg8_rex[16]  = {
     "al",  "cl",  "dl", "bl", "spl", "bpl", "sil", "dil"
     "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b", "r15b",
 };
@@ -259,10 +258,12 @@ constexpr int reg_rdx = 2;
 constexpr int reg_rbx = 3;
 constexpr int reg_rip = 16;
 const char* const reg16[8] = { "ax", "cx", "dx", "bx", "sp", "bp", "si", "di" };
-const char* const reg32[17] = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d", "eip" };
+const char* const reg32[16] = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d" };
 const char* const reg64[17] = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rip" };
+const char* const xmmreg[16] = { "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15" };
 
 namespace operand_info_helpers {
+constexpr auto d64 = instruction_info_flag_d64;
 constexpr auto f64 = instruction_info_flag_f64;
 #define II(addr_mode, type) instruction_operand_info{addressing_mode::addr_mode, operand_type::type}
 constexpr auto Eb = II(E, b);
@@ -275,6 +276,8 @@ constexpr auto Iz = II(I, z);
 constexpr auto M  = II(M, mem);
 constexpr auto Jb = II(J, b);
 constexpr auto Jz = II(J, z);
+constexpr auto Vps = II(V, ps);
+constexpr auto Wps = II(W, ps);
 constexpr auto R8 = II(low_instruction_bits, b);
 constexpr auto R64 = II(low_instruction_bits, q);
 constexpr auto rAL = II(rax, b);
@@ -294,6 +297,7 @@ decoded_instruction do_disasm(const uint8_t* code)
 
         instructions[0x1B] = instruction_info{"sbb",  Gv, Ev};     // SBB r16/32/64, r/m16/32/64
 
+        instructions[0x22] = instruction_info{"and",  Gb, Eb};     // AND r8, r/m8
         instructions[0x24] = instruction_info{"and",  rAL, Ib};    // AND AL, imm8
 
         instructions[0x2b] = instruction_info{"sub",  Gv, Ev};     // SUB r16/32/64, r/m16/32/64
@@ -337,6 +341,8 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0x8b] = instruction_info{"mov",  Gv, Ev};     // MOV r16/32/64, r/m16/32/64
         instructions[0x8d] = instruction_info{"lea",  Gv, M};      // LEA r16/32/64
 
+        instructions[0x9c] = instruction_info{"pushfq", d64/*Fv*/};// PUSHFD/Q
+
         instructions[0xa8] = instruction_info{"test", rAL, Ib};    // TEST AL, imm8
         instructions[0xa9] = instruction_info{"test", rAXz, Iz};   // TEST rAX, imm16/32
 
@@ -358,6 +364,8 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0xbe] = instruction_info{"mov",  R64, Iv};    // MOVE RSI/R14, imm16/32/64
         instructions[0xbf] = instruction_info{"mov",  R64, Iv};    // MOVE RDI/R15, imm16/32/64
 
+        static const char* const group2[8] = { "rol", "ror", "rcl", "rcr", "shl", "shr", nullptr, "sar" };
+        instructions[0xc1] = instruction_info{group2, Eb, Ib};     // Shift Grp 2
         instructions[0xc3] = instruction_info{"ret"};              // RET
         instructions[0xc6] = instruction_info{"mov", Eb, Ib};      // MOV r/m8, imm8 (Grp11 - MOV)
         instructions[0xc7] = instruction_info{"mov", Ev, Iz};      // MOV r/m16/32/64, imm16/32 (Grp 11 - MOV)
@@ -380,6 +388,10 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0xf6] = instruction_info{group3, Eb};         // Unary Grp 3
         instructions[0xf7] = instruction_info{group3, Ev};         // Unary Grp 3
 
+        instructions[0xfa] = instruction_info{"cli"};              // CLI
+        instructions[0xfb] = instruction_info{"sti"};              // STI
+        instructions[0xfc] = instruction_info{"cld"};              // CLD
+        instructions[0xfd] = instruction_info{"std"};              // STD
         static const instruction_info group4[8] = {
             { "inc", Eb },
             { "dec", Eb },
@@ -408,6 +420,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         // 0F XX instructions
         auto ins0f = &instructions[instruction_offset_0f];
 
+        ins0f[0x28] = instruction_info{"movaps", Vps, Wps};        // MOVAPS xmm, xmm/m128
         ins0f[0x84] = instruction_info{"je", Jz};                  // JE rel16/32
         ins0f[0xb6] = instruction_info{"movzx", Gv, Eb};           // MOVZX r16/32/64, r/m8
         ins0f[0xc1] = instruction_info{"xadd", Eb, Gb};            // XADD r/m16/32/64, r16/32/64
@@ -465,9 +478,10 @@ decoded_instruction do_disasm(const uint8_t* code)
     if (info->flags & instruction_info_flag_f64) {
         rex |= rex_w_mask; // Hackish...
     }
-    assert((info->flags & ~instruction_info_flag_f64) == 0);
 
     for (int i = 0; i < max_operands && info->operands[i].op_type != operand_type::none; ++i) {
+        assert((info->flags & ~instruction_info_flag_f64) == 0);
+
         const auto& opinfo = info->operands[i];
         auto& op = ins.operands[i];
         switch (opinfo.addr_mode) {
@@ -498,37 +512,44 @@ decoded_instruction do_disasm(const uint8_t* code)
             break;
             case addressing_mode::E:
             case addressing_mode::M:
+            case addressing_mode::W:
             {
                 const uint8_t mod = modrm_mod(modrm);
                 const uint8_t rm  = modrm_rm(modrm);
                 if (mod == 3) {
                     op = do_reg(opinfo.op_type, rm + (rex & rex_b_mask ? 8 : 0) , rex & rex_w_mask ? true : false);
+                    if (opinfo.addr_mode == addressing_mode::W) {
+                        assert(opinfo.op_type == operand_type::ps);
+                        op.type = decoded_operand_type::xmmreg;
+                    }
                 } else {
                     op.type = decoded_operand_type::mem;
                     op.mem.dispbits = 0;
                     op.mem.disp = 0;
+                    op.mem.reg2 = 0xFF;
+                    op.mem.reg2scale = 0;
                     const bool is_rip_relative = mod == 0 && rm == 5;
 
                     if (rm == 4) {
                         // SIB
                         const uint8_t sib = get_u8();
-                        const uint8_t reg2  = (sib >> 3) & 7;
-                        const uint8_t scale = 1<<((sib>>6)&3);
-                        assert(reg2 == 4); // 4 means no scaled register
-                        op.mem.reg = sib & 7;
+                        op.mem.reg        = (sib & 7) + (rex & rex_b_mask ? 8 : 0);
+                        assert(op.mem.reg != 5);
+                        op.mem.reg2       = ((sib >> 3) & 7) + (rex & rex_x_mask ? 8 : 0);
+                        op.mem.reg2scale  = 1<<((sib>>6)&3);
+                        if (op.mem.reg2 == 4) op.mem.reg2scale = 0;
                     } else if (is_rip_relative) {
                         // RIP relative
-                        op.type= decoded_operand_type::mem;
                         op.mem.reg = reg_rip;
                     } else {
                         op.mem.reg = rm;
                     }
-                    if (mod == 2 || is_rip_relative) {
-                        op.mem.dispbits = 32;
-                        op.mem.disp = static_cast<int32_t>(get_u32());
-                    } else if (mod == 1) {
+                    if (mod == 1) {
                         op.mem.dispbits = 8;
                         op.mem.disp = static_cast<int8_t>(get_u8());
+                    } else if (mod == 2 || is_rip_relative) {
+                        op.mem.dispbits = 32;
+                        op.mem.disp = static_cast<int32_t>(get_u32());
                     }
                 }
                 break;
@@ -568,6 +589,13 @@ decoded_instruction do_disasm(const uint8_t* code)
                 } else {
                     assert(false);
                 }
+                break;
+            case addressing_mode::V:
+                // The reg field of the ModR / M byte selects a 128 - bit XMM register or a 256 - bit YMM register, determined by operand type.
+                assert(opinfo.op_type == operand_type::ps);
+                assert(!rex);
+                op.type = decoded_operand_type::xmmreg;
+                op.reg = modrm_reg(modrm);
                 break;
             default:
                 assert(false);
@@ -628,20 +656,28 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
             const auto& op = ins.operands[i];
             switch (op.type) {
                 case decoded_operand_type::reg8:
+                    assert(op.reg<sizeof(reg8)/sizeof(*reg8));
                     dbgout() << reg8[op.reg];
                     break;
                 case decoded_operand_type::reg8_rex:
+                    assert(op.reg<sizeof(reg8_rex)/sizeof(*reg8_rex));
                     dbgout() << reg8_rex[op.reg];
                     break;
                 case decoded_operand_type::reg16:
-                    assert(op.reg<8);
+                    assert(op.reg<sizeof(reg16)/sizeof(*reg16));
                     dbgout() << reg16[op.reg];
                     break;
                 case decoded_operand_type::reg32:
+                    assert(op.reg<sizeof(reg32)/sizeof(*reg32));
                     dbgout() << reg32[op.reg];
                     break;
                 case decoded_operand_type::reg64:
+                    assert(op.reg<sizeof(reg64)/sizeof(*reg64));
                     dbgout() << reg64[op.reg];
+                    break;
+                case decoded_operand_type::xmmreg:
+                    assert(op.reg<sizeof(xmmreg)/sizeof(*xmmreg));
+                    dbgout() << xmmreg[op.reg];
                     break;
                 case decoded_operand_type::disp8:
                 case decoded_operand_type::disp32:
@@ -657,6 +693,12 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
                         dbgout() << "[" << as_hex(virtual_address + ins.len + op.mem.disp).width(0) << "]";
                     } else {
                         dbgout() << "[" << reg64[op.mem.reg];
+                        if (op.mem.reg2scale != 0) {
+                            dbgout() << "+" << reg64[op.mem.reg2];
+                            if (op.mem.reg2scale > 1) {
+                                dbgout() << "*" << op.mem.reg2scale;
+                            }
+                        }
                         if (op.mem.dispbits) {
                             if (op.mem.disp < 0) {
                                 dbgout() << "-" << as_hex(-op.mem.disp).width(0);
