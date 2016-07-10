@@ -1,5 +1,4 @@
 #define _CRT_SECURE_NO_WARNINGS
-#include <iostream>
 #include <stdlib.h>
 #include <stdint.h>
 #include <intrin.h>
@@ -9,22 +8,6 @@
 #include <attos/pe.h>
 #include <attos/cpu.h>
 #include <attos/out_stream.h>
-
-namespace {
-
-class attos_stream_wrapper : public attos::out_stream {
-public:
-    explicit attos_stream_wrapper(std::ostream& os) : os_(os) {
-        attos::set_dbgout(*this);
-    }
-    virtual void write(const void* data, size_t n) {
-        os_.write(reinterpret_cast<const char*>(data), n);
-    }
-private:
-    std::ostream& os_;
-};
-
-} // unnamed namespace
 
 namespace attos {
 
@@ -95,7 +78,6 @@ s 6 - byte or 10 - byte pseudo - descriptor.
 sd Scalar element of a 128 - bit double - precision floating data.
 ss Scalar element of a 128 - bit single - precision floating data.
 si Doubleword integer register (for example: eax).
-w Word, regardless of operand - size attribute.
 x dq or qq based on the operand - size attribute.
 y Doubleword or quadword(in 64 - bit mode), depending on operand - size attribute.
 #endif
@@ -104,6 +86,7 @@ y Doubleword or quadword(in 64 - bit mode), depending on operand - size attribut
 enum class addressing_mode : uint8_t {
     low_instruction_bits,
     rax,
+    rdx,
     E, // A ModR / M byte follows the opcode and specifies the operand.The operand is either a general - purpose register or a memory address.If it is a memory address, the address is computed from a segment register and any of the following values : a base register, an index register, a scaling factor, a displacement.
     G, // The reg field of the ModR / M byte selects a general register (for example, AX(000)).
     I, // Immediate data : the operand value is encoded in subsequent bytes of the instruction.
@@ -116,8 +99,9 @@ enum class operand_type : uint8_t {
     mem,
     b, // Byte, regardless of operand - size attribute.
     v, // Word, doubleword or quadword(in 64 - bit mode), depending on operand - size attribute.
+    w, // Word, regardless of operand - size attribute.
     q, // Quadword, regardless of operand - size attribute.
-    z, // z Word for 16 - bit operand - size or doubleword for 32 or 64 - bit operand - size.
+    z, // Word for 16 - bit operand - size or doubleword for 32 or 64 - bit operand - size.
 };
 
 struct instruction_operand_info {
@@ -132,8 +116,12 @@ enum class instruction_info_type {
     group_names,
     group
 };
+constexpr unsigned instruction_info_flag_f64 = 1; // The operand size is forced to a 64-bit operand size when in 64-bit mode (prefixes that change operand size are ignored for this instruction in 64-bit mode).
+constexpr unsigned instruction_info_flag_d64 = 2; // When in 64-bit mode, instruction defaults to 64-bit operand size and cannot encode 32-bit operand size. 
+
 struct instruction_info {
     instruction_info_type type;
+    unsigned flags;
     union {
         const char*             name;
         const char* const*      group_names;
@@ -142,28 +130,34 @@ struct instruction_info {
     instruction_operand_info operands[max_operands];
 
     constexpr instruction_info() = default;
+    constexpr instruction_info(const char* name, unsigned flags, instruction_operand_info op0=instruction_operand_info{}, instruction_operand_info op1=instruction_operand_info{})
+        : type(instruction_info_type::normal), flags(flags), name(name), operands{op0, op1} {
+    }
+
     constexpr instruction_info(const char* name, instruction_operand_info op0=instruction_operand_info{}, instruction_operand_info op1=instruction_operand_info{})
-        : type(instruction_info_type::normal), name(name), operands{op0, op1} {
+        : instruction_info{name, 0, op0, op1} {
     }
 
     constexpr instruction_info(const char* const* group_names, instruction_operand_info op0=instruction_operand_info{}, instruction_operand_info op1=instruction_operand_info{})
-        : type(instruction_info_type::group_names), group_names(group_names), operands{op0, op1} {
+        : type(instruction_info_type::group_names), flags(0), group_names(group_names), operands{op0, op1} {
     }
 
     constexpr instruction_info(const instruction_info* group, instruction_operand_info op0=instruction_operand_info{}, instruction_operand_info op1=instruction_operand_info{})
-        : type(instruction_info_type::group), group(group), operands{op0, op1} {
+        : type(instruction_info_type::group), flags(0), group(group), operands{op0, op1} {
     }
 };
 
 enum class decoded_operand_type {
     reg8,
     reg8_rex,
+    reg16,
     reg32,
     reg64,
     disp8,
     disp32,
     imm8,
     imm32,
+    imm64,
     mem,
 };
 
@@ -180,7 +174,7 @@ struct decoded_operand {
     union {
         uint8_t  reg;
         int32_t  disp;
-        uint32_t imm;
+        int64_t  imm;
         mem_op   mem;
     };
 };
@@ -209,16 +203,21 @@ decoded_operand do_reg(operand_type type, uint8_t reg, bool rex_active)
     return op;
 }
 
+
+
+constexpr unsigned prefix_flag_lock = 0x10;
+constexpr unsigned prefix_flag_rex  = 0x40;
 struct decoded_instruction {
+    unsigned                prefixes;
     const uint8_t*          start;
     int                     len;
     const instruction_info* info;
+    int                     group;
     decoded_operand         operands[max_operands];
-    int                     instruction_offset;
-    int                     modrm_offset;
 };
 
-instruction_info instructions[256];
+constexpr unsigned instruction_offset_0f = 256;
+instruction_info instructions[512];
 
 bool has_modrm(const instruction_info& ii)
 {
@@ -230,6 +229,7 @@ bool has_modrm(const instruction_info& ii)
                 return true;
             case addressing_mode::low_instruction_bits:
             case addressing_mode::rax:
+            case addressing_mode::rdx:
             case addressing_mode::I:
             case addressing_mode::J:
                 break;
@@ -248,14 +248,22 @@ const char* const reg8_rex[32]  = {
     "al",  "cl",  "dl", "bl", "spl", "bpl", "sil", "dil"
     "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b", "r15b",
 };
-const char* const reg8[8] = {
+const char* const reg8[16] = {
     "al", "cl", "dl", "bl", "ah", "ch", "dh", "bh",
+    "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b", "r15b",
 };
 
-const char* const reg32[16] = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d" };
-const char* const reg64[16] = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15" };
+constexpr int reg_rax = 0;
+constexpr int reg_rcx = 1;
+constexpr int reg_rdx = 2;
+constexpr int reg_rbx = 3;
+constexpr int reg_rip = 16;
+const char* const reg16[8] = { "ax", "cx", "dx", "bx", "sp", "bp", "si", "di" };
+const char* const reg32[17] = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d", "eip" };
+const char* const reg64[17] = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rip" };
 
 namespace operand_info_helpers {
+constexpr auto f64 = instruction_info_flag_f64;
 #define II(addr_mode, type) instruction_operand_info{addressing_mode::addr_mode, operand_type::type}
 constexpr auto Eb = II(E, b);
 constexpr auto Ev = II(E, v);
@@ -270,6 +278,8 @@ constexpr auto Jz = II(J, z);
 constexpr auto R8 = II(low_instruction_bits, b);
 constexpr auto R64 = II(low_instruction_bits, q);
 constexpr auto rAL = II(rax, b);
+constexpr auto rAXz = II(rax, z);
+constexpr auto rDX = II(rdx, w);
 #undef II
 };
 
@@ -279,10 +289,18 @@ decoded_instruction do_disasm(const uint8_t* code)
     if (!init) {
         using namespace operand_info_helpers;
         instructions[0x03] = instruction_info{"add",  Gv, Ev};     // ADD r16/32/64, r/m16/32/64
+
+        instructions[0x08] = instruction_info{"or",   Gb, Eb};     // OR r/m8, r8
+
         instructions[0x1B] = instruction_info{"sbb",  Gv, Ev};     // SBB r16/32/64, r/m16/32/64
+
         instructions[0x24] = instruction_info{"and",  rAL, Ib};    // AND AL, imm8
 
+        instructions[0x2b] = instruction_info{"sub",  Gv, Ev};     // SUB r16/32/64, r/m16/32/64
+
         instructions[0x33] = instruction_info{"xor",  Gv, Ev};     // XOR r16/32/64, r/m16/32/64
+
+        instructions[0x39] = instruction_info{"cmp",  Ev, Gv};     // CMP r/m16/32/64, r16/32/64
 
         instructions[0x50] = instruction_info{"push", R64};        // PUSH RAX/R8
         instructions[0x51] = instruction_info{"push", R64};        // PUSH RCX/R9
@@ -314,9 +332,13 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0x84] = instruction_info{"test", Eb, Gb};     // TEST r/m8, r8
         instructions[0x85] = instruction_info{"test", Ev, Gv};     // TEST r/m16/32/64, r16/32/64
 
+        instructions[0x88] = instruction_info{"mov",  Eb, Gb};     // MOV r/m8, r8
         instructions[0x89] = instruction_info{"mov",  Ev, Gv};     // MOV r/m16/32/64, r16/32/64
         instructions[0x8b] = instruction_info{"mov",  Gv, Ev};     // MOV r16/32/64, r/m16/32/64
         instructions[0x8d] = instruction_info{"lea",  Gv, M};      // LEA r16/32/64
+
+        instructions[0xa8] = instruction_info{"test", rAL, Ib};    // TEST AL, imm8
+        instructions[0xa9] = instruction_info{"test", rAXz, Iz};   // TEST rAX, imm16/32
 
         instructions[0xb0] = instruction_info{"mov",  R8, Ib};     // MOV r8, imm8
         instructions[0xb1] = instruction_info{"mov",  R8, Ib};     // MOV r8, imm8
@@ -337,10 +359,13 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0xbf] = instruction_info{"mov",  R64, Iv};    // MOVE RDI/R15, imm16/32/64
 
         instructions[0xc3] = instruction_info{"ret"};              // RET
+        instructions[0xc6] = instruction_info{"mov", Eb, Ib};      // MOV r/m8, imm8 (Grp11 - MOV)
+        instructions[0xc7] = instruction_info{"mov", Ev, Iz};      // MOV r/m16/32/64, imm16/32 (Grp 11 - MOV)
         instructions[0xcc] = instruction_info{"int3"};             // INT3
         instructions[0xe8] = instruction_info{"call", Jz};         // CALL rel16/rel32
         instructions[0xe9] = instruction_info{"jmp",  Jz};         // JMP rel16/rel32
         instructions[0xeb] = instruction_info{"jmp",  Jb};         // JMP rel8
+        instructions[0xec] = instruction_info{"in", rAL, rDX };    // in al, dx
         static const instruction_info group3[8] = {
             { "test", Ib, Iz  },
             {},
@@ -354,6 +379,39 @@ decoded_instruction do_disasm(const uint8_t* code)
 
         instructions[0xf6] = instruction_info{group3, Eb};         // Unary Grp 3
         instructions[0xf7] = instruction_info{group3, Ev};         // Unary Grp 3
+
+        static const instruction_info group4[8] = {
+            { "inc", Eb },
+            { "dec", Eb },
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+        };
+        instructions[0xfe] = instruction_info{group4};             // INC/DEC Grp 4
+
+        static const instruction_info group5[8] = {
+            { "inc",  Ev },
+            { "dec",  Ev },
+            { "call", f64, Ev },
+            {},//{ "call", Ep },
+            {},//{ "jmp", Ev }, // f64
+            {},//{"jmp", Mp },
+            {},//{"push", Ev}, // d64
+            {},
+        };
+
+        instructions[0xff] = instruction_info{group5};             // INC/DEC Grp 5
+
+        // 0F XX instructions
+        auto ins0f = &instructions[instruction_offset_0f];
+
+        ins0f[0x84] = instruction_info{"je", Jz};                  // JE rel16/32
+        ins0f[0xb6] = instruction_info{"movzx", Gv, Eb};           // MOVZX r16/32/64, r/m8
+        ins0f[0xc1] = instruction_info{"xadd", Eb, Gb};            // XADD r/m16/32/64, r16/32/64
+
         init = true;
     }
 
@@ -364,33 +422,57 @@ decoded_instruction do_disasm(const uint8_t* code)
     auto peek_u8 = [&] { return ins.start[ins.len]; };
     auto get_u8  = [&] { return ins.start[ins.len++]; };
     auto get_u32 = [&] { auto disp = *(uint32_t*)&ins.start[ins.len]; ins.len += 4; return disp; };
+    auto get_u64 = [&] { auto disp = *(uint64_t*)&ins.start[ins.len]; ins.len += 8; return disp; };
+
+    // Prefixes
+    ins.prefixes = 0;
+
+    if (peek_u8() == 0xf0) {
+        ins.prefixes |= prefix_flag_lock;
+        get_u8(); // consume
+    }
 
     uint8_t rex = 0;
     if ((peek_u8() & 0xf0) == 0x40) {
+        static_assert(prefix_flag_rex == 0x40, "");
         rex = ins.start[ins.len++];
+        ins.prefixes |= rex;
     }
 
-    ins.instruction_offset = ins.len;
-    const uint8_t instruction_byte = get_u8();
-
-    ins.info  = &instructions[instruction_byte];
+    uint8_t instruction_byte = get_u8();
+    if (instruction_byte == 0x0f) { // Two-byte instruction
+        instruction_byte = get_u8();
+        ins.info  = &instructions[instruction_byte+256];
+    } else {
+        ins.info  = &instructions[instruction_byte];
+    }
 
     uint8_t modrm = 0;
-    if (has_modrm(*ins.info)) {
-        ins.modrm_offset = ins.len;
+    if (has_modrm(*ins.info) || ins.info->type != instruction_info_type::normal) {
         modrm = get_u8();
-    } else {
-        ins.modrm_offset = -1;
     }
 
+    auto info = ins.info;
+    if (ins.info->type != instruction_info_type::normal) {
+        ins.group = modrm_reg(modrm);
+        if (ins.info->type == instruction_info_type::group) {
+            info = &info->group[ins.group];
+        }
+    } else {
+        ins.group = -1;
+    }
 
-    for (int i = 0; i < max_operands && ins.info->operands[i].op_type != operand_type::none; ++i) {
-        const auto& opinfo = ins.info->operands[i];
+    if (info->flags & instruction_info_flag_f64) {
+        rex |= rex_w_mask; // Hackish...
+    }
+    assert((info->flags & ~instruction_info_flag_f64) == 0);
+
+    for (int i = 0; i < max_operands && info->operands[i].op_type != operand_type::none; ++i) {
+        const auto& opinfo = info->operands[i];
         auto& op = ins.operands[i];
         switch (opinfo.addr_mode) {
             case addressing_mode::low_instruction_bits:
             {
-                assert((rex & 0xe) == 0);
                 op.reg = instruction_byte & 7;
                 if (rex & rex_b_mask) {
                     op.reg += 8;
@@ -407,7 +489,12 @@ decoded_instruction do_disasm(const uint8_t* code)
             case addressing_mode::rax:
                 assert(opinfo.op_type == operand_type::b);
                 op.type = decoded_operand_type::reg8;
-                op.reg  = 0;
+                op.reg  = reg_rax;
+            break;
+            case addressing_mode::rdx:
+                assert(opinfo.op_type == operand_type::w);
+                op.type = decoded_operand_type::reg16;
+                op.reg  = reg_rdx;
             break;
             case addressing_mode::E:
             case addressing_mode::M:
@@ -417,26 +504,31 @@ decoded_instruction do_disasm(const uint8_t* code)
                 if (mod == 3) {
                     op = do_reg(opinfo.op_type, rm + (rex & rex_b_mask ? 8 : 0) , rex & rex_w_mask ? true : false);
                 } else {
-                    op.type    = decoded_operand_type::mem;
-                    if (rm != 4) {
-                        op.mem.reg = rm;
-                    } else {
+                    op.type = decoded_operand_type::mem;
+                    op.mem.dispbits = 0;
+                    op.mem.disp = 0;
+                    const bool is_rip_relative = mod == 0 && rm == 5;
+
+                    if (rm == 4) {
                         // SIB
                         const uint8_t sib = get_u8();
                         const uint8_t reg2  = (sib >> 3) & 7;
                         const uint8_t scale = 1<<((sib>>6)&3);
                         assert(reg2 == 4); // 4 means no scaled register
                         op.mem.reg = sib & 7;
+                    } else if (is_rip_relative) {
+                        // RIP relative
+                        op.type= decoded_operand_type::mem;
+                        op.mem.reg = reg_rip;
+                    } else {
+                        op.mem.reg = rm;
                     }
-                    if (mod == 0) {
-                        op.mem.dispbits = 0;
-                        op.mem.disp = 0;
+                    if (mod == 2 || is_rip_relative) {
+                        op.mem.dispbits = 32;
+                        op.mem.disp = static_cast<int32_t>(get_u32());
                     } else if (mod == 1) {
                         op.mem.dispbits = 8;
                         op.mem.disp = static_cast<int8_t>(get_u8());
-                    } else if (mod == 2) {
-                        op.mem.dispbits = 32;
-                        op.mem.disp = static_cast<int32_t>(get_u32());
                     }
                 }
                 break;
@@ -447,12 +539,20 @@ decoded_instruction do_disasm(const uint8_t* code)
             case addressing_mode::I:
                 if (opinfo.op_type == operand_type::b) {
                     op.type = decoded_operand_type::imm8;
-                    op.imm  = get_u8();
+                    op.imm  = static_cast<int8_t>(get_u8());
                 } else if (opinfo.op_type == operand_type::v) {
                     // Word, doubleword or quadword(in 64 - bit mode), depending on operand - size attribute.
-                    assert(!rex);
+                    if (rex & rex_w_mask) {
+                        op.type = decoded_operand_type::imm64;
+                        op.imm  = static_cast<int64_t>(get_u64());
+                    } else {
+                        op.type = decoded_operand_type::imm32;
+                        op.imm  = static_cast<int32_t>(get_u32());
+                    }
+                } else if (opinfo.op_type == operand_type::z) {
+                    // z Word for 16 - bit operand - size or doubleword for 32 or 64 - bit operand - size.
                     op.type = decoded_operand_type::imm32;
-                    op.imm  = get_u32();
+                    op.imm  = static_cast<int32_t>(get_u32());
                 } else {
                     assert(false);
                 }
@@ -483,42 +583,47 @@ using namespace attos;
 using namespace attos::pe;
 using namespace attos::disasm;
 
-extern "C" IMAGE_DOS_HEADER __ImageBase;
-
 void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
 {
     for (int count=0;count<maxinst;count++) {
         auto ins = do_disasm(code);
 
-        dbgout() << as_hex(virtual_address);
-        for (int i = 0; i < ins.len; ++i) {
-            dbgout() << ' ' << as_hex(ins.start[i]);
+        dbgout() << as_hex(virtual_address) << ' ';
+        for (int i = 0; i < 12; ++i) {
+            if (i < ins.len) {
+                dbgout() << as_hex(ins.start[i]);
+            } else {
+                dbgout() << "  ";
+            }
         }
-        for (int i = ins.len; i < 8; ++i) {
-            dbgout() << "   ";
+
+        const char* instruction_name;
+        auto info = ins.info;
+        if (info->type != instruction_info_type::normal) {
+            if (info->type == instruction_info_type::group) {
+                info = &info->group[ins.group];
+                instruction_name = info->name;
+            } else {
+                assert(info->type == instruction_info_type::group_names);
+                instruction_name = info->group_names[ins.group];
+            }
+        } else {
+            instruction_name = info->name;
         }
-        if (!ins.info->name) {
+
+        if (!info->name) {
             dbgout() << "Unknown instruction\n";
             return;
         }
 
-        const char* instruction_name;
-        if (ins.info->type == instruction_info_type::normal) {
-            instruction_name = ins.info->name;
-        } else {
-            assert(ins.modrm_offset >= 0 && ins.modrm_offset <= ins.len);
-            const auto reg = modrm_reg(ins.start[ins.modrm_offset]);
-            if (ins.info->type == instruction_info_type::group_names) {
-                instruction_name = ins.info->group_names[reg];
-            } else {
-                assert(ins.info->type == instruction_info_type::group);
-                ins.info = &ins.info->group[reg];
-                instruction_name = ins.info->name;
-            }
+        int iwidth = 9;
+        if (ins.prefixes & prefix_flag_lock) {
+            iwidth -= 5;
+            dbgout() << "lock ";
         }
-        dbgout() << format_str(instruction_name).width(8);
+        dbgout() << format_str(instruction_name).width(iwidth);
 
-        for (int i = 0; i < max_operands && ins.info->operands[i].op_type != operand_type::none; ++i) {
+        for (int i = 0; i < max_operands && info->operands[i].op_type != operand_type::none; ++i) {
             dbgout() << (i ? ", " : " ");
             const auto& op = ins.operands[i];
             switch (op.type) {
@@ -527,6 +632,10 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
                     break;
                 case decoded_operand_type::reg8_rex:
                     dbgout() << reg8_rex[op.reg];
+                    break;
+                case decoded_operand_type::reg16:
+                    assert(op.reg<8);
+                    dbgout() << reg16[op.reg];
                     break;
                 case decoded_operand_type::reg32:
                     dbgout() << reg32[op.reg];
@@ -540,18 +649,23 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
                     break;
                 case decoded_operand_type::imm8:
                 case decoded_operand_type::imm32:
+                case decoded_operand_type::imm64:
                     dbgout() << as_hex(op.imm).width(0);
                     break;
                 case decoded_operand_type::mem:
-                    dbgout() << "[" << reg64[op.mem.reg];
-                    if (op.mem.dispbits) {
-                        if (op.mem.disp < 0) {
-                            dbgout() << "-" << as_hex(-op.mem.disp).width(0);
-                        } else {
-                            dbgout() << "+" << as_hex(op.mem.disp).width(0);
+                    if (op.mem.reg == reg_rip) {
+                        dbgout() << "[" << as_hex(virtual_address + ins.len + op.mem.disp).width(0) << "]";
+                    } else {
+                        dbgout() << "[" << reg64[op.mem.reg];
+                        if (op.mem.dispbits) {
+                            if (op.mem.disp < 0) {
+                                dbgout() << "-" << as_hex(-op.mem.disp).width(0);
+                            } else {
+                                dbgout() << "+" << as_hex(op.mem.disp).width(0);
+                            }
                         }
+                        dbgout() << "]";
                     }
-                    dbgout() << "]";
                     break;
                 default:
                     assert(false);
@@ -566,18 +680,56 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
 
 extern "C" const uint8_t mainCRTStartup[];
 
+#include <iostream>
+namespace {
+
+class attos_stream_wrapper : public attos::out_stream {
+public:
+    explicit attos_stream_wrapper(std::ostream& os) : os_(os) {
+        attos::set_dbgout(*this);
+    }
+    virtual void write(const void* data, size_t n) {
+        os_.write(reinterpret_cast<const char*>(data), n);
+    }
+private:
+    std::ostream& os_;
+};
+
+} // unnamed namespace
+
+#include <stdio.h>
+#include <vector>
+std::vector<uint8_t> read_file(const char* path)
+{
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        std::cerr << "Could not open " << path << std::endl;
+        abort();
+    }
+    fseek(fp, 0, SEEK_END);
+    std::vector<uint8_t> v;
+    v.resize(ftell(fp));
+    fseek(fp, 0, SEEK_SET);
+    fread(&v[0], v.size(), 1, fp);
+    std::cout << "size=" << v.size() << std::endl;
+    fclose(fp);
+    return v;
+}
+
 int main()
 {
     attos_stream_wrapper asw{std::cout};
-#if 0
-    for (const auto section : __ImageBase.nt_headers().sections()) {
+    const auto f = read_file("../../stage3/stage3.exe");
+    const auto& image = *reinterpret_cast<const IMAGE_DOS_HEADER*>(f.data());
+    for (const auto section : image.nt_headers().sections()) {
         if ((section.Characteristics & IMAGE_SCN_CNT_CODE) == 0) {
             continue;
         }
-        uint64_t virtual_address = __ImageBase.nt_headers().OptionalHeader.ImageBase + section.VirtualAddress;
-        disasm_section(virtual_address, (const uint8_t*)virtual_address);
+        const auto offset = image.nt_headers().OptionalHeader.AddressOfEntryPoint - section.VirtualAddress;
+        uint64_t virtual_address = image.nt_headers().OptionalHeader.ImageBase + section.VirtualAddress + offset;
+        disasm_section(virtual_address, &f[section.PointerToRawData + offset], 1000);
     }
-#else
+#if 0
     disasm_section(reinterpret_cast<uint64_t>(_ReturnAddress()), reinterpret_cast<const uint8_t*>(_ReturnAddress()), 20);
     dbgout()<<"\n";
     const uint8_t* code = &mainCRTStartup[0];
