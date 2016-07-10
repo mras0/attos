@@ -13,3 +13,4 @@ test-vm/*.vmdk
 test-vm/*.raw
 exp/b
 exp/read_pe/*.asm
+exp/disasm/*.asm
