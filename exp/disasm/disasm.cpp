@@ -269,7 +269,7 @@ constexpr int reg_rcx = 1;
 constexpr int reg_rdx = 2;
 constexpr int reg_rbx = 3;
 constexpr int reg_rip = 16;
-const char* const reg16[8] = { "ax", "cx", "dx", "bx", "sp", "bp", "si", "di" };
+const char* const reg16[16] = { "ax", "cx", "dx", "bx", "sp", "bp", "si", "wi", "r8w", "r9w", "r10w", "r11w", "r12w", "r13w", "r14w", "r15w"  };
 const char* const reg32[16] = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d" };
 const char* const reg64[17] = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rip" };
 const char* const xmmreg[16] = { "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15" };
@@ -374,6 +374,8 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0x5e] = instruction_info{"pop",  R64};        // POP RSI/R14
         instructions[0x5f] = instruction_info{"pop",  R64};        // POP RDI/R15
 
+        instructions[0x63] = instruction_info{"movsxd", Gv, Ev};   // MOVSXD r32/64, r/m32
+
         instructions[0x72] = instruction_info{"jb",   Jb};         // JB rel8
         instructions[0x73] = instruction_info{"jae",  Jb};         // JAE rel8
         instructions[0x74] = instruction_info{"je",   Jb};         // JE rel8
@@ -383,6 +385,7 @@ decoded_instruction do_disasm(const uint8_t* code)
 
         instructions[0x78] = instruction_info{"js",   Jb};         // JS rel8
         instructions[0x79] = instruction_info{"jns",  Jb};         // JNS rel8
+        instructions[0x7c] = instruction_info{"jl",  Jb};          // JL rel8
         instructions[0x7f] = instruction_info{"jg",  Jb};          // JG rel8
 
         static const char* const group1[8] = { "add", "or", "adc", "sbb", "and", "sub", "xor", "cmp" };
@@ -518,18 +521,25 @@ decoded_instruction do_disasm(const uint8_t* code)
         };
 
         ins0f[0x01] = instruction_info{group7};                    // Grp 7
+        ins0f[0x10] = instruction_info{"movups", Vps, Wps};        // MOVUPS xmm, xmm/m128
         ins0f[0x20] = instruction_info{"mov", Rd, Cd};             // MOV r64, CRn
         ins0f[0x22] = instruction_info{"mov", Cd, Rd};             // MOV CRn, r64
         ins0f[0x28] = instruction_info{"movaps", Vps, Wps};        // MOVAPS xmm, xmm/m128
-        ins0f[0x42] = instruction_info{"cmovb", Gv, Ev};           // CMOVb  xmm, xmm/m128
+        ins0f[0x42] = instruction_info{"cmovb", Gv, Ev};           // CMOVB r16/32/64, r/m16/32/64
+        ins0f[0x44] = instruction_info{"cmove", Gv, Ev};           // CMOVE r16/32/64, r/m16/32/64
         ins0f[0x7f] = instruction_info{"movdqa", db66, Wx, Vx};    // hack
         ins0f[0x82] = instruction_info{"jb", Jz};                  // JB rel16/32
         ins0f[0x84] = instruction_info{"je", Jz};                  // JE rel16/32
         ins0f[0x85] = instruction_info{"jne", Jz};                 // JNE rel16/32
         ins0f[0x86] = instruction_info{"jbe", Jz};                 // JBE rel16/32
+        ins0f[0x87] = instruction_info{"ja", Jz};                  // JA rel16/32
         ins0f[0x88] = instruction_info{"js", Jz};                  // JS rel16/32
+        ins0f[0x8c] = instruction_info{"jl", Jz};                  // JL rel16/32
+        ins0f[0xa3] = instruction_info{"bt", Gv, Ev};              // BT r/m16/32/64, r16/32/64
         ins0f[0xb6] = instruction_info{"movzx", Gv, Eb};           // MOVZX r16/32/64, r/m8
         ins0f[0xb7] = instruction_info{"movzx", Gv, Ew};           // MOVZX r16/32/64, r/m16
+        ins0f[0xbe] = instruction_info{"movsx", Gv, Eb};           // MOVSX r16/32/64, r/m8
+        ins0f[0xbf] = instruction_info{"movsx", Gv, Ew};           // MOVSX r16/32/64, r/m16
         ins0f[0xc1] = instruction_info{"xadd", Eb, Gb};            // XADD r/m16/32/64, r16/32/64
 
         init = true;
@@ -661,10 +671,13 @@ decoded_instruction do_disasm(const uint8_t* code)
                 const uint8_t rm  = modrm_rm(modrm);
                 if (mod == 3) {
                     if (ins.prefixes & prefix_flag_opsize) {
-                        assert(!rex);
-                        assert(opinfo.op_type == operand_type::v);
+                        assert(opinfo.op_type == operand_type::v || opinfo.op_type == operand_type::b);
                         op.type = decoded_operand_type::reg16;
                         op.reg  = rm;
+                        if (rex & rex_b_mask) {
+                            op.reg += 8;
+                            used_prefixes |= prefix_flag_rex | rex_b_mask;
+                        }
                         used_prefixes |= prefix_flag_opsize;
                     } else {
                         op = do_reg(opinfo.op_type, rm + (rex & rex_b_mask ? 8 : 0) , rex & rex_w_mask ? true : false);
@@ -686,7 +699,6 @@ decoded_instruction do_disasm(const uint8_t* code)
                         // SIB
                         const uint8_t sib = get_u8();
                         op.mem.reg        = (sib & 7) + (rex & rex_b_mask ? 8 : 0);
-                        assert(op.mem.reg != 5);
                         op.mem.reg2       = ((sib >> 3) & 7) + (rex & rex_x_mask ? 8 : 0);
                         op.mem.reg2scale  = 1<<((sib>>6)&3);
                         if (op.mem.reg2 == 4) op.mem.reg2scale = 0;
@@ -700,7 +712,11 @@ decoded_instruction do_disasm(const uint8_t* code)
                     if (mod == 1) {
                         op.mem.dispbits = 8;
                         op.mem.disp = static_cast<int8_t>(get_u8());
-                    } else if (mod == 2 || is_rip_relative) {
+                    } else if (is_rip_relative) {
+                        op.mem.dispbits = 32;
+                        op.mem.disp = static_cast<int32_t>(get_u32());
+                    } else if (mod == 2) {
+                        //if (opinfo.op_type == operand_type::v && (ins.prefixes & prefix_flag_opsize)) {
                         op.mem.dispbits = 32;
                         op.mem.disp = static_cast<int32_t>(get_u32());
                     }
@@ -715,6 +731,10 @@ decoded_instruction do_disasm(const uint8_t* code)
                 if (ins.prefixes & prefix_flag_opsize) {
                     op.type = decoded_operand_type::reg16;
                     op.reg = modrm_reg(modrm);
+                    if (rex & rex_r_mask) {
+                        op.reg += 8;
+                        used_prefixes |= prefix_flag_rex | rex_r_mask;
+                    }
                     used_prefixes |= prefix_flag_opsize;
                 } else {
                     op = do_reg(opinfo.op_type, modrm_reg(modrm) + (rex & rex_r_mask ? 8 : 0), rex & rex_w_mask ? true : false);
@@ -726,10 +746,10 @@ decoded_instruction do_disasm(const uint8_t* code)
                     op.type = decoded_operand_type::imm8;
                     op.imm  = static_cast<int8_t>(get_u8());
                 } else if (opinfo.op_type == operand_type::v) {
-                    used_prefixes |= prefix_flag_rex | rex_w_mask;
                     if (rex & rex_w_mask) {
                         op.type = decoded_operand_type::imm64;
                         op.imm  = static_cast<int64_t>(get_u64());
+                        used_prefixes |= prefix_flag_rex | rex_w_mask;
                     } else {
                         op.type = decoded_operand_type::imm32;
                         op.imm  = static_cast<int32_t>(get_u32());
@@ -738,8 +758,14 @@ decoded_instruction do_disasm(const uint8_t* code)
                     op.type = decoded_operand_type::imm16;
                     op.imm  = static_cast<int32_t>(get_u16());
                 } else if (opinfo.op_type == operand_type::z) {
-                    op.type = decoded_operand_type::imm32;
-                    op.imm  = static_cast<int32_t>(get_u32());
+                    if (ins.prefixes & prefix_flag_opsize) {
+                        op.type = decoded_operand_type::imm16;
+                        op.imm  = static_cast<int32_t>(get_u16());
+                        used_prefixes |= prefix_flag_opsize;
+                    } else {
+                        op.type = decoded_operand_type::imm32;
+                        op.imm  = static_cast<int32_t>(get_u32());
+                    }
                 } else {
                     assert(false);
                 }
@@ -877,8 +903,14 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
                     dbgout() << as_hex(virtual_address + ins.len + op.disp);
                     break;
                 case decoded_operand_type::imm8:
+                    dbgout() << as_hex(op.imm&0xff).width(0);
+                    break;
                 case decoded_operand_type::imm16:
+                    dbgout() << as_hex(op.imm&0xffff).width(0);
+                    break;
                 case decoded_operand_type::imm32:
+                    dbgout() << as_hex(op.imm&0xffffffff).width(0);
+                    break;
                 case decoded_operand_type::imm64:
                     dbgout() << as_hex(op.imm).width(0);
                     break;
@@ -913,6 +945,12 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
             dbgout() << "Unused prefixes:" << as_hex(ins.unused_prefixes) << "\n";
             return;
         }
+
+#if 0
+        if ((virtual_address&0xffff)==0x644D) {
+            system("pause");
+        }
+#endif
 
         code            += ins.len;
         virtual_address += ins.len;
