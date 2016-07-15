@@ -269,6 +269,7 @@ constexpr auto Cd = II(C, d);
 constexpr auto Eb = II(E, b);
 constexpr auto Ev = II(E, v);
 constexpr auto Ew = II(E, w);
+constexpr auto Ez = II(E, z);
 constexpr auto Gb = II(G, b);
 constexpr auto Gv = II(G, v);
 constexpr auto Ib = II(I, b);
@@ -381,7 +382,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0x5e] = instruction_info{"pop",  R64};        // POP RSI/R14
         instructions[0x5f] = instruction_info{"pop",  R64};        // POP RDI/R15
 
-        instructions[0x63] = instruction_info{"movsxd", Gv, Ev};   // MOVSXD r32/64, r/m32
+        instructions[0x63] = instruction_info{"movsxd", Gv, Ez};   // MOVSXD r32/64, r/m32 (wrongly listed as Gv, Ev in intels reference!)
 
         instructions[0x6d] = instruction_info{"ins", /*Yz, DX*/};  // INS
 
@@ -582,7 +583,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0x87] = instruction_info{"ja", Jz};                  // JA rel16/32
         ins0f[0x88] = instruction_info{"js", Jz};                  // JS rel16/32
         ins0f[0x8c] = instruction_info{"jl", Jz};                  // JL rel16/32
-        ins0f[0xa3] = instruction_info{"bt", Gv, Ev};              // BT r/m16/32/64, r16/32/64
+        ins0f[0xa3] = instruction_info{"bt", Ev, Gv};              // BT r/m16/32/64, r16/32/64
         ins0f[0xb6] = instruction_info{"movzx", Gv, Eb};           // MOVZX r16/32/64, r/m8
         ins0f[0xb7] = instruction_info{"movzx", Gv, Ew};           // MOVZX r16/32/64, r/m16
         static const char* const group8[8] = { nullptr, nullptr, nullptr, nullptr, "bt", "bts", "btr", "btc" };
@@ -732,10 +733,11 @@ decoded_instruction do_disasm(const uint8_t* code)
                     op.type = decoded_operand_type::reg8;
                 } else if (opinfo.op_type == operand_type::z) {
                     if (ins.prefixes & prefix_flag_opsize) {
+                        assert(!(rex & rex_w_mask));
                         op.type = decoded_operand_type::reg16;
                         used_prefixes |= prefix_flag_opsize;
                     } else {
-                        op.type = decoded_operand_type::reg32;
+                        op.type = rex & rex_w_mask ? decoded_operand_type::reg64 : decoded_operand_type::reg32;
                     }
                 } else {
                     assert(false);
@@ -772,8 +774,19 @@ decoded_instruction do_disasm(const uint8_t* code)
                         }
                         used_prefixes |= prefix_flag_opsize;
                     } else {
-                        op = do_reg(opinfo.op_type, rm + (rex & rex_b_mask ? 8 : 0), rex);
+                        const uint8_t reg = rm + (rex & rex_b_mask ? 8 : 0);
                         used_prefixes |= prefix_flag_rex | rex_b_mask | rex_w_mask;
+                        if (opinfo.op_type == operand_type::z) {
+                            op.reg = reg;
+                            if (ins.prefixes & prefix_flag_opsize) {
+                                op.type = decoded_operand_type::reg16;
+                                used_prefixes |= prefix_flag_opsize;
+                            } else {
+                                op.type = decoded_operand_type::reg32;
+                            }
+                        } else {
+                            op = do_reg(opinfo.op_type, reg, rex);
+                        }
                     }
                     if (opinfo.addr_mode == addressing_mode::W) {
                         assert(opinfo.op_type == operand_type::ps);
@@ -835,6 +848,7 @@ decoded_instruction do_disasm(const uint8_t* code)
                             if (ins.prefixes & prefix_flag_opsize) {
                                 assert(!(rex & rex_w_mask));
                                 op.mem.bits = 16;
+                                used_prefixes |= prefix_flag_opsize;
                             }
                         }
                     }
@@ -870,7 +884,6 @@ decoded_instruction do_disasm(const uint8_t* code)
                 } else if (opinfo.op_type == operand_type::z) {
                     if (ins.prefixes & prefix_flag_opsize) {
                         do_imm16();
-
                         used_prefixes |= prefix_flag_opsize;
                     } else {
                         do_imm32();
