@@ -51,8 +51,6 @@ Q A ModR / M byte follows the opcode and specifies the operand.The operand is ei
 register or a memory address.If it is a memory address, the address is computed from a segment register
 and any of the following values : a base register, an index register, a scaling factor, and a displacement.
 S The reg field of the ModR / M byte selects a segment register (for example, MOV(8C, 8E)).
-U The R / M field of the ModR / M byte selects a 128 - bit XMM register or a 256 - bit YMM register, determined by
-operand type.
 X Memory addressed by the DS : rSI register pair(for example, MOVS, CMPS, OUTS, or LODS).
 Y Memory addressed by the ES : rDI register pair(for example, MOVS, CMPS, INS, STOS, or SCAS).
 
@@ -85,6 +83,7 @@ enum class addressing_mode : uint8_t {
     J, // The instruction contains a relative offset to be added to the instruction pointer register (for example, JMP(0E9), LOOP).
     M, // The ModR / M byte may refer only to memory(for example, BOUND, LES, LDS, LSS, LFS, LGS, CMPXCHG8B).
     R, // The R / M field of the ModR / M byte may refer only to a general register (for example, MOV(0F20 - 0F23)).
+    U, // The R / M field of the ModR / M byte selects a 128 - bit XMM register or a 256 - bit YMM register, determined by operand type.
     V, // The reg field of the ModR / M byte selects a 128 - bit XMM register or a 256 - bit YMM register, determined by operand type.
     W, // A ModR / M byte follows the opcode and specifies the operand. The operand is either a 128 - bit XMM register, a 256 - bit YMM register (determined by operand type), or a memory address.If it is a memory address, the address is computed from a segment register and any of the following values : a base register, an index register, a scaling factor, and a displacement.
 };
@@ -97,6 +96,7 @@ enum class operand_type : uint8_t {
     v, // Word, doubleword or quadword(in 64 - bit mode), depending on operand - size attribute.
     w, // Word, regardless of operand - size attribute.
     q, // Quadword, regardless of operand - size attribute.
+    o, // An octword (128 bits), irrespective of the effective operand size
     z, // Word for 16 - bit operand - size or doubleword for 32 or 64 - bit operand - size.
     x, // dq or qq based on the operand - size attribute.
     ps, // 128 - bit or 256 - bit packed single - precision floating - point data.
@@ -149,6 +149,9 @@ struct instruction_info {
     }
 
     constexpr instruction_info(const instruction_info (&group)[8]) : instruction_info{group, instruction_info_flag_reg_group} {
+    }
+
+    constexpr instruction_info(const instruction_info (&group)[8 * 4]) : instruction_info{group, instruction_info_flag_reg_group | instruction_info_flag_prefix_group} {
     }
 };
 
@@ -281,6 +284,7 @@ constexpr auto Ms = II(M, mem);
 constexpr auto Rd = II(R, d);
 constexpr auto Jb = II(J, b);
 constexpr auto Jz = II(J, z);
+constexpr auto Ux = II(U, x);
 constexpr auto Vps = II(V, ps);
 constexpr auto Vx = II(V, x);
 constexpr auto Wps = II(W, ps);
@@ -567,7 +571,14 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0x42] = instruction_info{"cmovb", Gv, Ev};           // CMOVB r16/32/64, r/m16/32/64
         ins0f[0x44] = instruction_info{"cmove", Gv, Ev};           // CMOVE r16/32/64, r/m16/32/64
         ins0f[0x45] = instruction_info{"cmovne", Gv, Ev};          // CMOVNE r16/32/64, r/m16/32/64
-        ins0f[0x73] = instruction_info{};                          // TODO: Needs both prefix_select and reg selection...
+        static const instruction_info group_0f_73[8 * 4] = {
+            /*       /0  /1  /2                      /3  /4  /5  /6  /7 */
+            /*    */ {}, {}, {},                     {}, {}, {}, {}, {},
+            /* 66 */ {}, {}, {}, {"psrldq", Ux, Ib}, {}, {}, {}, {},
+            /* F3 */ {}, {}, {},                     {}, {}, {}, {}, {},
+            /* F2 */ {}, {}, {},                     {}, {}, {}, {}, {},
+        };
+        ins0f[0x73] = instruction_info{group_0f_73};
         static const instruction_info group_0f_7f[4] = {
             {}, //{ "movq", Pq, Qq },
             {"movdqa", Wx, Vx},
@@ -649,37 +660,51 @@ decoded_instruction do_disasm(const uint8_t* code)
         modrm_fetched = true;
     }
 
-    // TODO: group selection needs modrm bit 7 and 6 into account...
     auto info = ins.info;
     if (ins.info->type != instruction_info_type::normal) {
         const auto group_flags = info->flags & (instruction_info_flag_prefix_group | instruction_info_flag_reg_group);
-        if (group_flags == instruction_info_flag_prefix_group) {
-            assert(ins.info->type == instruction_info_type::group);
+
+        auto get_prefix_group = [&]() {
+            assert(group_flags & instruction_info_flag_prefix_group);
             if (ins.prefixes & prefix_flag_opsize) {
-                ins.group = 1;
                 used_prefixes |= prefix_flag_opsize;
+                ins.prefixes &= ~prefix_flag_opsize; // We consume the flag as part of the instruction
+                return 1;
             } else if (ins.prefixes & prefix_flag_rep) {
-                ins.group = 2;
                 used_prefixes |= prefix_flag_rep;
                 ins.prefixes &= ~prefix_flag_rep; // We consume the flag as part of the instruction
-            // TODO: Handle ins.group=3 when F2 prefix present
+                return 2;
             } else {
-                ins.group = 0;
+                // TODO: return 3 when F2 prefix present
+                return 0;
             }
+        };
+
+        if (group_flags == instruction_info_flag_prefix_group) {
+            assert(ins.info->type == instruction_info_type::group);
+            ins.group = get_prefix_group();
             info = &info->group[ins.group];
-            if (!modrm_fetched && has_modrm(*info)) {
-                modrm = get_u8();
-                modrm_fetched = true;
-            }
         } else {
-            assert(group_flags == instruction_info_flag_reg_group);
-            ins.group = modrm_reg(modrm);
-            if (ins.info->type == instruction_info_type::group) {
+            if (group_flags == instruction_info_flag_reg_group) {
+                ins.group = modrm_reg(modrm);
+                if (ins.info->type == instruction_info_type::group) {
+                    info = &info->group[ins.group];
+                }
+            } else {
+                assert(group_flags == (instruction_info_flag_reg_group | instruction_info_flag_prefix_group));
+                assert(modrm_mod(modrm) == 3 && "TODO: group selection needs modrm bit 7 and 6 into account...");
+                assert(ins.info->type == instruction_info_type::group);
+                ins.group = modrm_reg(modrm) + get_prefix_group() * 8;
                 info = &info->group[ins.group];
             }
         }
     } else {
         ins.group = -1;
+    }
+
+    if (!modrm_fetched && has_modrm(*info)) {
+        modrm = get_u8();
+        modrm_fetched = true;
     }
 
     if (info->flags & instruction_info_flag_f64) {
@@ -922,6 +947,13 @@ decoded_instruction do_disasm(const uint8_t* code)
                     op.reg  = rm;
                 }
                 break;
+            case addressing_mode::U:
+                assert(opinfo.op_type == operand_type::x);
+                assert(modrm_mod(modrm) == 3);
+                op.type = decoded_operand_type::xmmreg;
+                op.reg = modrm_rm(modrm) + (rex & rex_r_mask ? 8 : 0);
+                used_prefixes |= prefix_flag_rex | rex_r_mask;
+                break;
             case addressing_mode::V:
                 assert(opinfo.op_type == operand_type::ps || opinfo.op_type == operand_type::x);
                 assert(!rex);
@@ -1039,7 +1071,7 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
                     if (op.imm.bits == 1) {
                         dbgout() << "1";
                     } else {
-                        const auto bits = operation_size_bits ? operation_size_bits : op.imm.bits;
+                        const auto bits = operation_size_bits  && operation_size_bits < 128 ? operation_size_bits : op.imm.bits;
                         assert(bits);
                         const auto mask = bits == 64 ? ~0ULL : (1ULL << bits) - 1;
                         dbgout() << "0x" << as_hex(op.imm.value & mask).width(0);
@@ -1124,6 +1156,7 @@ public:
     }
     virtual void write(const void* data, size_t n) {
         os_.write(reinterpret_cast<const char*>(data), n);
+        os_.flush();
     }
 private:
     std::ostream& os_;
