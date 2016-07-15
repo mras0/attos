@@ -99,6 +99,7 @@ enum class operand_type : uint8_t {
     o, // An octword (128 bits), irrespective of the effective operand size
     z, // Word for 16 - bit operand - size or doubleword for 32 or 64 - bit operand - size.
     x, // dq or qq based on the operand - size attribute.
+    y, // Doubleword or quadword(in 64 - bit mode), depending on operand - size attribute.
     ps, // 128 - bit or 256 - bit packed single - precision floating - point data.
 };
 
@@ -272,6 +273,7 @@ constexpr auto Cd = II(C, d);
 constexpr auto Eb = II(E, b);
 constexpr auto Ev = II(E, v);
 constexpr auto Ew = II(E, w);
+constexpr auto Ey = II(E, y);
 constexpr auto Ez = II(E, z);
 constexpr auto Gb = II(G, b);
 constexpr auto Gv = II(G, v);
@@ -286,6 +288,7 @@ constexpr auto Jb = II(J, b);
 constexpr auto Jz = II(J, z);
 constexpr auto Ux = II(U, x);
 constexpr auto Vps = II(V, ps);
+constexpr auto Vq = II(V, q);
 constexpr auto Vx = II(V, x);
 constexpr auto Wps = II(W, ps);
 constexpr auto Wx = II(W, x);
@@ -315,7 +318,12 @@ decoded_operand do_reg(operand_type type, uint8_t reg, uint8_t rex)
             op.type = decoded_operand_type::reg16;
             break;
         case operand_type::v:
+        case operand_type::y:
             op.type = rex & rex_w_mask ? decoded_operand_type::reg64 : decoded_operand_type::reg32;
+            break;
+        case operand_type::x:
+            assert(!rex);
+            op.type = decoded_operand_type::xmmreg;
             break;
         default:
             assert(false);
@@ -390,6 +398,8 @@ decoded_instruction do_disasm(const uint8_t* code)
 
         instructions[0x6d] = instruction_info{"ins", /*Yz, DX*/};  // INS
 
+        instructions[0x70] = instruction_info{"jo",   Jb};         // JO rel8
+        instructions[0x71] = instruction_info{"jno",  Jb};         // JNO rel8
         instructions[0x72] = instruction_info{"jb",   Jb};         // JB rel8
         instructions[0x73] = instruction_info{"jae",  Jb};         // JAE rel8
         instructions[0x74] = instruction_info{"je",   Jb};         // JE rel8
@@ -426,6 +436,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         };
         instructions[0x90] = instruction_info{group_90};
 
+        instructions[0x98] = instruction_info{"cdqe", };// CDQE
         instructions[0x9c] = instruction_info{"pushfq", d64/*Fv*/};// PUSHFD/Q
 
         instructions[0xa4] = instruction_info{"movsb", /*Yb, Xb*/};// MOVSB
@@ -571,6 +582,8 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0x42] = instruction_info{"cmovb", Gv, Ev};           // CMOVB r16/32/64, r/m16/32/64
         ins0f[0x44] = instruction_info{"cmove", Gv, Ev};           // CMOVE r16/32/64, r/m16/32/64
         ins0f[0x45] = instruction_info{"cmovne", Gv, Ev};          // CMOVNE r16/32/64, r/m16/32/64
+        ins0f[0x46] = instruction_info{"cmovbe", Gv, Ev};          // CMOVBE r16/32/64, r/m16/32/64
+        ins0f[0x4f] = instruction_info{"cmovg", Gv, Ev};           // CMOVG r16/32/64, r/m16/32/64
         static const instruction_info group_0f_73[8 * 4] = {
             /*       /0  /1  /2                      /3  /4  /5  /6  /7 */
             /*    */ {}, {}, {},                     {}, {}, {}, {}, {},
@@ -579,6 +592,20 @@ decoded_instruction do_disasm(const uint8_t* code)
             /* F2 */ {}, {}, {},                     {}, {}, {}, {}, {},
         };
         ins0f[0x73] = instruction_info{group_0f_73};
+        static const instruction_info group_0f_6f[4] = {
+            {},
+            {"movdqa",Vx,Wx},
+            {},
+            {},
+        };
+        ins0f[0x6f] = instruction_info{group_0f_6f};
+        static const instruction_info group_0f_7e[4] = {
+            {},
+            {"movq",Ey,Vq},
+            {},
+            {},
+        };
+        ins0f[0x7e] = instruction_info{group_0f_7e};
         static const instruction_info group_0f_7f[4] = {
             {}, //{ "movq", Pq, Qq },
             {"movdqa", Wx, Vx},
@@ -814,7 +841,7 @@ decoded_instruction do_disasm(const uint8_t* code)
                         }
                     }
                     if (opinfo.addr_mode == addressing_mode::W) {
-                        assert(opinfo.op_type == operand_type::ps);
+                        assert(opinfo.op_type == operand_type::ps || opinfo.op_type == operand_type::x);
                         op.type = decoded_operand_type::xmmreg;
                     }
                 } else {
@@ -955,8 +982,8 @@ decoded_instruction do_disasm(const uint8_t* code)
                 used_prefixes |= prefix_flag_rex | rex_r_mask;
                 break;
             case addressing_mode::V:
-                assert(opinfo.op_type == operand_type::ps || opinfo.op_type == operand_type::x);
-                assert(!rex);
+                assert(opinfo.op_type == operand_type::ps || opinfo.op_type == operand_type::x || opinfo.op_type == operand_type::q);
+                assert(!rex || opinfo.op_type == operand_type::q);
                 op.type = decoded_operand_type::xmmreg;
                 op.reg = modrm_reg(modrm);
                 break;
