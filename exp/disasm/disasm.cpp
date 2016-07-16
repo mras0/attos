@@ -44,9 +44,6 @@ destructive form.
 L The upper 4 bits of the 8 - bit immediate selects a 128 - bit XMM register or a 256 - bit YMM register, determined
 by operand type. (the MSB is ignored in 32 - bit mode)
 N The R / M field of the ModR / M byte selects a packed - quadword, MMX technology register.
-O The instruction has no ModR / M byte.The offset of the operand is coded as a word or double word
-(depending on address size attribute) in the instruction.No base register, index register, or scaling factor
-can be applied(for example, MOV(A0–A3)).
 P The reg field of the ModR / M byte selects a packed quadword MMX technology register.
 Q A ModR / M byte follows the opcode and specifies the operand.The operand is either an MMX technology
 register or a memory address.If it is a memory address, the address is computed from a segment register
@@ -58,7 +55,6 @@ Y Memory addressed by the ES : rDI register pair(for example, MOVS, CMPS, INS, S
 A.2.2 Codes for Operand Type
 a Two one - word operands in memory or two double - word operands in memory, depending on operand - size attribute(used only by the BOUND instruction).
 c Byte or word, depending on operand - size attribute.
-dq Double - quadword, regardless of operand - size attribute.
 p 32 - bit, 48 - bit, or 80 - bit pointer, depending on operand - size attribute.
 pd 128 - bit or 256 - bit packed double - precision floating - point data.
 pi Quadword MMX technology register (for example: mm0).
@@ -82,6 +78,7 @@ enum class addressing_mode : uint8_t {
     I, // Immediate data : the operand value is encoded in subsequent bytes of the instruction.
     J, // The instruction contains a relative offset to be added to the instruction pointer register (for example, JMP(0E9), LOOP).
     M, // The ModR / M byte may refer only to memory(for example, BOUND, LES, LDS, LSS, LFS, LGS, CMPXCHG8B).
+    O, // The instruction has no ModR / M byte.The offset of the operand is coded as a word or double word (depending on address size attribute) in the instruction. No base register, index register, or scaling factor can be applied(for example, MOV(A0–A3)).
     R, // The R / M field of the ModR / M byte may refer only to a general register (for example, MOV(0F20 - 0F23)).
     U, // The R / M field of the ModR / M byte selects a 128 - bit XMM register or a 256 - bit YMM register, determined by operand type.
     V, // The reg field of the ModR / M byte selects a 128 - bit XMM register or a 256 - bit YMM register, determined by operand type.
@@ -93,6 +90,7 @@ enum class operand_type : uint8_t {
     mem,
     b, // Byte, regardless of operand - size attribute.
     d, // Doubleword, regardless of operand - size attribute.
+    dq, // Double - quadword, regardless of operand - size attribute.
     v, // Word, doubleword or quadword(in 64 - bit mode), depending on operand - size attribute.
     w, // Word, regardless of operand - size attribute.
     q, // Quadword, regardless of operand - size attribute.
@@ -167,6 +165,7 @@ enum class decoded_operand_type {
     creg,
     disp8,
     disp32,
+    absaddr,
     immediate,
     mem,
 };
@@ -190,6 +189,7 @@ struct decoded_operand {
             int     bits;
         } imm;
         mem_op   mem;
+        uint64_t absaddr;
     };
 };
 
@@ -236,6 +236,7 @@ bool has_modrm(const instruction_info& ii)
             case addressing_mode::const1:
             case addressing_mode::I:
             case addressing_mode::J:
+            case addressing_mode::O:
                 break;
             default:
                 assert(false);
@@ -267,7 +268,7 @@ const char* const reg16[16] = { "ax", "cx", "dx", "bx", "sp", "bp", "si", "di", 
 const char* const reg32[16] = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d" };
 const char* const reg64[17] = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rip" };
 const char* const xmmreg[16] = { "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15" };
-const char* const creg[8] = { "cr0", "cr1", "cr2", "cr3", "cr4", "cr5", "cr6", "cr7" };
+const char* const creg[16] = { "cr0", "cr1", "cr2", "cr3", "cr4", "cr5", "cr6", "cr7", "cr8", "cr9", "cr10", "cr11", "cr12", "cr13", "cr14", "cr15" };
 
 namespace operand_info_helpers {
 constexpr auto d64 = instruction_info_flag_d64;
@@ -285,11 +286,13 @@ constexpr auto Ib = II(I, b);
 constexpr auto Iv = II(I, v);
 constexpr auto Iw = II(I, w);
 constexpr auto Iz = II(I, z);
-constexpr auto M  = II(M, mem);
-constexpr auto Ms = II(M, mem);
-constexpr auto Rd = II(R, d);
 constexpr auto Jb = II(J, b);
 constexpr auto Jz = II(J, z);
+constexpr auto M  = II(M, mem);
+constexpr auto Ms = II(M, mem);
+constexpr auto Mdq = II(M, dq);
+constexpr auto Ov = II(O, v);
+constexpr auto Rd = II(R, d);
 constexpr auto Ux = II(U, x);
 constexpr auto Vps = II(V, ps);
 constexpr auto Vq = II(V, q);
@@ -322,7 +325,6 @@ decoded_operand do_reg(operand_type type, uint8_t reg, uint8_t rex)
             op.type = rex ? decoded_operand_type::reg8_rex : decoded_operand_type::reg8;
             break;
         case operand_type::w:
-            assert(!(rex & rex_w_mask));
             op.type = decoded_operand_type::reg16;
             break;
         case operand_type::v:
@@ -412,6 +414,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0x69] = instruction_info{"imul", Gv, Ev, Iz};
         instructions[0x6b] = instruction_info{"imul", Gv, Ev, Ib};
         instructions[0x6d] = instruction_info{"ins", /*Yz, DX*/};  // INS
+        instructions[0x6f] = instruction_info{"outs", /*DX, Xz*/}; // OUTS
 
         instructions[0x70] = instruction_info{"jo",   Jb};         // JO rel8
         instructions[0x71] = instruction_info{"jno",  Jb};         // JNO rel8
@@ -458,12 +461,16 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0x99] = instruction_info{"cdq"};              // CDQ
         instructions[0x9c] = instruction_info{"pushfq", d64/*Fv*/};// PUSHFD/Q
 
+        instructions[0xa1] = instruction_info{"mov", rAXz, Ov};    // MOV rAX, moffs16/32/64
         instructions[0xa4] = instruction_info{"movsb", /*Yb, Xb*/};// MOVSB
+        instructions[0xa5] = instruction_info{"stos", /*Yv, Xv*/}; // MOVS
 
         instructions[0xa8] = instruction_info{"test", rAL, Ib};    // TEST AL, imm8
         instructions[0xa9] = instruction_info{"test", rAXz, Iz};   // TEST rAX, imm16/32
         instructions[0xaa] = instruction_info{"stosb", /*Yb, AL*/};// STOSB
-        instructions[0xab] = instruction_info{"movs", /*Yv,rAX*/}; // MOVSQ
+        instructions[0xab] = instruction_info{"stos", /*Yv,rAX*/}; // STOS
+        instructions[0xae] = instruction_info{"scasb", /*AL, Yb*/};// SCASB
+        instructions[0xaf] = instruction_info{"scas", /*rAX, Yv*/};// SCAS
 
         instructions[0xb0] = instruction_info{"mov",  R8, Ib};     // MOV r8, imm8
         instructions[0xb1] = instruction_info{"mov",  R8, Ib};     // MOV r8, imm8
@@ -577,6 +584,8 @@ decoded_instruction do_disasm(const uint8_t* code)
         };
 
         ins0f[0x01] = instruction_info{group7};                    // Grp 7
+
+        ins0f[0x0d] = instruction_info{"prefetchw", Ev};
 
         static const instruction_info group_0f_10[4] = {
             {"movups", Vps, Wps}, // MOVUPS xmm, xmm/m128
@@ -698,19 +707,32 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0xa2] = instruction_info{"cpuid"};                   // CPUID
         ins0f[0xa3] = instruction_info{"bt", Ev, Gv};              // BT r/m16/32/64, r16/32/64
 
+        ins0f[0xab] = instruction_info{"bts", Ev, Gv};             // BTS r/m16/32/64, r16/32/64
         ins0f[0xaf] = instruction_info{"imul", Gv, Ev};            // IMUL r16/32/64, r/m16/32/64
 
         ins0f[0xb0] = instruction_info{"cmpxchg", Eb, Gb};
         ins0f[0xb1] = instruction_info{"cmpxchg", Ev, Gv};
+        ins0f[0xb3] = instruction_info{"btr", Ev, Gv};             // BTR r/m16/32/64, r16/32/64
         ins0f[0xb6] = instruction_info{"movzx", Gv, Eb};           // MOVZX r16/32/64, r/m8
         ins0f[0xb7] = instruction_info{"movzx", Gv, Ew};           // MOVZX r16/32/64, r/m16
 
         static const char* const group8[8] = { nullptr, nullptr, nullptr, nullptr, "bt", "bts", "btr", "btc" };
         ins0f[0xba] = instruction_info{group8, Ev, Ib};            // Grp 8
+        ins0f[0xbc] = instruction_info{"bsf", Gv, Ev};             // BSF r16/32/64, r/m16/32/64
+        ins0f[0xbd] = instruction_info{"bsr", Gv, Ev};             // BSR r16/32/64, r/m16/32/64
         ins0f[0xbe] = instruction_info{"movsx", Gv, Eb};           // MOVSX r16/32/64, r/m8
         ins0f[0xbf] = instruction_info{"movsx", Gv, Ew};           // MOVSX r16/32/64, r/m16
+
         ins0f[0xc0] = instruction_info{"xadd", Eb, Gb};            // XADD r/m16/32/64, r16/32/64
         ins0f[0xc1] = instruction_info{"xadd", Ev, Gv};            // XADD r/m16/32/64, r16/32/64
+        static const instruction_info group9[8 * 4] = {
+            /*       /0  /1                   /2  /3  /4  /5  /6  /7 */
+            /*    */ {}, {"cmpxchg16b", Mdq}, {}, {}, {}, {}, {}, {},
+            /* 66 */ {},                      {}, {}, {}, {}, {}, {}, {},
+            /* F3 */ {},                      {}, {}, {}, {}, {}, {}, {},
+            /* F2 */ {},                      {}, {}, {}, {}, {}, {}, {},
+        };
+        ins0f[0xc7] = instruction_info{group9};                    // Grp9
 
         static const instruction_info group_0f_ef[4] = {
             {}, //{"pxor", Pq, Qq},
@@ -812,7 +834,8 @@ decoded_instruction do_disasm(const uint8_t* code)
                 }
             } else {
                 assert(group_flags == (instruction_info_flag_reg_group | instruction_info_flag_prefix_group));
-                assert(modrm_mod(modrm) == 3 && "TODO: group selection needs modrm bit 7 and 6 into account...");
+                // Hack for 0f c7 [cmpxchg16b]
+                assert((modrm_mod(modrm) == 3 || ins.info == &instructions[256+0xc7]) && "TODO: group selection needs modrm bit 7 and 6 into account...");
                 assert(ins.info->type == instruction_info_type::group);
                 ins.group = modrm_reg(modrm) + get_prefix_group() * 8;
                 info = &info->group[ins.group];
@@ -875,6 +898,7 @@ decoded_instruction do_disasm(const uint8_t* code)
                     }
                 } else if (opinfo.op_type == operand_type::b) {
                     op.type = rex ? decoded_operand_type::reg8_rex : decoded_operand_type::reg8;
+                    used_prefixes |= prefix_flag_rex;
                 } else if (opinfo.op_type == operand_type::w) {
                     op.type = decoded_operand_type::reg16;
                 } else {
@@ -1005,6 +1029,9 @@ decoded_instruction do_disasm(const uint8_t* code)
                         } else if (opinfo.op_type == operand_type::w) {
                             assert(!(ins.prefixes & prefix_flag_opsize));
                             op.mem.bits = 16;
+                        } else if (opinfo.op_type == operand_type::dq) {
+                            assert(!(ins.prefixes & prefix_flag_opsize));
+                            op.mem.bits = 64; // Really 128 bits, but objdump shows it as QWORD PTR
                         } else if (opinfo.op_type == operand_type::z) {
                             if (ins.prefixes & prefix_flag_opsize) {
                                 op.mem.bits = 16;
@@ -1082,15 +1109,14 @@ decoded_instruction do_disasm(const uint8_t* code)
                 break;
             case addressing_mode::C:
                 assert(opinfo.op_type == operand_type::d);
-                assert(!rex);
                 op.type = decoded_operand_type::creg;
-                op.reg = modrm_reg(modrm);
+                op.reg = modrm_reg(modrm) + (rex & rex_r_mask ? 8 : 0);
+                used_prefixes |= prefix_flag_rex | rex_r_mask;
                 break;
             case addressing_mode::R:
                 {
                     // The R / M field of the ModR / M byte may refer only to a general register (for example, MOV(0F20 - 0F23)).
                     assert(opinfo.op_type == operand_type::d);
-                    assert(!rex);
                     const uint8_t mod = modrm_mod(modrm);
                     const uint8_t rm  = modrm_rm(modrm);
                     assert(mod == 3);
@@ -1109,6 +1135,13 @@ decoded_instruction do_disasm(const uint8_t* code)
                 assert(opinfo.op_type == operand_type::sd || opinfo.op_type == operand_type::ps || opinfo.op_type == operand_type::x || opinfo.op_type == operand_type::q);
                 op.type = decoded_operand_type::xmmreg;
                 op.reg = modrm_reg(modrm);
+                break;
+            case addressing_mode::O:
+                assert(opinfo.op_type == operand_type::v);
+                assert(rex & rex_w_mask);
+                op.type = decoded_operand_type::absaddr;
+                op.absaddr = get_u64();
+                used_prefixes |= prefix_flag_rex | rex_w_mask;
                 break;
             default:
                 assert(false);
@@ -1170,7 +1203,7 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
             used_prefixes |= prefix_flag_rep;
             used_prefixes |= prefix_flag_opsize; // HACK: ignore db 66 for string instructions
         }
-        if (ins.unused_prefixes & prefix_flag_rex) {
+        if ((ins.unused_prefixes & prefix_flag_rex) != 0 && info->operands[0].op_type != operand_type::none) { // HACK: Don't show rex prefix for single byte instructions (pushfq/cdqe)
             const char* const rex_names[16] = {
                 "rex", "rex.B", "rex.X", "rex.XB", "rex.R", "rex.RB", "rex.RX", "rex.RXB",
                 "rex.W", "rex.WB", "rex.WX", "rex.WXB", "rex.WR", "rex.WRB", "rex.WRX", "rex.WRXB",
@@ -1303,6 +1336,9 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
                         }
                         if (brackets) dbgout() << "]";
                     }
+                    break;
+                case decoded_operand_type::absaddr:
+                    dbgout() << "ds:0x" << as_hex(op.absaddr).width(0);
                     break;
                 default:
                     assert(false);
