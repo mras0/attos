@@ -108,7 +108,7 @@ struct instruction_operand_info {
     operand_type    op_type;
 };
 
-constexpr int max_operands = 2;
+constexpr int max_operands = 3;
 
 enum class instruction_info_type {
     normal,
@@ -131,12 +131,12 @@ struct instruction_info {
     instruction_operand_info operands[max_operands];
 
     constexpr instruction_info() = default;
-    constexpr instruction_info(const char* name, unsigned flags, instruction_operand_info op0=instruction_operand_info{}, instruction_operand_info op1=instruction_operand_info{})
-        : type(instruction_info_type::normal), flags(flags), name(name), operands{op0, op1} {
+    constexpr instruction_info(const char* name, unsigned flags, instruction_operand_info op0=instruction_operand_info{}, instruction_operand_info op1=instruction_operand_info{}, instruction_operand_info op2=instruction_operand_info{})
+        : type(instruction_info_type::normal), flags(flags), name(name), operands{op0, op1, op2} {
     }
 
-    constexpr instruction_info(const char* name, instruction_operand_info op0=instruction_operand_info{}, instruction_operand_info op1=instruction_operand_info{})
-        : instruction_info{name, 0, op0, op1} {
+    constexpr instruction_info(const char* name, instruction_operand_info op0=instruction_operand_info{}, instruction_operand_info op1=instruction_operand_info{}, instruction_operand_info op2=instruction_operand_info{})
+        : instruction_info{name, 0, op0, op1, op2} {
     }
 
     constexpr instruction_info(const char* const* group_names, instruction_operand_info op0=instruction_operand_info{}, instruction_operand_info op1=instruction_operand_info{})
@@ -406,6 +406,7 @@ decoded_instruction do_disasm(const uint8_t* code)
 
         instructions[0x63] = instruction_info{"movsxd", Gv, Ez};   // MOVSXD r32/64, r/m32 (wrongly listed as Gv, Ev in intels reference!)
 
+        instructions[0x69] = instruction_info{"imul", Gv, Ev, Iz};
         instructions[0x6d] = instruction_info{"ins", /*Yz, DX*/};  // INS
 
         instructions[0x70] = instruction_info{"jo",   Jb};         // JO rel8
@@ -432,6 +433,8 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0x83] = instruction_info{group1, Ev, Ib};     // Immediate Grp 1
         instructions[0x84] = instruction_info{"test", Eb, Gb};     // TEST r/m8, r8
         instructions[0x85] = instruction_info{"test", Ev, Gv};     // TEST r/m16/32/64, r16/32/64
+        instructions[0x86] = instruction_info{"xchg", Eb, Gb};     // XCHG r/m8, r8
+        instructions[0x87] = instruction_info{"xchg", Ev, Gv};     // XCHG r/m16/32/64, r16/32/64
 
         instructions[0x88] = instruction_info{"mov",  Eb, Gb};     // MOV r/m8, r8
         instructions[0x89] = instruction_info{"mov",  Ev, Gv};     // MOV r/m16/32/64, r16/32/64
@@ -592,6 +595,8 @@ decoded_instruction do_disasm(const uint8_t* code)
         };
         ins0f[0x29] = instruction_info{group_0f_29};
 
+        ins0f[0x31] = instruction_info{"rdtsc"};
+
         ins0f[0x40] = instruction_info{"cmovo",   Gv, Ev};         // CMOVO r16/32/64, r/m16/32/64
         ins0f[0x41] = instruction_info{"cmovno",  Gv, Ev};         // CMOVNO r16/32/64, r/m16/32/64
         ins0f[0x42] = instruction_info{"cmovb",   Gv, Ev};         // CMOVB r16/32/64, r/m16/32/64
@@ -618,8 +623,8 @@ decoded_instruction do_disasm(const uint8_t* code)
 
         static const instruction_info group_0f_6f[4] = {
             {},
-            {"movdqa",Vx,Wx},
-            {},
+            {"movdqa", Vx, Wx},
+            {"movdqu", Vx, Wx},
             {},
         };
         ins0f[0x6f] = instruction_info{group_0f_6f};
@@ -693,6 +698,14 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0xbf] = instruction_info{"movsx", Gv, Ew};           // MOVSX r16/32/64, r/m16
         ins0f[0xc0] = instruction_info{"xadd", Eb, Gb};            // XADD r/m16/32/64, r16/32/64
         ins0f[0xc1] = instruction_info{"xadd", Ev, Gv};            // XADD r/m16/32/64, r16/32/64
+
+        static const instruction_info group_0f_ef[4] = {
+            {}, //{"pxor", Pq, Qq},
+            {},
+            {},
+            {},
+        };
+        ins0f[0xef] = instruction_info{group_0f_ef};
 
         init = true;
     }
@@ -1061,13 +1074,9 @@ decoded_instruction do_disasm(const uint8_t* code)
                 used_prefixes |= prefix_flag_rex | rex_r_mask;
                 break;
             case addressing_mode::V:
+                assert(opinfo.op_type == operand_type::sd || opinfo.op_type == operand_type::ps || opinfo.op_type == operand_type::x || opinfo.op_type == operand_type::q);
                 op.type = decoded_operand_type::xmmreg;
                 op.reg = modrm_reg(modrm);
-                if (opinfo.op_type == operand_type::sd) {
-                } else {
-                    assert(opinfo.op_type == operand_type::ps || opinfo.op_type == operand_type::x || opinfo.op_type == operand_type::q);
-                    assert(!rex || opinfo.op_type == operand_type::q);
-                }
                 break;
             default:
                 assert(false);
@@ -1219,7 +1228,15 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
                         show_comment_addr = true;
 #endif
                     } else {
-                        dbgout() << "[";
+                        bool brackets = true;
+
+                        if (ins.prefixes & prefix_flag_gs) {
+                            dbgout() << "gs:";
+                            brackets = false;
+                            used_prefixes |= prefix_flag_gs;
+                        }
+
+                        if (brackets) dbgout() << "[";
                         if (op.mem.reg != reg_invalid) {
                             dbgout() << reg64[op.mem.reg];
                             if (op.mem.reg2scale != 0) {
@@ -1236,10 +1253,11 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
                             if (op.mem.disp < 0) {
                                 dbgout() << "-0x" << as_hex(-op.mem.disp).width(0);
                             } else {
-                                dbgout() << "+0x" << as_hex(op.mem.disp).width(0);
+                                if (brackets) dbgout() << "+";
+                                dbgout() << "0x" << as_hex(op.mem.disp).width(0);
                             }
                         }
-                        dbgout() << "]";
+                        if (brackets) dbgout() << "]";
                     }
                     break;
                 default:
@@ -1317,7 +1335,7 @@ int main(int argc, char* argv[])
         }
         const auto offset = use_hack ? image.nt_headers().OptionalHeader.AddressOfEntryPoint - section.VirtualAddress : 0;
         uint64_t virtual_address = image.nt_headers().OptionalHeader.ImageBase + section.VirtualAddress + offset;
-        disasm_section(virtual_address, &f[section.PointerToRawData + offset], 10000);
+        disasm_section(virtual_address, &f[section.PointerToRawData + offset], 20000);
     }
 #else
     disasm_section(reinterpret_cast<uint64_t>(_ReturnAddress()), reinterpret_cast<const uint8_t*>(_ReturnAddress()), 20);
