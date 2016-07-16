@@ -1,4 +1,5 @@
 #include "out_stream.h"
+#include <attos/string.h>
 
 namespace attos {
 
@@ -16,12 +17,6 @@ void format_number(out_stream& os, uint64_t number, unsigned base = 10, int min_
     int count = sizeof(buffer) - pos;
     write_many(os, fill, min_width - count);
     os.write(&buffer[pos], count);
-}
-
-size_t string_length(const char* s) {
-    size_t len = 0;
-    for (; *s; ++s) ++len;
-    return len;
 }
 
 } // unnamed namespace

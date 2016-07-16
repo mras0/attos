@@ -8,6 +8,7 @@
 #include <attos/pe.h>
 #include <attos/cpu.h>
 #include <attos/out_stream.h>
+#include <attos/string.h>
 
 namespace attos {
 
@@ -300,11 +301,13 @@ constexpr auto Wx = II(W, x);
 
 // pseduo operand types
 constexpr auto R8 = II(low_instruction_bits, b);
+constexpr auto R16 = II(low_instruction_bits, w);
 constexpr auto R64v = II(low_instruction_bits, v);
 constexpr auto R64 = II(low_instruction_bits, q);
 constexpr auto rAL = II(rax, b);
-constexpr auto rCL = II(rcx, b);
+constexpr auto rAX = II(rax, w);
 constexpr auto rAXz = II(rax, z);
+constexpr auto rCL = II(rcx, b);
 constexpr auto rDX = II(rdx, w);
 constexpr auto const1 = II(const1, b);
 #undef II
@@ -407,6 +410,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0x63] = instruction_info{"movsxd", Gv, Ez};   // MOVSXD r32/64, r/m32 (wrongly listed as Gv, Ev in intels reference!)
 
         instructions[0x69] = instruction_info{"imul", Gv, Ev, Iz};
+        instructions[0x6b] = instruction_info{"imul", Gv, Ev, Ib};
         instructions[0x6d] = instruction_info{"ins", /*Yz, DX*/};  // INS
 
         instructions[0x70] = instruction_info{"jo",   Jb};         // JO rel8
@@ -444,7 +448,7 @@ decoded_instruction do_disasm(const uint8_t* code)
 
         static const instruction_info group_90[4] = {
             { "nop"   },
-            {},
+            { "xchg", R16, rAX},
             { "pause" },
             {},
         };
@@ -455,9 +459,11 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0x9c] = instruction_info{"pushfq", d64/*Fv*/};// PUSHFD/Q
 
         instructions[0xa4] = instruction_info{"movsb", /*Yb, Xb*/};// MOVSB
-        instructions[0xab] = instruction_info{"movs", /*Yv,rAX*/}; // MOVSQ
+
         instructions[0xa8] = instruction_info{"test", rAL, Ib};    // TEST AL, imm8
         instructions[0xa9] = instruction_info{"test", rAXz, Iz};   // TEST rAX, imm16/32
+        instructions[0xaa] = instruction_info{"stosb", /*Yb, AL*/};// STOSB
+        instructions[0xab] = instruction_info{"movs", /*Yv,rAX*/}; // MOVSQ
 
         instructions[0xb0] = instruction_info{"mov",  R8, Ib};     // MOV r8, imm8
         instructions[0xb1] = instruction_info{"mov",  R8, Ib};     // MOV r8, imm8
@@ -487,6 +493,7 @@ decoded_instruction do_disasm(const uint8_t* code)
 
         instructions[0xc8] = instruction_info{"enter", Iw, Ib};    // ENTER imm16, imm8
         instructions[0xcc] = instruction_info{"int3"};             // INT3
+        instructions[0xcd] = instruction_info{"int", Ib};          // INT3 imm8
         instructions[0xcf] = instruction_info{"iretq"};            // IRETQ
 
         instructions[0xd0] = instruction_info{group2, Eb, const1}; // Shift Grp 2
@@ -570,6 +577,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         };
 
         ins0f[0x01] = instruction_info{group7};                    // Grp 7
+
         static const instruction_info group_0f_10[4] = {
             {"movups", Vps, Wps}, // MOVUPS xmm, xmm/m128
             {},
@@ -584,6 +592,9 @@ decoded_instruction do_disasm(const uint8_t* code)
             {"movsd", Wsd, Vsd},
         };
         ins0f[0x11] = instruction_info{group_0f_11};
+
+        ins0f[0x1f] = instruction_info{"nop", Ev};                 // Hintable NOP
+
         ins0f[0x20] = instruction_info{"mov", Rd, Cd};             // MOV r64, CRn
         ins0f[0x22] = instruction_info{"mov", Cd, Rd};             // MOV CRn, r64
         ins0f[0x28] = instruction_info{"movaps", Vps, Wps};        // MOVAPS xmm, xmm/m128
@@ -639,7 +650,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0x73] = instruction_info{group_0f_73};
         static const instruction_info group_0f_7e[4] = {
             {},
-            {"movq",Ey,Vq},
+            {"movd",Ey,Vq},
             {},
             {},
         };
@@ -687,6 +698,8 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0xa2] = instruction_info{"cpuid"};                   // CPUID
         ins0f[0xa3] = instruction_info{"bt", Ev, Gv};              // BT r/m16/32/64, r16/32/64
 
+        ins0f[0xaf] = instruction_info{"imul", Gv, Ev};            // IMUL r16/32/64, r/m16/32/64
+
         ins0f[0xb0] = instruction_info{"cmpxchg", Eb, Gb};
         ins0f[0xb1] = instruction_info{"cmpxchg", Ev, Gv};
         ins0f[0xb6] = instruction_info{"movzx", Gv, Eb};           // MOVZX r16/32/64, r/m8
@@ -701,7 +714,7 @@ decoded_instruction do_disasm(const uint8_t* code)
 
         static const instruction_info group_0f_ef[4] = {
             {}, //{"pxor", Pq, Qq},
-            {},
+            {"pxor", Vx, Wx},
             {},
             {},
         };
@@ -814,8 +827,11 @@ decoded_instruction do_disasm(const uint8_t* code)
         modrm_fetched = true;
     }
 
+    bool restore_rex_w_mask = false;
     if (info->flags & instruction_info_flag_f64) {
-        rex |= rex_w_mask; // Hackish...
+        // HACK
+        restore_rex_w_mask = (rex & rex_w_mask) != 0;
+        rex |= rex_w_mask;
     }
 
     for (int i = 0; i < max_operands && info->operands[i].op_type != operand_type::none; ++i) {
@@ -850,10 +866,17 @@ decoded_instruction do_disasm(const uint8_t* code)
                         op.type = decoded_operand_type::reg64;
                         used_prefixes |= prefix_flag_rex | rex_w_mask;
                     } else {
-                        op.type = decoded_operand_type::reg32;
+                        if (ins.prefixes & prefix_flag_opsize) {
+                            op.type = decoded_operand_type::reg16;
+                            used_prefixes |= prefix_flag_opsize;
+                        } else {
+                            op.type = decoded_operand_type::reg32;
+                        }
                     }
                 } else if (opinfo.op_type == operand_type::b) {
                     op.type = rex ? decoded_operand_type::reg8_rex : decoded_operand_type::reg8;
+                } else if (opinfo.op_type == operand_type::w) {
+                    op.type = decoded_operand_type::reg16;
                 } else {
                     assert(false);
                 }
@@ -863,6 +886,8 @@ decoded_instruction do_disasm(const uint8_t* code)
                 op.reg  = reg_rax;
                 if (opinfo.op_type == operand_type::b) {
                     op.type = decoded_operand_type::reg8;
+                } else if (opinfo.op_type == operand_type::w) {
+                    op.type = decoded_operand_type::reg16;
                 } else if (opinfo.op_type == operand_type::z) {
                     if (ins.prefixes & prefix_flag_opsize) {
                         assert(!(rex & rex_w_mask));
@@ -870,6 +895,7 @@ decoded_instruction do_disasm(const uint8_t* code)
                         used_prefixes |= prefix_flag_opsize;
                     } else {
                         op.type = rex & rex_w_mask ? decoded_operand_type::reg64 : decoded_operand_type::reg32;
+                        used_prefixes |= prefix_flag_rex | rex_w_mask;
                     }
                 } else {
                     assert(false);
@@ -935,7 +961,7 @@ decoded_instruction do_disasm(const uint8_t* code)
                     if (rm == 4) {
                         // SIB
                         const uint8_t sib = get_u8();
-                        if ((sib & 7) == 5) {
+                        if (mod == 0 && (sib & 7) == 5) {
                             op.mem.reg = reg_invalid;
                         } else {
                             op.mem.reg = (sib & 7) + (rex & rex_b_mask ? 8 : 0);
@@ -989,6 +1015,7 @@ decoded_instruction do_disasm(const uint8_t* code)
                         } else {
                             assert(opinfo.op_type == operand_type::v);
                             op.mem.bits = rex & rex_w_mask ? 64 : 32;
+                            used_prefixes |= prefix_flag_rex | rex_w_mask;
                             if (ins.prefixes & prefix_flag_opsize) {
                                 assert(!(rex & rex_w_mask));
                                 op.mem.bits = 16;
@@ -1021,7 +1048,12 @@ decoded_instruction do_disasm(const uint8_t* code)
                         do_imm64();
                         used_prefixes |= prefix_flag_rex | rex_w_mask;
                     } else {
-                        do_imm32();
+                        if (ins.prefixes & prefix_flag_opsize) {
+                            do_imm16();
+                            used_prefixes |= prefix_flag_opsize;
+                        } else {
+                            do_imm32();
+                        }
                     }
                 } else if (opinfo.op_type == operand_type::w) {
                     do_imm16();
@@ -1083,6 +1115,9 @@ decoded_instruction do_disasm(const uint8_t* code)
         }
     }
     ins.unused_prefixes = ins.prefixes & ~used_prefixes;
+    if (restore_rex_w_mask) {
+        ins.unused_prefixes |= prefix_flag_rex | rex_w_mask;
+    }
     return ins;
 }
 
@@ -1134,6 +1169,15 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
             dbgout() << "rep ";
             used_prefixes |= prefix_flag_rep;
             used_prefixes |= prefix_flag_opsize; // HACK: ignore db 66 for string instructions
+        }
+        if (ins.unused_prefixes & prefix_flag_rex) {
+            const char* const rex_names[16] = {
+                "rex", "rex.B", "rex.X", "rex.XB", "rex.R", "rex.RB", "rex.RX", "rex.RXB",
+                "rex.W", "rex.WB", "rex.WX", "rex.WXB", "rex.WR", "rex.WRB", "rex.WRX", "rex.WRXB",
+            };
+            const char* const rn = rex_names[ins.unused_prefixes & 0xf];
+            dbgout() << rn << " ";
+            iwidth -= static_cast<int>(string_length(rn)) + 1;
         }
 
         if (!info->name) {
@@ -1335,7 +1379,7 @@ int main(int argc, char* argv[])
         }
         const auto offset = use_hack ? image.nt_headers().OptionalHeader.AddressOfEntryPoint - section.VirtualAddress : 0;
         uint64_t virtual_address = image.nt_headers().OptionalHeader.ImageBase + section.VirtualAddress + offset;
-        disasm_section(virtual_address, &f[section.PointerToRawData + offset], 20000);
+        disasm_section(virtual_address, &f[section.PointerToRawData + offset], 50000);
     }
 #else
     disasm_section(reinterpret_cast<uint64_t>(_ReturnAddress()), reinterpret_cast<const uint8_t*>(_ReturnAddress()), 20);
