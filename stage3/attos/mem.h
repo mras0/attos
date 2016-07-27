@@ -32,7 +32,7 @@ enum class memory_type : uint32_t {
 
     user    = 0x08,
 
-    //ps_2mb  = 0x1000,
+    ps_2mb  = 0x1000,
     ps_1gb  = 0x2000,
 };
 

@@ -120,7 +120,7 @@ private:
     uint64_t* alloc_table_entry(uint64_t& parent, uint64_t flags) {
         auto table = static_cast<uint64_t*>(alloc_physical_page());
         parent = physical_address::from_identity_mapped_ptr(table) | flags;
-        dbgout() << "[mem] Allocated page table. parent " << as_hex((uint64_t)&parent) << " <- " << as_hex(parent) << "\n";
+        //dbgout() << "[mem] Allocated page table. parent " << as_hex((uint64_t)&parent) << " <- " << as_hex(parent) << "\n";
         return table;
     }
 
@@ -131,7 +131,7 @@ private:
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
         dbgout() << "[mem] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << " type = " << as_hex(type).width(0) << "\n";
 
-        const uint64_t map_page_size = static_cast<uint32_t>(type & memory_type::ps_1gb) ? (1<<30) : (1<<12);
+        const uint64_t map_page_size = static_cast<uint32_t>(type & memory_type::ps_1gb) ? (1<<30) : static_cast<uint32_t>(type & memory_type::ps_2mb) ? (2<<20) : (1<<12);
 
         // Check address alignment
         REQUIRE((virt & (map_page_size - 1)) == 0);
@@ -160,10 +160,14 @@ private:
                 pdp[virt.pdpe()] = phys | PAGEF_PAGESIZE | PAGEF_PRESENT | flags;
             } else {
                 auto* pd = alloc_if_not_present(pdp[virt.pdpe()], flags);
-                auto* pt = alloc_if_not_present(pd[virt.pde()], flags);
-                pt[virt.pte()] = phys | PAGEF_PRESENT | flags;
+                if (static_cast<uint32_t>(type & memory_type::ps_2mb)) {
+                    pd[virt.pde()] = phys | PAGEF_PAGESIZE | PAGEF_PRESENT | flags;
+                } else {
+                    auto* pt = alloc_if_not_present(pd[virt.pde()], flags);
+                    pt[virt.pte()] = phys | PAGEF_PRESENT | flags;
+                }
             }
-            dbgout() << "[mem] " << as_hex(virt) << " " << as_hex(phys) << "\n";
+            //dbgout() << "[mem] " << as_hex(virt) << " " << as_hex(phys) << "\n";
         }
     }
 };

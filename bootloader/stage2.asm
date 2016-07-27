@@ -13,11 +13,11 @@ main:
 
     call smap_init ; get system memory map
 
-    call a20_test
+    ; call a20_test ; Disabling A20 is not supported by x200s?
 
     call pe_test
 
-    call smap_print
+    ; call smap_print
 
     call test_pmode
 
@@ -115,9 +115,18 @@ test_longmode:
     ; build initial page mapping
     set_page_entry pml4, 0, pdpt0
     set_page_entry pml4+((IDENTITY_MAP_START>>39)&511)*8, 0, pdpt511
-    set_page_entry pdpt0, 0, pdt0
-    set_page_entry pdpt511+((IDENTITY_MAP_START>>30)&511)*8, 0, 0 | PAGEF_PAGESIZE ; Map 1GB from physical 0 at 0xFFFFFFFF`00000000
-    set_page_entry pdt0, 0, 0 | PAGEF_PAGESIZE ; Identity map first 2MB
+    ; Identity map 1GB physical 0 at 0xFFFFFFFF`00000000 and 0x00000000`00000000
+    set_page_entry pdpt0, 0, pdt_id
+    set_page_entry pdpt511+((IDENTITY_MAP_START>>30)&511)*8, 0, pdt_id
+    mov edi, pdt_id
+    mov esi, 0 | PAGEF_PAGESIZE
+    mov ecx, 512
+.initidmap:
+    set_page_entry edi, 0, esi
+    add esi, 2<<20
+    add edi, 8
+    dec ecx
+    jnz .initidmap
 
     mov esi, stage3
     add esi, [esi+IMAGE_DOS_HEADER.e_lfanew]
@@ -252,6 +261,7 @@ test_longmode:
     add rsp, rax  ; Stack pointer should point to identity
     and rsp, -16  ; in 64-bit the stack must be 16 byte aligned before a call
     sub rsp, 0x20 ; make room for the function to preserve rcx, rdx, r8 and r9
+
 
     mov esi, stage3_copy
     add esi, [rsi+IMAGE_DOS_HEADER.e_lfanew]
@@ -392,7 +402,7 @@ stage3: ; incbin "../stage3/stage3.exe"
 pml4         resb 4096 ; Page Map Level 4
 pdpt0        resb 4096 ; First Directory Pointer Table
 pdpt511      resb 4096 ; Last Directory Pointer Table
-pdt0         resb 4096 ; 0 Page Directory Table
+pdt_id       resb 4096 ; Identity Page Directory Table
 pdt_program  resb 4096 ; Program Page Directory Table
 pt_program   resb 4096 ; Program Page Table
 

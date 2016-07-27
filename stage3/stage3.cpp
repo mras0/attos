@@ -301,7 +301,7 @@ owned_ptr<memory_manager, destruct_deleter> construct_mm(const smap_entry* smap,
     auto mm = mm_init(base_addr, base_len);
     // Handle identity map
     static_assert(identity_map_length == 1<<30, "");
-    mm->map_memory(virtual_address(identity_map_start), identity_map_length, memory_type_rwx | memory_type::ps_1gb, physical_address{0ULL});
+    mm->map_memory(virtual_address(identity_map_start), identity_map_length, memory_type_rwx | memory_type::ps_2mb, physical_address{0ULL});
 
     // Map in kernel executable image
     const auto& nth = image_base.nt_headers();
@@ -451,7 +451,7 @@ void usermode_test(cpu_manager& cpum)
     const auto user_rsp = static_cast<uint64_t>(user_area + (1<<20));
     auto mm = create_default_memory_manager();
     mm->map_memory(user_area_virt, memory_manager::page_size, memory_type_rwx | memory_type::user, user_area);
-    print_page_tables(mm->pml4());
+    //print_page_tables(mm->pml4());
 
     __writecr3(mm->pml4()); // set user process PML4
     dbgout() << "Doing magic!\n";
@@ -487,7 +487,7 @@ void stage3_entry(const arguments& args)
     auto pci = pci::init();
 
     // ATA
-    ata::test();
+    //ata::test();
 
     usermode_test(*cpu);
 
