@@ -117,6 +117,7 @@ constexpr unsigned instruction_info_flag_f64 = 1;          // The operand size i
 constexpr unsigned instruction_info_flag_d64 = 2;          // When in 64-bit mode, instruction defaults to 64-bit operand size and cannot encode 32-bit operand size. 
 constexpr unsigned instruction_info_flag_reg_group = 4;    // The group is selected based on the reg part of the following modr/m byte
 constexpr unsigned instruction_info_flag_prefix_group = 8; // The group is selected based on prefix (none, 0x66, 0xF3, 0xF2)
+constexpr unsigned instruction_info_flag_mem_group = 16;   // The group is selected based on whether the following modr/m byte selects memory or a register
 
 struct instruction_info {
     instruction_info_type type;
@@ -148,6 +149,9 @@ struct instruction_info {
     }
 
     constexpr instruction_info(const instruction_info (&group)[8]) : instruction_info{group, instruction_info_flag_reg_group} {
+    }
+
+    constexpr instruction_info(const instruction_info (&group)[8 * 2]) : instruction_info{group, instruction_info_flag_reg_group | instruction_info_flag_mem_group} {
     }
 
     constexpr instruction_info(const instruction_info (&group)[8 * 4]) : instruction_info{group, instruction_info_flag_reg_group | instruction_info_flag_prefix_group} {
@@ -616,15 +620,10 @@ decoded_instruction do_disasm(const uint8_t* code)
             instruction_info{},
         };
         ins0f[0x00] = instruction_info{group6};                    // Grp 6
-        static const instruction_info group7[8] = {
-            instruction_info{"sgdt", Ms},
-            instruction_info{"sidt", Ms},
-            instruction_info{"lgdt", Ms},
-            instruction_info{"lidt", Ms},
-            instruction_info{},
-            instruction_info{},
-            instruction_info{},
-            instruction_info{},
+        static const instruction_info group7[16] = {
+            /*        /0                            /1                            /2                            /3                            /4                  /5                  /6                  /7 */
+            /* mem */ instruction_info{"sgdt", Ms}, instruction_info{"sidt", Ms}, instruction_info{"lgdt", Ms}, instruction_info{"lidt", Ms}, instruction_info{}, instruction_info{}, instruction_info{}, instruction_info{},
+            /* 11b */ instruction_info{},           instruction_info{},           instruction_info{"xgetbv"},   instruction_info{},           instruction_info{}, instruction_info{}, instruction_info{}, instruction_info{},
         };
         ins0f[0x01] = instruction_info{group7};                    // Grp 7
 
@@ -646,7 +645,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0x11] = instruction_info{group_0f_11};
 
         static const instruction_info group16[8] = {
-            {"prefetchnta", M},
+            {"prefetchnta", /*M*/Eb},
             {},
             {},
             {},
@@ -767,11 +766,11 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0x6f] = instruction_info{group_0f_6f};
 
         static const instruction_info group_0f_73[8 * 4] = {
-            /*       /0  /1  /2                      /3  /4  /5  /6  /7 */
-            /*    */ {}, {}, {},                     {}, {}, {}, {}, {},
+            /*       /0  /1  /2  /3                  /4  /5  /6  /7 */
+            /*    */ {}, {}, {}, {},                 {}, {}, {}, {},
             /* 66 */ {}, {}, {}, {"psrldq", Ux, Ib}, {}, {}, {}, {},
-            /* F3 */ {}, {}, {},                     {}, {}, {}, {}, {},
-            /* F2 */ {}, {}, {},                     {}, {}, {}, {}, {},
+            /* F3 */ {}, {}, {}, {},                 {}, {}, {}, {},
+            /* F2 */ {}, {}, {}, {},                 {}, {}, {}, {},
         };
         ins0f[0x73] = instruction_info{group_0f_73};
         static const instruction_info group_0f_7e[4] = {
@@ -928,7 +927,7 @@ decoded_instruction do_disasm(const uint8_t* code)
 
     auto info = ins.info;
     if (ins.info->type != instruction_info_type::normal) {
-        const auto group_flags = info->flags & (instruction_info_flag_prefix_group | instruction_info_flag_reg_group);
+        const auto group_flags = info->flags & (instruction_info_flag_prefix_group | instruction_info_flag_reg_group | instruction_info_flag_mem_group);
 
         auto get_prefix_group = [&]() {
             assert(group_flags & instruction_info_flag_prefix_group);
@@ -960,12 +959,17 @@ decoded_instruction do_disasm(const uint8_t* code)
                 if (ins.info->type == instruction_info_type::group) {
                     info = &info->group[ins.group];
                 }
-            } else {
-                assert(group_flags == (instruction_info_flag_reg_group | instruction_info_flag_prefix_group));
+            } else if (group_flags == (instruction_info_flag_reg_group | instruction_info_flag_prefix_group)) {
                 // Hack for 0f c7 [cmpxchg16b]
                 assert((modrm_mod(modrm) == 3 || ins.info == &instructions[256+0xc7]) && "TODO: group selection needs modrm bit 7 and 6 into account...");
                 assert(ins.info->type == instruction_info_type::group);
                 ins.group = modrm_reg(modrm) + get_prefix_group() * 8;
+                info = &info->group[ins.group];
+            } else {
+                assert(group_flags == (instruction_info_flag_reg_group | instruction_info_flag_mem_group));
+                assert(ins.info->type == instruction_info_type::group);
+                assert((ins.info != &instructions[256+0x01] || modrm_mod(modrm) != 3 || modrm_rm(modrm) == 0) && "TODO: OF 01 Needs to take modrm bits 2, 1, 0 into account...");
+                ins.group = modrm_reg(modrm) + (modrm_mod(modrm) == 3) * 8;
                 info = &info->group[ins.group];
             }
         }
