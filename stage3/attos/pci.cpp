@@ -107,23 +107,31 @@ constexpr uint16_t vendor_ensoniq = 0x1274; // Ensoniq
 constexpr uint16_t vendor_vmware  = 0x15AD; // VMware Inc
 constexpr uint16_t vendor_intel   = 0x8086; // Intel Corporation
 
-constexpr uint16_t device_class_scsi_controller         = 0x0100;
-constexpr uint16_t device_class_ide_controller          = 0x0101;
+constexpr uint16_t device_class_scsi_controller             = 0x0100;
+constexpr uint16_t device_class_ide_controller              = 0x0101;
+constexpr uint16_t device_class_serial_ata_controller       = 0x0106;
 
-constexpr uint16_t device_class_ethernet_controller     = 0x0200;
+constexpr uint16_t device_class_ethernet_controller         = 0x0200;
+constexpr uint16_t device_class_other_network_controller    = 0x0280;
 
-constexpr uint16_t device_class_vga_controller          = 0x0300;
+constexpr uint16_t device_class_vga_controller              = 0x0300;
+constexpr uint16_t device_class_other_display_controller    = 0x0380;
 
-constexpr uint16_t device_class_audio_device            = 0x0401;
+constexpr uint16_t device_class_bidi_audio_device           = 0x0401; // Handset - Hand-held bi-directional audio device
+constexpr uint16_t device_class_audio_device                = 0x0403; // Speakphone - A hands-free audio device designed for host-based echo cancellation.
 
-constexpr uint16_t device_class_host_bridge             = 0x0600;
-constexpr uint16_t device_class_isa_bridge              = 0x0601;
-constexpr uint16_t device_class_pci_bridge              = 0x0604;
-constexpr uint16_t device_class_other_bridge            = 0x0680;
+constexpr uint16_t device_class_host_bridge                 = 0x0600;
+constexpr uint16_t device_class_isa_bridge                  = 0x0601;
+constexpr uint16_t device_class_pci_bridge                  = 0x0604;
+constexpr uint16_t device_class_other_bridge                = 0x0680;
 
-constexpr uint16_t device_class_other_system_peripheral = 0x0880;
+constexpr uint16_t device_class_generic_serial_controller   = 0x0700;
+constexpr uint16_t device_class_other_communications_device = 0x0780;
 
-constexpr uint16_t device_class_usb_controller          = 0x0C03;
+constexpr uint16_t device_class_other_system_peripheral     = 0x0880;
+
+constexpr uint16_t device_class_usb_controller              = 0x0c03;
+constexpr uint16_t device_class_smbus                       = 0x0c05;
 
 struct vendor_info {
     uint16_t vendor;
@@ -143,23 +151,44 @@ struct device_info {
     const char* text;
 };
 const device_info known_devices[] = {
-    { vendor_lsi     , 0x0030 , device_class_scsi_controller         , "53c1030 PCI-X Fusion-MPT Dual Ultra320 SCSI"  },
-    { vendor_ensoniq , 0x1371 , device_class_audio_device            , "ES1371 / Creative Labs CT2518/ES1373"         },
-    { vendor_vmware  , 0x0405 , device_class_vga_controller          , "SVGA II Adapter"                              },
-    { vendor_vmware  , 0x0740 , device_class_other_system_peripheral , "Virtual Machine Communication Interface"      },
-    { vendor_vmware  , 0x0790 , device_class_pci_bridge              , "PCI bridge"                                   },
-    { vendor_vmware  , 0x07A0 , device_class_pci_bridge              , "PCI Express Root Port"                        },
-    { vendor_intel   , 0x100E , device_class_ethernet_controller     , "82540EM Gigabit Ethernet Controller"          },
-    { vendor_intel   , 0x100F , device_class_ethernet_controller     , "82545EM Gigabit Ethernet Controller (Copper)" },
-    { vendor_intel   , 0x1237 , device_class_host_bridge             , "440FX - 82441FX PMC [Natoma]"                 },
-    { vendor_intel   , 0x7000 , device_class_isa_bridge              , "82371SB PIIX3 ISA [Natoma/Triton II]"         },
-    { vendor_intel   , 0x7010 , device_class_ide_controller          , "82371SB PIIX3 IDE [Natoma/Triton II]"         },
-    { vendor_intel   , 0x7020 , device_class_usb_controller          , "82371SB PIIX3 USB [Natoma/Triton II]"         },
-    { vendor_intel   , 0x7110 , device_class_isa_bridge              , "82371AB/EB/MB PIIX4 ISA"                      },
-    { vendor_intel   , 0x7111 , device_class_ide_controller          , "82371AB/EB/MB PIIX4 IDE"                      },
-    { vendor_intel   , 0x7113 , device_class_other_bridge            , "82371AB/EB/MB PIIX4 ACPI"                     },
-    { vendor_intel   , 0x7190 , device_class_host_bridge             , "440BX/ZX/DX - 82443BX/ZX/DX Host bridge"      },
-    { vendor_intel   , 0x7191 , device_class_pci_bridge              , "440BX/ZX/DX - 82443BX/ZX/DX AGP bridge"       },
+    { vendor_lsi     , 0x0030 , device_class_scsi_controller              , "53c1030 PCI-X Fusion-MPT Dual Ultra320 SCSI"   },
+    { vendor_ensoniq , 0x1371 , device_class_bidi_audio_device            , "ES1371 / Creative Labs CT2518/ES1373"          },
+    { vendor_vmware  , 0x0405 , device_class_vga_controller               , "SVGA II Adapter"                               },
+    { vendor_vmware  , 0x0740 , device_class_other_system_peripheral      , "Virtual Machine Communication Interface"       },
+    { vendor_vmware  , 0x0790 , device_class_pci_bridge                   , "PCI bridge"                                    },
+    { vendor_vmware  , 0x07A0 , device_class_pci_bridge                   , "PCI Express Root Port"                         },
+    { vendor_intel   , 0x100E , device_class_ethernet_controller          , "82540EM Gigabit Ethernet Controller"           },
+    { vendor_intel   , 0x100F , device_class_ethernet_controller          , "82545EM Gigabit Ethernet Controller (Copper)"  },
+    { vendor_intel   , 0x10f5 , device_class_ethernet_controller          , "82567LM Gigabit Network Connection"            },
+    { vendor_intel   , 0x1237 , device_class_host_bridge                  , "440FX - 82441FX PMC [Natoma]"                  },
+    { vendor_intel   , 0x2448 , device_class_pci_bridge                   , "82801 Mobile PCI Bridge"                       },
+    { vendor_intel   , 0x2917 , device_class_isa_bridge                   , "ICH9M-E LPC Interface Controller"              },
+    { vendor_intel   , 0x2929 , device_class_serial_ata_controller        , "82801IBM/IEM SATA Controller"                  }, // 82801IBM/IEM (ICH9M/ICH9M-E) 4 port SATA Controller [AHCI mode]
+    { vendor_intel   , 0x2930 , device_class_smbus                        , "82801I (ICH9 Family) SMBus Controller"         }, 
+    { vendor_intel   , 0x2934 , device_class_usb_controller               , "82801I (ICH9 Family) USB UHCI Controller #1"   },
+    { vendor_intel   , 0x2935 , device_class_usb_controller               , "82801I (ICH9 Family) USB UHCI Controller #2"   },
+    { vendor_intel   , 0x2936 , device_class_usb_controller               , "82801I (ICH9 Family) USB UHCI Controller #3"   },
+    { vendor_intel   , 0x2937 , device_class_usb_controller               , "82801I (ICH9 Family) USB UHCI Controller #4"   },
+    { vendor_intel   , 0x2938 , device_class_usb_controller               , "82801I (ICH9 Family) USB UHCI Controller #5"   },
+    { vendor_intel   , 0x2939 , device_class_usb_controller               , "82801I (ICH9 Family) USB UHCI Controller #6"   },
+    { vendor_intel   , 0x293a , device_class_usb_controller               , "82801I (ICH9 Family) USB2 EHCI Controller #1"  },
+    { vendor_intel   , 0x293c , device_class_usb_controller               , "82801I (ICH9 Family) USB2 EHCI Controller #2"  },
+    { vendor_intel   , 0x293e , device_class_audio_device                 , "82801I (ICH9 Family) HD Audio Controller"      },
+    { vendor_intel   , 0x2a40 , device_class_host_bridge                  , "Mobile 4 Series Chipset Memory Controller Hub" },
+    { vendor_intel   , 0x2a42 , device_class_vga_controller               , "Mobile 4 Series Chipset Integrated Graphics"   }, // Mobile 4 Series Chipset Integrated Graphics Controller
+    { vendor_intel   , 0x2a43 , device_class_other_display_controller     , "Mobile 4 Series Chipset Integrated Graphics"   }, // Mobile 4 Series Chipset Integrated Graphics Controller
+    { vendor_intel   , 0x2a44 , device_class_other_communications_device  , "Mobile 4 Series Chipset MEI Controller"        },
+    { vendor_intel   , 0x2a46 , device_class_ide_controller               , "Mobile 4 Series Chipset PT IDER Controller"    },
+    { vendor_intel   , 0x2a47 , device_class_generic_serial_controller    , "Mobile 4 Series Chipset AMT SOL Redirection"   },
+    { vendor_intel   , 0x4237 , device_class_other_network_controller     , "PRO/Wireless 5100 AGN Network Connection"      }, // PRO/Wireless 5100 AGN [Shiloh] Network Connection
+    { vendor_intel   , 0x7000 , device_class_isa_bridge                   , "82371SB PIIX3 ISA [Natoma/Triton II]"          },
+    { vendor_intel   , 0x7010 , device_class_ide_controller               , "82371SB PIIX3 IDE [Natoma/Triton II]"          },
+    { vendor_intel   , 0x7020 , device_class_usb_controller               , "82371SB PIIX3 USB [Natoma/Triton II]"          },
+    { vendor_intel   , 0x7110 , device_class_isa_bridge                   , "82371AB/EB/MB PIIX4 ISA"                       },
+    { vendor_intel   , 0x7111 , device_class_ide_controller               , "82371AB/EB/MB PIIX4 IDE"                       },
+    { vendor_intel   , 0x7113 , device_class_other_bridge                 , "82371AB/EB/MB PIIX4 ACPI"                      },
+    { vendor_intel   , 0x7190 , device_class_host_bridge                  , "440BX/ZX/DX - 82443BX/ZX/DX Host bridge"       },
+    { vendor_intel   , 0x7191 , device_class_pci_bridge                   , "440BX/ZX/DX - 82443BX/ZX/DX AGP bridge"        },
 };
 
 template<typename T, size_t size, typename Pred>
@@ -248,15 +277,19 @@ private:
         const auto header_type = ca.header_type & header_type_device_mask;
         if (header_type == 0) {
             // 0x00 = Normal devices
-            const char* vendor_text = "Unknown vendor";
-            const char* device_text = "Unknown device";
+            dbgout() << dev_addr << " " << as_hex(ca.device_class) << ": ";
             if (auto vi = get_vendor_info(ca.vendor)) {
-                vendor_text = vi->text;
+                dbgout() << vi->text;
+            } else {
+                dbgout() << "Vendor " << as_hex(ca.vendor);
             }
+            dbgout() << " ";
             if (auto di = get_device_info(ca)) {
-                device_text = di->text;
+                dbgout() << di->text;
+            } else {
+                dbgout() << "Device " << as_hex(ca.device_id);
             }
-            dbgout() << dev_addr << " " << as_hex(ca.device_class) << ": " << as_hex(ca.vendor) << ":" << as_hex(ca.device_id) << " " << vendor_text << " " << device_text << "\n";
+            dbgout() << "\n";
 #if 0
             if (ca.device_class == device_class_ide_controller) {
                 for (const auto& b: read_bars(dev_addr)) {
