@@ -36,7 +36,6 @@ The following abbreviations are used to document addressing methods :
 A Direct address : the instruction has no ModR / M byte; the address of the operand is encoded in the instruction.
 No base register, index register, or scaling factor can be applied(for example, far JMP(EA)).
 B The VEX.vvvv field of the VEX prefix selects a general purpose register.
-D The reg field of the ModR / M byte selects a debug register (for example, MOV(0F21, 0F23)).
 F EFLAGS / RFLAGS Register.
 H The VEX.vvvv field of the VEX prefix selects a 128 - bit XMM register or a 256 - bit YMM register, determined
 by operand type.For legacy SSE encodings this operand does not exist, changing the instruction to
@@ -70,6 +69,7 @@ enum class addressing_mode : uint8_t {
     rdx,
     const1,
     C, // The reg field of the ModR / M byte selects a control register (for example, MOV(0F20, 0F22)).
+    D, // The reg field of the ModR / M byte selects a debug register (for example, MOV(0F21, 0F23)).
     E, // A ModR / M byte follows the opcode and specifies the operand.The operand is either a general - purpose register or a memory address.If it is a memory address, the address is computed from a segment register and any of the following values : a base register, an index register, a scaling factor, a displacement.
     G, // The reg field of the ModR / M byte selects a general register (for example, AX(000)).
     I, // Immediate data : the operand value is encoded in subsequent bytes of the instruction.
@@ -163,6 +163,7 @@ enum class decoded_operand_type {
     xmmreg,
     sreg,
     creg,
+    dreg,
     disp8,
     disp32,
     absaddr,
@@ -222,6 +223,7 @@ bool has_modrm(const instruction_info& ii)
     for (int i = 0; i < max_operands && ii.operands[i].op_type != operand_type::none; ++i) {
         switch (ii.operands[i].addr_mode) {
             case addressing_mode::C:
+            case addressing_mode::D:
             case addressing_mode::E:
             case addressing_mode::G:
             case addressing_mode::M:
@@ -271,12 +273,14 @@ const char* const reg64[17]  = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi"
 const char* const xmmreg[16] = { "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15" };
 const char* const sreg[6]    = { "es", "cs", "ss", "ds", "fs", "gs" };
 const char* const creg[16]   = { "cr0", "cr1", "cr2", "cr3", "cr4", "cr5", "cr6", "cr7", "cr8", "cr9", "cr10", "cr11", "cr12", "cr13", "cr14", "cr15" };
+const char* const dreg[8]   = { "db0", "db1", "db2", "db3", "db4", "db5", "db6", "db7" };
 
 namespace operand_info_helpers {
 constexpr auto d64 = instruction_info_flag_d64;
 constexpr auto f64 = instruction_info_flag_f64;
 #define II(addr_mode, type) instruction_operand_info{addressing_mode::addr_mode, operand_type::type}
 constexpr auto Cd = II(C, d);
+constexpr auto Dd = II(D, d);
 constexpr auto Eb = II(E, b);
 constexpr auto Ev = II(E, v);
 constexpr auto Ew = II(E, w);
@@ -624,7 +628,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         };
         ins0f[0x01] = instruction_info{group7};                    // Grp 7
 
-        ins0f[0x0d] = instruction_info{"prefetchw", Ev};
+        ins0f[0x0d] = instruction_info{"prefetchw", Eb/*Ev*/};
 
         static const instruction_info group_0f_10[4] = {
             {"movups", Vps, Wps}, // MOVUPS xmm, xmm/m128
@@ -656,6 +660,7 @@ decoded_instruction do_disasm(const uint8_t* code)
 
         ins0f[0x20] = instruction_info{"mov", Rd, Cd};             // MOV r64, CRn
         ins0f[0x22] = instruction_info{"mov", Cd, Rd};             // MOV CRn, r64
+        ins0f[0x23] = instruction_info{"mov", Dd, Rd};             // MOV DRn, r64
         ins0f[0x28] = instruction_info{"movaps", Vps, Wps};        // MOVAPS xmm, xmm/m128
         static const instruction_info group_0f_29[4] = {
             {"movaps", Wps, Vps},
@@ -682,7 +687,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0x30] = instruction_info{"wrmsr"};
         ins0f[0x31] = instruction_info{"rdtsc"};
         ins0f[0x32] = instruction_info{"rdmsr"};
-        ins0f[0x32] = instruction_info{"rdpmc"};
+        ins0f[0x33] = instruction_info{"rdpmc"};
         ins0f[0x34] = instruction_info{"sysenter"};
         ins0f[0x35] = instruction_info{"sysexit"};
 
@@ -1249,6 +1254,12 @@ decoded_instruction do_disasm(const uint8_t* code)
                 op.reg = modrm_reg(modrm) + (rex & rex_r_mask ? 8 : 0);
                 used_prefixes |= prefix_flag_rex | rex_r_mask;
                 break;
+            case addressing_mode::D:
+                assert(!(rex&rex_r_mask));
+                assert(opinfo.op_type == operand_type::d);
+                op.type = decoded_operand_type::dreg;
+                op.reg = modrm_reg(modrm);
+                break;
             // The reg field of the ModR / M byte selects a segment register (for example, MOV(8C, 8E)).
             case addressing_mode::S:
                 assert(!(rex&rex_r_mask));
@@ -1410,6 +1421,11 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
                 case decoded_operand_type::creg:
                     assert(op.reg<sizeof(creg)/sizeof(*creg));
                     dbgout() << creg[op.reg];
+                    operation_size_bits = 64;
+                    break;
+                case decoded_operand_type::dreg:
+                    assert(op.reg<sizeof(dreg)/sizeof(*dreg));
+                    dbgout() << dreg[op.reg];
                     operation_size_bits = 64;
                     break;
                 case decoded_operand_type::disp8:
