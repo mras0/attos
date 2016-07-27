@@ -87,6 +87,7 @@ enum class operand_type : uint8_t {
     none,
     mem,
     b, // Byte, regardless of operand - size attribute.
+    ub, // UNSIGNED (hack) Byte, regardless of operand - size attribute.
     d, // Doubleword, regardless of operand - size attribute.
     dq, // Double - quadword, regardless of operand - size attribute.
     v, // Word, doubleword or quadword(in 64 - bit mode), depending on operand - size attribute.
@@ -203,12 +204,24 @@ const uint8_t rex_x_mask = 0x2; // Extension of extension of SIB index field
 const uint8_t rex_r_mask = 0x4; // Extension of ModR/M reg field
 const uint8_t rex_w_mask = 0x8; // 64 Bit Operand Size
 
-constexpr unsigned prefix_flag_lock   = 0x10;
-constexpr unsigned prefix_flag_opsize = 0x20; // Operand-size override prefix
+// Prefix group 1
+constexpr unsigned prefix_flag_lock   = 0x100;
+constexpr unsigned prefix_flag_repnz  = 0x200;
+constexpr unsigned prefix_flag_rep    = 0x400;
+// Prefix group 2
+constexpr unsigned prefix_flag_cs     = 0x800;
+//constexpr unsigned prefix_flag_ss     = 0x1000;
+//constexpr unsigned prefix_flag_ds     = 0x2000;
+//constexpr unsigned prefix_flag_es     = 0x4000;
+//constexpr unsigned prefix_flag_fs     = 0x8000;
+constexpr unsigned prefix_flag_gs     = 0x10000;
+// Prefix group 3
+constexpr unsigned prefix_flag_opsize = 0x20000; // Operand-size override prefix
+// Prefix group 4
+//constexpr unsigned prefix_flag_addrsize = 0x40000; // Address-size override prefix
+
 constexpr unsigned prefix_flag_rex    = 0x40;
-constexpr unsigned prefix_flag_repnz  = 0x100;
-constexpr unsigned prefix_flag_rep    = 0x200;
-constexpr unsigned prefix_flag_gs     = 0x1000;
+
 struct decoded_instruction {
     unsigned                prefixes;
     unsigned                unused_prefixes;
@@ -294,6 +307,7 @@ constexpr auto Gb = II(G, b);
 constexpr auto Gv = II(G, v);
 constexpr auto Gy = II(G, y);
 constexpr auto Ib = II(I, b);
+constexpr auto Iub = II(I, ub);
 constexpr auto Iv = II(I, v);
 constexpr auto Iw = II(I, w);
 constexpr auto Iz = II(I, z);
@@ -525,8 +539,8 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0xbf] = instruction_info{"mov",  R64v, Iv};    // MOVE RDI/R15, imm16/32/64
 
         static const char* const group2[8] = { "rol", "ror", "rcl", "rcr", "shl", "shr", nullptr, "sar" };
-        instructions[0xc0] = instruction_info{group2, Eb, Ib};     // Shift Grp 2
-        instructions[0xc1] = instruction_info{group2, Ev, Ib};     // Shift Grp 2
+        instructions[0xc0] = instruction_info{group2, Eb, Iub};    // Shift Grp 2
+        instructions[0xc1] = instruction_info{group2, Ev, Iub};    // Shift Grp 2
         instructions[0xc2] = instruction_info{"ret", Iw};          // RET imm16
         instructions[0xc3] = instruction_info{"ret"};              // RET
         instructions[0xc6] = instruction_info{"mov", Eb, Ib};      // MOV r/m8, imm8 (Grp11 - MOV)
@@ -861,6 +875,15 @@ decoded_instruction do_disasm(const uint8_t* code)
         };
         ins0f[0xc7] = instruction_info{group9};                    // Grp9
 
+        ins0f[0xc8] = instruction_info{"bswap", R64v};             // BSWAP RAX/R8
+        ins0f[0xc9] = instruction_info{"bswap", R64v};             // BSWAP RCX/R9
+        ins0f[0xca] = instruction_info{"bswap", R64v};             // BSWAP RDX/R10
+        ins0f[0xcb] = instruction_info{"bswap", R64v};             // BSWAP RBX/R11
+        ins0f[0xcc] = instruction_info{"bswap", R64v};             // BSWAP RSP/R12
+        ins0f[0xcd] = instruction_info{"bswap", R64v};             // BSWAP RBP/R13
+        ins0f[0xce] = instruction_info{"bswap", R64v};             // BSWAP RSI/R14
+        ins0f[0xcf] = instruction_info{"bswap", R64v};             // BSWAP RDI/R15
+
         static const instruction_info group_0f_ef[4] = {
             {}, //{"pxor", Pq, Qq},
             {"pxor", Vx, Wx},
@@ -895,6 +918,8 @@ decoded_instruction do_disasm(const uint8_t* code)
             ins.prefixes |= prefix_flag_repnz;
         } else if (b == 0xf3) {
             ins.prefixes |= prefix_flag_rep;
+        } else if (b == 0x2e) {
+            ins.prefixes |= prefix_flag_cs;
         } else if (b == 0x65) {
             ins.prefixes |= prefix_flag_gs;
         } else if (b == 0x66) {
@@ -1213,8 +1238,11 @@ decoded_instruction do_disasm(const uint8_t* code)
                 }
                 break;
             case addressing_mode::I:
-                if (opinfo.op_type == operand_type::b) {
+                if (opinfo.op_type == operand_type::b || opinfo.op_type == operand_type::ub) {
                     do_imm8();
+                    if (opinfo.op_type == operand_type::ub) {
+                        op.imm.value &= 0xff;
+                    }
                 } else if (opinfo.op_type == operand_type::v) {
                     if (rex & rex_w_mask) {
                         do_imm64();
@@ -1474,6 +1502,12 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
 #endif
                     } else {
                         bool brackets = true;
+
+                        if (ins.prefixes & prefix_flag_cs) {
+                            dbgout() << "cs:";
+                            brackets = false;
+                            used_prefixes |= prefix_flag_cs;
+                        }
 
                         if (ins.prefixes & prefix_flag_gs) {
                             dbgout() << "gs:";
