@@ -1,8 +1,4 @@
-    BOOT_ADDR equ 0x7c00
-    LOAD_ADDR equ 0x7e00
-
-    MAX_SECTORS equ 0x7f
-
+%include "bootcommon.inc"
     ;
     ; Init code
     ;
@@ -51,11 +47,22 @@ main:
 .toolarge:
     mov ax, MAX_SECTORS
 .sizeok:
+    print_lit 'Reading 0x'
+    call put_hex16
+    print_lit ' sectors in total.',13,10
+
+    mov cx, ax
+.readloop:
+    mov ax, cx
+    cmp ax, 0x7f ; We can only read at most 0x7f sectors in one go
+    jle .doread
+    mov ax, 0x7f
+.doread:
     mov word [address_packet_block_count], ax
 
     print_lit 'Reading 0x'
     call put_hex16
-    print_lit ' sectors...'
+    print_lit ' sectors ... '
 
     ; Extended Read
     mov ah, 0x42
@@ -65,6 +72,19 @@ main:
     jc failed
 
     print_lit 'OK.',13,10
+
+    ; Update address packet
+    mov ax, [address_packet_block_count]
+    add word [address_packet_start_block], ax
+    sub cx, ax
+    shl ax, 5
+    add word [address_packet_segment], ax
+
+    ; Done?
+    and cx, cx
+    jnz .readloop
+
+    ; Jump to loaded code
     jmp LOAD_ADDR
 
 failed:
@@ -81,7 +101,9 @@ address_packet:
 address_packet_block_count:
     dw 1                    ; number of blocks
     dw 0                    ; buffer (offset)
+address_packet_segment:
     dw LOAD_ADDR>>4         ; buffer (segment)
+address_packet_start_block:
     dq 1                    ; starting absolute block number
 
     times 509-($-$$) db 0

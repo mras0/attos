@@ -1,7 +1,6 @@
-SCRATCH_ADDRESS EQU 0x00030000
-SCRATCH_SIZE    EQU 0x00090000-SCRATCH_ADDRESS
+%include "bootcommon.inc"
 
-    org 0x7e00
+    org LOAD_ADDR
     bits 16
 
     jmp main
@@ -376,10 +375,6 @@ gdtr:
 
     align 4096
 stage3: ; incbin "../stage3/stage3.exe"
-
-%if $-$$ > 0x7F * 512 ; Stage1 only loads MAX_SECTORS (currently 0x7F)
-%error We need to load more sections ourselves
-%endif
 
 ;
 ; BSS

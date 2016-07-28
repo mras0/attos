@@ -489,6 +489,17 @@ void stage3_entry(const arguments& args)
     // ATA
     //ata::test();
 
+    for (const auto& d : pci->devices()) {
+        constexpr uint16_t i82540em_a = 0x100e; // desktop
+        constexpr uint16_t i82545em_a = 0x100f; // copper
+
+        if (d.config.vendor_id == pci::vendor::intel && (d.config.device_id == i82540em_a || d.config.device_id == i82545em_a)) {
+            REQUIRE(!(d.bars[0].address & pci::bar_is_io_mask)); // Register base address
+            REQUIRE(d.bars[0].size == (128<<10));
+            dbgout() << "Found e1000: Register base " << as_hex(d.bars[0].address&pci::bar_mem_address_mask) << "\n";
+        }
+    }
+
     usermode_test(*cpu);
 
     interactive_mode(ps2c);
