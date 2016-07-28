@@ -35,6 +35,7 @@ memory_manager_ptr mm_init(physical_address base, uint64_t length);
 void print_page_tables(physical_address pml4);
 
 physical_address virt_to_phys(physical_address pml4, virtual_address virt);
+physical_address virt_to_phys(const void* ptr); // Pointer must be in current address space
 
 volatile void* iomem_map(physical_address base, uint64_t length);
 void iomem_unmap(volatile void* virt, uint64_t length);

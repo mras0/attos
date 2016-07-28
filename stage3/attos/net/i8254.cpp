@@ -1,6 +1,7 @@
 #include "i8254.h"
 #include <attos/cpu.h>
 #include <attos/out_stream.h>
+#include <attos/isr.h>
 
 namespace attos { namespace net {
 
@@ -224,6 +225,12 @@ constexpr uint32_t i8254_TXD_CMD_TCP             = 0x01000000;   /* TCP packet *
 constexpr uint32_t i8254_TXD_CMD_IP              = 0x02000000;   /* IP packet */
 constexpr uint32_t i8254_TXD_CMD_TSE             = 0x04000000;   /* TCP Seg enable */
 
+/* Interrupt Cause Read */
+constexpr uint32_t i8254_ICR_TXDW                = 0x00000001;/* Transmit desc written back */
+constexpr uint32_t i8254_ICR_LSC                 = 0x00000004;/* Link Status Change */
+constexpr uint32_t i8254_ICR_RXSEQ               = 0x00000008;/* Rx sequence error */
+constexpr uint32_t i8254_ICR_RXDMT0              = 0x00000010;/* Rx desc min. threshold (0) */
+constexpr uint32_t i8254_ICR_RXT0                = 0x00000080;/* Rx timer intr (ring 0) */
 
 /* Receive Descriptor */
 struct alignas(16) i8254_rx_desc {
@@ -266,13 +273,6 @@ void delay_microseconds(uint32_t count)
     }
 }
 
-uint64_t phys_addr(const void* ptr)
-{
-    const uint64_t res = virt_to_phys(physical_address{__readcr3()}, virtual_address::in_current_address_space(ptr));
-    dbgout() << "Virt: " << as_hex((uint64_t)ptr) << " Phys: " << as_hex(res) << "\n";
-    return res;
-}
-
 } // unnamed namespace
 
 static const uint8_t mac_addr[6]      = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
@@ -287,8 +287,9 @@ public:
 
         const uint64_t iobase = dev_info.bars[0].address&pci::bar_mem_address_mask;
 
-        dbgout() << "[i8254] Initializing. IOBASE = " << as_hex(iobase).width(8) << "\n";
+        dbgout() << "[i8254] Initializing. IOBASE = " << as_hex(iobase).width(8) << " IRQ# " << dev_info.config.header0.intr_line << "\n";
         reg_base_ = static_cast<volatile uint32_t*>(iomem_map(physical_address{iobase}, io_mem_size));
+        reg_ = register_irq_handler(dev_info.config.header0.intr_line, [this]() { isr(); });
         reset();
         pci::bus_master(dev_addr_, true);
     }
@@ -313,6 +314,7 @@ private:
 #pragma warning(suppress: 4324) // struct was padded due to alignment specifier
     volatile i8254_tx_desc  tx_desc_[num_tx_buffers];
     uint8_t                 tx_buffer_[num_tx_buffers][2048];
+    isr_registration_ptr    reg_;
 
     uint32_t reg(i8254_reg r) {
         return reg_base_[static_cast<uint32_t>(r)>>2];
@@ -358,11 +360,13 @@ private:
 
         // Program the Interrupt Mask Set/Read (IMS) register
         reg(i8254_reg::IMC, ~0U); // Inhibit interrupts
-        reg(i8254_reg::ICR, 0);   // clear pending interrupts
-        reg(i8254_reg::IMS, 0);
+        reg(i8254_reg::ICR, ~0U); // Clear pending interrupts
+        reg(i8254_reg::IMS, i8254_ICR_TXDW
+                          | i8254_ICR_LSC
+                          | i8254_ICR_RXT0); // Enable interrupts
 
         // Program the Receive Descriptor Base Address
-        const uint64_t rx_desc_phys = phys_addr((const void*)&rx_desc_[0]);
+        const uint64_t rx_desc_phys = virt_to_phys((const void*)&rx_desc_[0]);
         reg(i8254_reg::RDBAL_BASE, static_cast<uint32_t>(rx_desc_phys));
         reg(i8254_reg::RDBAH_BASE, static_cast<uint32_t>(rx_desc_phys>>32));
 
@@ -374,7 +378,7 @@ private:
         reg(i8254_reg::RDT_BASE, num_rx_buffers);
 
         for (uint32_t i = 0; i < num_rx_buffers; ++i) {
-            rx_desc_[i].buffer_addr = phys_addr(rx_buffer_[i]);
+            rx_desc_[i].buffer_addr = virt_to_phys(rx_buffer_[i]);
             rx_desc_[i].status = 0;
         }
 
@@ -387,7 +391,7 @@ private:
                            | i8254_RCTL_SZ_2048);
 
         // Enable TX
-        const uint64_t tx_desc_phys = phys_addr((const void*)&tx_desc_[0]);
+        const uint64_t tx_desc_phys = virt_to_phys((const void*)&tx_desc_[0]);
         reg(i8254_reg::TDBAL_BASE, static_cast<uint32_t>(tx_desc_phys));
         reg(i8254_reg::TDBAH_BASE, static_cast<uint32_t>(tx_desc_phys>>32));
 
@@ -403,7 +407,7 @@ private:
         // prepare descriptor
         auto& td = tx_desc_[0];
         memset((void*)&td, 0, sizeof(td));
-        td.buffer_addr = phys_addr(tx_buffer_[0]);
+        td.buffer_addr = virt_to_phys(tx_buffer_[0]);
 
         // Ethernet header
         uint8_t* b = tx_buffer_[0];
@@ -454,8 +458,13 @@ private:
             }
         }
     }
-};
 
+    void isr() {
+        const auto icr = reg(i8254_reg::ICR);
+        reg(i8254_reg::ICR, icr); // clear pending interrupts
+        dbgout() << "[i8254] IRQ. ICR = " << as_hex(icr) << "\n";
+    }
+};
 
 netdev_ptr i82545_probe(const pci::device_info& dev_info)
 {

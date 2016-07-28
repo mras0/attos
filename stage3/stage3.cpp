@@ -153,8 +153,8 @@ private:
 
 class controller : public singleton<controller> {
 public:
-    explicit controller(isr_handler& isrh) {
-        reg_ = isrh.register_irq_handler(irq, [this]() { isr(); });
+    explicit controller() {
+        reg_ = register_irq_handler(irq, [this]() { isr(); });
     }
 
     ~controller() {
@@ -341,8 +341,8 @@ private:
 
 class interrupt_timer : public singleton<interrupt_timer> {
 public:
-    explicit interrupt_timer(isr_handler& isrh) {
-        reg_ = isrh.register_irq_handler(irq, [this]() { isr(); });
+    explicit interrupt_timer() {
+        reg_ = register_irq_handler(irq, [this]() { isr(); });
     }
     ~interrupt_timer() {
         reg_.reset();
@@ -479,10 +479,10 @@ void stage3_entry(const arguments& args)
     // Initialize interrupt handlers
     auto ih = isr_init(debug_info_text);
 
-    interrupt_timer timer{*ih}; // IRQ0 PIT
+    interrupt_timer timer{}; // IRQ0 PIT
 
     // PS2 controller
-    ps2::controller ps2c{*ih};
+    ps2::controller ps2c{};
 
     // PCI
     auto pci = pci::init();

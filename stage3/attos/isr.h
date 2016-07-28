@@ -85,15 +85,11 @@ using irq_handler_t = function_base<void>;
 class __declspec(novtable) isr_handler {
 public:
     virtual ~isr_handler() {}
-    isr_registration_ptr register_irq_handler(uint8_t irq, irq_handler_t irq_handler) {
-        return do_register_irq_handler(irq, irq_handler);
-    }
-
-private:
-    virtual isr_registration_ptr do_register_irq_handler(uint8_t irq, irq_handler_t irq_handler) = 0;
 };
 
 owned_ptr<isr_handler, destruct_deleter> isr_init(char* debug_info_text);
+
+isr_registration_ptr register_irq_handler(uint8_t irq, irq_handler_t irq_handler);
 
 } // namespace attos
 

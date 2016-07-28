@@ -427,6 +427,12 @@ physical_address virt_to_phys(physical_address pml4, virtual_address virt)
     return physical_address{(pte & ~(memory_manager::page_size-1)) | (virt & (memory_manager::page_size-1)) };
 }
 
+physical_address virt_to_phys(const void* ptr)
+{
+    return virt_to_phys(physical_address{__readcr3()}, virtual_address::in_current_address_space(ptr));
+}
+
+
 void* kalloc(uint64_t size) {
     return kernel_memory_manager::instance().kalloc(size);
 }

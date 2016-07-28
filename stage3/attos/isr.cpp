@@ -345,6 +345,14 @@ public:
         return false;
     }
 
+    isr_registration_ptr register_irq_handler(uint8_t irq, irq_handler_t irq_handler) {
+        dbgout() << "[isr] Unmasking IRQ " << irq << "\n";
+        REQUIRE(!irq_handlers_[irq]);
+        irq_handlers_[irq] = irq_handler;
+        pic_unmask_irq(irq);
+        return isr_registration_ptr{knew<isr_registration_impl>(*this, irq).release()};
+    }
+
 private:
     static constexpr int idt_count     = 256;
     static constexpr int isr_code_size = 9;
@@ -374,14 +382,6 @@ private:
         isr_handler_impl& parent_;
         uint8_t           irq_;
     };
-
-    virtual isr_registration_ptr do_register_irq_handler(uint8_t irq, irq_handler_t irq_handler) override {
-        dbgout() << "[isr] Unmasking IRQ " << irq << "\n";
-        REQUIRE(!irq_handlers_[irq]);
-        irq_handlers_[irq] = irq_handler;
-        pic_unmask_irq(irq);
-        return isr_registration_ptr{knew<isr_registration_impl>(*this, irq).release()};
-    }
 };
 
 extern "C" pe::IMAGE_DOS_HEADER __ImageBase;
@@ -469,6 +469,11 @@ object_buffer<isr_handler_impl> isr_handler_buffer;
 
 owned_ptr<isr_handler, destruct_deleter> isr_init(char* debug_info_text) {
     return owned_ptr<isr_handler, destruct_deleter>{isr_handler_buffer.construct(debug_info_text).release()};
+}
+
+isr_registration_ptr register_irq_handler(uint8_t irq, irq_handler_t irq_handler)
+{
+    return isr_handler_impl::instance().register_irq_handler(irq, irq_handler);
 }
 
 } // namespace attos
