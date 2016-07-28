@@ -15,12 +15,17 @@ public:
         return do_pml4();
     }
 
+    virtual_address virtual_alloc(uint64_t length) {
+        return do_virtual_alloc(length);
+    }
+
     void map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) {
         do_map_memory(virt, length, type, phys);
     }
 
 private:
     virtual physical_address do_pml4() const = 0;
+    virtual virtual_address do_virtual_alloc(uint64_t length) = 0;
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) = 0;
 };
 
@@ -30,6 +35,9 @@ memory_manager_ptr mm_init(physical_address base, uint64_t length);
 void print_page_tables(physical_address pml4);
 
 physical_address virt_to_phys(physical_address pml4, virtual_address virt);
+
+volatile void* iomem_map(physical_address base, uint64_t length);
+void iomem_unmap(volatile void* virt, uint64_t length);
 
 void* kalloc(uint64_t size);
 void kfree(void* ptr);

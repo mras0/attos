@@ -26,14 +26,13 @@ constexpr inline type operator op(type l, type r) { return static_cast<type>(sta
     ENUM_BIT_OP(type, &, inttype)
 
 enum class memory_type : uint32_t {
-    read    = 0x01,
-    write   = 0x02,
-    execute = 0x04,
-
-    user    = 0x08,
-
-    ps_2mb  = 0x1000,
-    ps_1gb  = 0x2000,
+    read          = 0x0001,
+    write         = 0x0002,
+    execute       = 0x0004,
+    user          = 0x0008,
+    cache_disable = 0x0010,
+    ps_2mb        = 0x1000,
+    ps_1gb        = 0x2000,
 };
 
 ENUM_BIT_OPS(memory_type, uint32_t)

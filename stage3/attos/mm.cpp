@@ -89,7 +89,8 @@ class memory_manager_base : public memory_manager {
 public:
     explicit memory_manager_base()
         : memory_mappings_{alloc_physical_page(), page_size}
-        , pml4_{static_cast<uint64_t*>(alloc_physical_page())} {
+        , pml4_{static_cast<uint64_t*>(alloc_physical_page())}
+        , free_virt_base_{identity_map_start + identity_map_length} {
     }
 
     ~memory_manager_base() {
@@ -103,6 +104,7 @@ private:
     fixed_size_object_heap<memory_mapping> memory_mappings_;
     memory_mapping::tree_type              memory_map_tree_;
     uint64_t*                              pml4_;
+    virtual_address                        free_virt_base_;
 
     uint64_t* alloc_if_not_present(uint64_t& parent, uint64_t flags) {
         if (parent & PAGEF_PRESENT) {
@@ -126,6 +128,15 @@ private:
 
     virtual physical_address do_pml4() const override {
         return physical_address::from_identity_mapped_ptr(pml4_);
+    }
+
+    virtual virtual_address do_virtual_alloc(uint64_t length) override {
+        // TODO: Improve this...
+        REQUIRE((length & (page_size-1)) == 0);
+        const auto addr = free_virt_base_;
+        free_virt_base_ += length;
+        REQUIRE(free_virt_base_ >= addr); // Make sure we didn't wrap around
+        return addr;
     }
 
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
@@ -164,7 +175,7 @@ private:
                     pd[virt.pde()] = phys | PAGEF_PAGESIZE | PAGEF_PRESENT | flags;
                 } else {
                     auto* pt = alloc_if_not_present(pd[virt.pde()], flags);
-                    pt[virt.pte()] = phys | PAGEF_PRESENT | flags;
+                    pt[virt.pte()] = phys | PAGEF_PRESENT | flags | (static_cast<uint32_t>(type & memory_type::cache_disable) ? PAGEF_PWT | PAGEF_PCD : 0);
                 }
             }
             //dbgout() << "[mem] " << as_hex(virt) << " " << as_hex(phys) << "\n";
@@ -336,6 +347,10 @@ private:
         return mm_->pml4();
     }
 
+    virtual virtual_address do_virtual_alloc(uint64_t length) override {
+        return mm_->virtual_alloc(length);
+    }
+
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
         return mm_->map_memory(virt, length, type, phys);
     }
@@ -418,6 +433,19 @@ void* kalloc(uint64_t size) {
 
 void kfree(void* ptr) {
     kernel_memory_manager::instance().kfree(ptr);
+}
+
+volatile void* iomem_map(physical_address base, uint64_t length)
+{
+    REQUIRE((base & (memory_manager::page_size-1)) == 0);
+    auto virt = kernel_memory_manager::instance().virtual_alloc(length);
+    kernel_memory_manager::instance().map_memory(virt, length, memory_type::read | memory_type::write | memory_type::cache_disable, base);
+    return reinterpret_cast<volatile void*>(static_cast<uint64_t>(virt));
+}
+
+void iomem_unmap(volatile void* virt, uint64_t length)
+{
+    dbgout() << "[mem] Ignoring I/O mem unmap request virt = " << as_hex((uint64_t)virt) << " length = " << as_hex(length) << "\n";
 }
 
 // Internal use only
