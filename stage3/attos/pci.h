@@ -144,6 +144,8 @@ private:
 
 owned_ptr<manager, destruct_deleter> init();
 
+void bus_master(device_address addr, bool enabled);
+
 } }  // namespace attos::pci
 
 #endif

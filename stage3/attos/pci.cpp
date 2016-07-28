@@ -176,7 +176,7 @@ all_bars read_bars(device_address addr) {
     return res;
 }
 
-class manager_impl : public manager {
+class manager_impl : public manager, public singleton<manager_impl> {
 public:
     manager_impl() {
         dbgout() << "[pci] Initializing.\n";
@@ -185,6 +185,17 @@ public:
     ~manager_impl() {
         dbgout() << "[pci] Shutting down.\n";
     }
+
+    void bus_master(device_address addr, bool enabled) {
+        constexpr uint32_t PCI_COMMAND_MASTER = 0x4;
+        const auto orig = read_config_dword(addr, 1);
+        const bool was_enabled = !!(orig & PCI_COMMAND_MASTER);
+        if (was_enabled != enabled) {
+            dbgout() << "[pci] " << (enabled ? "Enabling" : "Disabling") << " bus mastering for " << addr << "\n";
+            write_config_dword(addr, 1, (orig & ~PCI_COMMAND_MASTER) | (enabled ? PCI_COMMAND_MASTER : 0));
+        }
+    }
+
 private:
     kvector<device_info> devices_;
 
@@ -245,6 +256,11 @@ object_buffer<manager_impl> manager_buffer;
 
 owned_ptr<manager, destruct_deleter> init() {
     return owned_ptr<manager, destruct_deleter>{manager_buffer.construct().release()};
+}
+
+void bus_master(device_address addr, bool enabled)
+{
+    manager_impl::instance().bus_master(addr, enabled);
 }
 
 } } // namespace attos::pci

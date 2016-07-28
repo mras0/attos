@@ -417,7 +417,7 @@ physical_address virt_to_phys(physical_address pml4, virtual_address virt)
     REQUIRE(pde & PAGEF_PRESENT);
     if (pde & PAGEF_PAGESIZE) {
         constexpr uint64_t page_mask = (2ULL<<20) - 1;
-        return physical_address{(pdpe & ~page_mask) | (virt & page_mask)};
+        return physical_address{(pde & ~page_mask) | (virt & page_mask)};
     }
 
     const auto pte = table_entry(pde)[virt.pte()];
