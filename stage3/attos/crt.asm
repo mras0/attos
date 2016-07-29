@@ -4,6 +4,7 @@
     section .text
 
     global memset
+    global memcmp
     global switch_to ; void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags)
 
 ; rcx = void* dest
@@ -18,6 +19,27 @@ memset:
     rep stosb
     pop rdi
     pop rsi
+    ret
+
+; rcx = const void* p1
+; rdx = const void* p2
+; r8  = size_t      count
+memcmp:
+.inner:
+    push rsi
+    push rdi
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rcx, r8
+    repe cmpsb
+    mov al, 0
+    je .done
+    mov al, [rdi-1]
+    sub al, [rsi-1]
+.done:
+    pop rdi
+    pop rsi
+    movsx eax, al
     ret
 
 switch_to:

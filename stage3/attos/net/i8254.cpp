@@ -290,7 +290,7 @@ void delay_microseconds(uint32_t count)
 
 } // unnamed namespace
 
-class i8254 : public netdev {
+class i8254 : public ethernet_device {
 public:
     static constexpr uint32_t io_mem_size = 128<<10; // 128K
 
@@ -416,45 +416,6 @@ private:
                            | i8254_TCTL_PSP
                            | i8254_TCTL_CT
                            | i8254_TCTL_COLD);
-
-        // Ethernet header
-        uint8_t buffer[64]={};
-        uint8_t* b = buffer;
-        memcpy(b, &mac_address::broadcast[0], 6); b += 6;
-        memcpy(b, &mac_addr_, 6); b += 6;
-        *b++ = 0x08; // 0x0806 ARP
-        *b++ = 0x06;
-        // ARP
-        *b++ = 0x00; // Hardware type (0x0001 = Ethernet)
-        *b++ = 0x01;
-        *b++ = 0x08; // Protocol type (0x0800 = Ipv4)
-        *b++ = 0x00;
-        *b++ = 0x06; // Hardware address length
-        *b++ = 0x04; // Protocol address length
-        *b++ = 0x00; // Opcode (1=Request)
-        *b++ = 0x01;
-        memcpy(b, &mac_addr_[0], 6); b += 6;
-        *b++ = 0xff;
-        *b++ = 0xff;
-        *b++ = 0xff;
-        *b++ = 0xff;
-        memcpy(b, &mac_address::broadcast[0], 6); b += 6;
-        *b++ = 0xff;
-        *b++ = 0xff;
-        *b++ = 0xff;
-        *b++ = 0xff;
-        send_packet(buffer, 64);
-
-        dbgout() << "Waiting for packet!\n";
-        for (bool got_packet = false; !got_packet;) {
-            process_packets([&got_packet] (const uint8_t* data, uint32_t length) {
-                hexdump(dbgout(), data, length);
-                dbgout() << "Dst MAC:  " << mac_address{&data[0]} << "\n";
-                dbgout() << "Src MAC:  " << mac_address{&data[6]} << "\n";
-                dbgout() << "Type/Len: " << as_hex(data[12]*256+data[13]).width(4) << "\n";
-                got_packet = true;
-            });
-        }
     }
 
     void isr() {
@@ -497,24 +458,25 @@ private:
                     dbgout() << "Packet error(s): " << as_hex(rx_desc_[i].errors) << "\n";
                     REQUIRE(false);
                 }
-                dbgout() << "status = " << as_hex(rx_desc_[i].status) << " length = " << as_hex(rx_desc_[i].length) << "\n";
+                dbgout() << "status = " << as_hex(rx_desc_[i].status) << " length = " << as_hex(rx_desc_[i].length) << " i = " << i << "\n";
                 ppf(&rx_buffer_[i][0], rx_desc_[i].length);
-                // TODO: Set status to zero and update tail
+                rx_desc_[i].status = 0;
+                // TODO: Update tail
             }
         }
     }
 };
 
-netdev_ptr i82545_probe(const pci::device_info& dev_info)
+ethernet_device_ptr i82545_probe(const pci::device_info& dev_info)
 {
     constexpr uint16_t i82540em_a = 0x100e; // desktop
     constexpr uint16_t i82545em_a = 0x100f; // copper
 
     if (dev_info.config.vendor_id == pci::vendor::intel && (dev_info.config.device_id == i82540em_a || dev_info.config.device_id == i82545em_a)) {
-        return netdev_ptr{knew<i8254>(dev_info).release()};
+        return ethernet_device_ptr{knew<i8254>(dev_info).release()};
     }
 
-    return netdev_ptr{};
+    return ethernet_device_ptr{};
 }
 
 } } // namespace attos::net

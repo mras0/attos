@@ -12,6 +12,7 @@
 #include <attos/ata.h>
 #include <attos/vga/text_screen.h>
 #include <attos/net/i8254.h>
+#include <attos/string.h>
 
 #define assert REQUIRE // undefined yadayda
 #include <attos/tree.h>
@@ -376,21 +377,6 @@ private:
     T& c_;
 };
 
-/*
-kvector<char> read_line()
-{
-}
-*/
-
-bool string_equal(const char* a, const char* b) {
-    while (*a && *b) {
-        if (*a != *b) return false;
-        ++a;
-        ++b;
-    }
-    return *a == *b;
-}
-
 __declspec(noinline) void test_func()
 {
     __debugbreak();
@@ -461,6 +447,152 @@ void usermode_test(cpu_manager& cpum)
     dbgout() << "Bach from magic!\n";
 }
 
+namespace attos { namespace net {
+
+class ipv4_ethernet_device {
+public:
+    explicit ipv4_ethernet_device(ethernet_device& ethdev) : ethdev_{ethdev}, ip_addr_{inaddr_any} {
+    }
+
+    void process_packets() {
+        ethdev_.process_packets([this] (const uint8_t* data, uint32_t length) { eth_in(data, length); });
+    }
+
+private:
+    struct arp_entry {
+        ipv4_address pa;   // Protocol address
+        mac_address  ha;   // Hardware address
+    };
+    ethernet_device&   ethdev_;
+    ipv4_address       ip_addr_;
+    kvector<arp_entry> arp_entries_;
+
+    void eth_in(const uint8_t* data, uint32_t length) {
+        REQUIRE(length >= sizeof(ethernet_header));
+        const auto& eh = * reinterpret_cast<const ethernet_header*>(data);
+        data   += sizeof(ethernet_header);
+        length -= sizeof(ethernet_header);
+
+        switch (eh.type) {
+            //case net::ethertype::ipv4:
+            //    dbgout() << "IPV4!\n";
+            //    break;
+            case net::ethertype::arp:
+                REQUIRE(length >= sizeof(arp_header));
+                arp_in(eh, *reinterpret_cast<const arp_header*>(data));
+                break;
+            default:
+                hexdump(dbgout(), data, length);
+                dbgout() << "Dst MAC:  " << eh.dst << "\n";
+                dbgout() << "Src MAC:  " << eh.src << "\n";
+                dbgout() << "Type:     " << as_hex(static_cast<uint16_t>(eh.type)).width(4) << "\n";
+                dbgout() << "Length:   " << length << "\n";
+                dbgout() << "Unknown ethernet type\n";
+        }
+    }
+
+
+    //
+    // ARP
+    //
+    void arp_in(const ethernet_header& eh, const arp_header& ah) {
+        REQUIRE(ah.htype == arp_htype::ethernet);
+        REQUIRE(ah.ptype == ethertype::ipv4);
+        REQUIRE(ah.hlen  == 0x06);
+        REQUIRE(ah.plen  == 0x04);
+        REQUIRE(ah.oper == arp_operation::request || ah.oper == arp_operation::reply);
+        REQUIRE(ah.sha != mac_address::broadcast);
+        dbgout() << "[arp] Ethernet: dst=" << eh.dst << " src=" << eh.src << "\n";
+        dbgout() << "[arp] " << (ah.oper == arp_operation::request ? "Request" : "Reply") << "\n";
+        dbgout() << "[arp] Sender = " << ah.sha << ", " << ah.spa << "\n";
+        dbgout() << "[arp] Target = " << ah.tha << ", " << ah.tpa << "\n";
+
+        bool merge_flag = false;
+        if (auto e = find_arp_entry(ah.spa)) {
+            dbgout() << "[arp] Updating HW address for " << ah.spa << " to " << ah.sha << "\n";
+            e->ha = ah.sha;
+            merge_flag = true;
+        }
+
+        if (ip_addr_ == inaddr_any) {
+            dbgout() << "[arp] No IP address assigned yet\n";
+            return;
+        }
+
+        if (ip_addr_ == ah.tpa) { // Are we the target?
+            if (!merge_flag) {
+                add_arp_entry(ah.spa, ah.sha);
+            }
+            if (ah.oper == arp_operation::request) {
+                // Swap hardware and protocol fields, putting the local hardware and protocol addresses in the sender fields.
+                // Set the ar$op field to ares_op$REPLY
+                // Send the packet to the (new) target hardware address on the same hardware on which the request was received.
+                dbgout() << "[arp] TODO: We need to respond to this arp request\n";
+                REQUIRE(false);
+            }
+        }
+    }
+
+
+    arp_entry* find_arp_entry(ipv4_address ip) {
+        auto it = std::find_if(arp_entries_.begin(), arp_entries_.end(), [ip] (const arp_entry& e) { return e.pa == ip; });
+        return it != arp_entries_.end() ? &*it : nullptr;
+    }
+
+    void add_arp_entry(ipv4_address pa, const mac_address& ha) {
+        REQUIRE(!find_arp_entry(pa));
+        arp_entries_.push_back({pa, ha});
+    }
+
+};
+
+} } // namespace attos::net
+
+
+void nettest(net::ethernet_device& dev)
+{
+    using namespace attos::net;
+
+    ipv4_ethernet_device ipv4ethdev{dev};
+
+    // Ethernet header
+    uint8_t buffer[64]={};
+    uint8_t* b = buffer;
+    memcpy(b, &mac_address::broadcast[0], 6); b += 6;
+    memcpy(b, &dev.hw_address()[0], 6); b += 6;
+    *b++ = 0x08; // 0x0806 ARP
+    *b++ = 0x06;
+    // ARP
+    *b++ = 0x00; // Hardware type (0x0001 = Ethernet)
+    *b++ = 0x01;
+    *b++ = 0x08; // Protocol type (0x0800 = Ipv4)
+    *b++ = 0x00;
+    *b++ = 0x06; // Hardware address length
+    *b++ = 0x04; // Protocol address length
+    *b++ = 0x00; // Opcode (1=Request)
+    *b++ = 0x01;
+    memcpy(b, &dev.hw_address()[0], 6); b += 6;
+    *b++ = 0xff;
+    *b++ = 0xff;
+    *b++ = 0xff;
+    *b++ = 0xff;
+    memcpy(b, &mac_address::broadcast[0], 6); b += 6;
+    *b++ = 0xff;
+    *b++ = 0xff;
+    *b++ = 0xff;
+    *b++ = 0xff;
+    dev.send_packet(buffer, 64);
+
+    for (;;) {
+        auto& ps2c = ps2::controller::instance();
+        if (ps2c.key_available() && ps2c.read_key() == '\x1b') {
+            break;
+        }
+        ipv4ethdev.process_packets();
+        __halt();
+    }
+}
+
 void stage3_entry(const arguments& args)
 {
     // First make sure we can output debug information
@@ -494,12 +626,16 @@ void stage3_entry(const arguments& args)
     usermode_test(*cpu);
 
     // Networking
-    net::netdev_ptr netdev{};
+    net::ethernet_device_ptr netdev{};
 
     for (const auto& d : pci->devices()) {
         if (!!(netdev = net::i82545_probe(d))) {
            break;
         }
+    }
+
+    if (netdev) {
+        nettest(*netdev);
     }
 
     interactive_mode(ps2c);
