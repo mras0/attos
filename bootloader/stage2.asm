@@ -248,12 +248,12 @@ test_longmode:
     push rbp
     mov rbp, rsp  ; preserve old stack pointer
 
-    ; build argument structure
+    ; build argument structure (stage3 knows that the pointers are physical addresses)
     sub rsp, 0x18
     mov rcx, rsp
-    mov qword [rcx+0x00], IDENTITY_MAP_START+stage3_copy
-    mov qword [rcx+0x08], IDENTITY_MAP_START+stage3
-    mov qword [rcx+0x10], IDENTITY_MAP_START+smap_buffer
+    mov qword [rcx+0x00], stage3_copy
+    mov qword [rcx+0x08], stage3
+    mov qword [rcx+0x10], smap_buffer
 
     mov rax, IDENTITY_MAP_START
     add rcx, rax

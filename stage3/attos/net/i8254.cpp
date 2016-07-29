@@ -199,6 +199,21 @@ constexpr uint32_t i8254_RCTL_PMCF               = 0x00800000;   /* pass MAC con
 constexpr uint32_t i8254_RCTL_BSEX               = 0x02000000;   /* Buffer size extension */
 constexpr uint32_t i8254_RCTL_SECRC              = 0x04000000;   /* Strip Ethernet CRC */
 
+/* Receive Descriptor bit definitions */
+constexpr uint32_t i8254_RXD_STAT_DD             = 0x01;         /* Descriptor Done */
+constexpr uint32_t i8254_RXD_STAT_EOP            = 0x02;         /* End of Packet */
+constexpr uint32_t i8254_RXD_STAT_IXSM           = 0x04;         /* Ignore checksum */
+constexpr uint32_t i8254_RXD_STAT_VP             = 0x08;         /* IEEE VLAN Packet */
+constexpr uint32_t i8254_RXD_STAT_UDPCS          = 0x10;         /* UDP xsum calculated */
+constexpr uint32_t i8254_RXD_STAT_TCPCS          = 0x20;         /* TCP xsum calculated */
+constexpr uint32_t i8254_RXD_ERR_CE              = 0x01;         /* CRC Error */
+constexpr uint32_t i8254_RXD_ERR_SE              = 0x02;         /* Symbol Error */
+constexpr uint32_t i8254_RXD_ERR_SEQ             = 0x04;         /* Sequence Error */
+constexpr uint32_t i8254_RXD_ERR_CXE             = 0x10;         /* Carrier Extension Error */
+constexpr uint32_t i8254_RXD_ERR_TCPE            = 0x20;         /* TCP/UDP Checksum Error */
+constexpr uint32_t i8254_RXD_ERR_IPE             = 0x40;         /* IP Checksum Error */
+constexpr uint32_t i8254_RXD_ERR_RXE             = 0x80;         /* Rx Data Error */
+
 /* Transmit Control */
 constexpr uint32_t i8254_TCTL_EN                 = 0x00000002;   /* enable Tx */
 constexpr uint32_t i8254_TCTL_PSP                = 0x00000008;   /* pad short packets */
@@ -275,13 +290,11 @@ void delay_microseconds(uint32_t count)
 
 } // unnamed namespace
 
-static const uint8_t mac_addr[6]      = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
-static const uint8_t broadcast_mac[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 class i8254 : public netdev {
 public:
     static constexpr uint32_t io_mem_size = 128<<10; // 128K
 
-    explicit i8254(const pci::device_info& dev_info) : dev_addr_(dev_info.address) {
+    explicit i8254(const pci::device_info& dev_info) : mac_addr_{ 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 }, dev_addr_{dev_info.address} {
         REQUIRE(!(dev_info.bars[0].address & pci::bar_is_io_mask)); // Register base address
         REQUIRE(dev_info.bars[0].size == i8254::io_mem_size);
 
@@ -303,17 +316,17 @@ public:
 
 private:
     // The number of descriptors must be a multiple of 8 (size divisible by 128b)
-    static constexpr uint32_t num_rx_buffers = 8;
-    static constexpr uint32_t num_tx_buffers = 8;
+    static constexpr uint32_t num_rx_descriptors = 8;
+    static constexpr uint32_t num_tx_descriptors = 8;
 
+    mac_address             mac_addr_;
     pci::device_address     dev_addr_;
     volatile uint32_t*      reg_base_;
 #pragma warning(suppress: 4324) // struct was padded due to alignment specifier
-    volatile i8254_rx_desc  rx_desc_[num_rx_buffers];
-    uint8_t                 rx_buffer_[num_rx_buffers][2048];
+    volatile i8254_rx_desc  rx_desc_[num_rx_descriptors];
+    uint8_t                 rx_buffer_[num_rx_descriptors][2048];
 #pragma warning(suppress: 4324) // struct was padded due to alignment specifier
-    volatile i8254_tx_desc  tx_desc_[num_tx_buffers];
-    uint8_t                 tx_buffer_[num_tx_buffers][2048];
+    volatile i8254_tx_desc  tx_desc_[num_tx_descriptors];
     isr_registration_ptr    reg_;
 
     uint32_t reg(i8254_reg r) {
@@ -350,8 +363,8 @@ private:
         // TODO: Clear statistics counters
 
         // Program the Receive Address Register
-        reg(i8254_reg::RAL_BASE, (mac_addr[0]) | (mac_addr[1] << 8) | (mac_addr[2] << 16) | (mac_addr[3] << 24));
-        reg(i8254_reg::RAH_BASE, (mac_addr[4]) | (mac_addr[5] << 8) | i8254_RAH_AV);
+        reg(i8254_reg::RAL_BASE, (mac_addr_[0]) | (mac_addr_[1] << 8) | (mac_addr_[2] << 16) | (mac_addr_[3] << 24));
+        reg(i8254_reg::RAH_BASE, (mac_addr_[4]) | (mac_addr_[5] << 8) | i8254_RAH_AV);
 
         // Initialize the MTA (Multicast Table Array) to 0
         for (int i = 0; i < 128; i++) {
@@ -375,9 +388,9 @@ private:
 
         // Initialize Receive Descriptor Head and Tail registers
         reg(i8254_reg::RDH_BASE, 0);
-        reg(i8254_reg::RDT_BASE, num_rx_buffers);
+        reg(i8254_reg::RDT_BASE, num_rx_descriptors);
 
-        for (uint32_t i = 0; i < num_rx_buffers; ++i) {
+        for (uint32_t i = 0; i < num_rx_descriptors; ++i) {
             rx_desc_[i].buffer_addr = virt_to_phys(rx_buffer_[i]);
             rx_desc_[i].status = 0;
         }
@@ -404,15 +417,11 @@ private:
                            | i8254_TCTL_CT
                            | i8254_TCTL_COLD);
 
-        // prepare descriptor
-        auto& td = tx_desc_[0];
-        memset((void*)&td, 0, sizeof(td));
-        td.buffer_addr = virt_to_phys(tx_buffer_[0]);
-
         // Ethernet header
-        uint8_t* b = tx_buffer_[0];
-        memcpy(b, broadcast_mac, 6); b += 6;
-        memcpy(b, mac_addr, 6); b += 6;
+        uint8_t buffer[64]={};
+        uint8_t* b = buffer;
+        memcpy(b, &mac_address::broadcast[0], 6); b += 6;
+        memcpy(b, &mac_addr_, 6); b += 6;
         *b++ = 0x08; // 0x0806 ARP
         *b++ = 0x06;
         // ARP
@@ -424,38 +433,27 @@ private:
         *b++ = 0x04; // Protocol address length
         *b++ = 0x00; // Opcode (1=Request)
         *b++ = 0x01;
-        memcpy(b, mac_addr, 6); b += 6;
+        memcpy(b, &mac_addr_[0], 6); b += 6;
         *b++ = 0xff;
         *b++ = 0xff;
         *b++ = 0xff;
         *b++ = 0xff;
-        memcpy(b, broadcast_mac, 6); b += 6;
+        memcpy(b, &mac_address::broadcast[0], 6); b += 6;
         *b++ = 0xff;
         *b++ = 0xff;
         *b++ = 0xff;
         *b++ = 0xff;
-        uint16_t tx_len = 64;
-
-        td.lower.data = tx_len | i8254_TXD_CMD_RS | i8254_TXD_CMD_RPS | i8254_TXD_CMD_EOP | i8254_TXD_CMD_IFCS;
-
-        reg(i8254_reg::TDT_BASE, 1);
-
-        dbgout() << "Waiting for packet to be sent.\n";
-        while (!td.upper.fields.status) {
-           _mm_pause();
-        }
-        dbgout() << "Status = " << as_hex(td.upper.fields.status) << "\n";
-        REQUIRE(reg(i8254_reg::TDH_BASE) == reg(i8254_reg::TDT_BASE));
+        send_packet(buffer, 64);
 
         dbgout() << "Waiting for packet!\n";
         for (bool got_packet = false; !got_packet;) {
-            for (uint32_t i = 0; i < num_rx_buffers; ++i) {
-                if (rx_desc_[i].status != 0) {
-                    dbgout() << "status = " << as_hex(rx_desc_[i].status) << " length = " << as_hex(rx_desc_[i].length) << "\n";
-                    hexdump(dbgout(), rx_buffer_[i], rx_desc_[i].length);
-                    got_packet = true;
-                }
-            }
+            process_packets([&got_packet] (const uint8_t* data, uint32_t length) {
+                hexdump(dbgout(), data, length);
+                dbgout() << "Dst MAC:  " << mac_address{&data[0]} << "\n";
+                dbgout() << "Src MAC:  " << mac_address{&data[6]} << "\n";
+                dbgout() << "Type/Len: " << as_hex(data[12]*256+data[13]).width(4) << "\n";
+                got_packet = true;
+            });
         }
     }
 
@@ -463,6 +461,47 @@ private:
         const auto icr = reg(i8254_reg::ICR);
         reg(i8254_reg::ICR, icr); // clear pending interrupts
         dbgout() << "[i8254] IRQ. ICR = " << as_hex(icr) << "\n";
+    }
+
+    virtual mac_address do_hw_address() const {
+        return mac_addr_;
+    }
+
+    virtual void do_send_packet(const void* data, uint32_t length) override {
+        // TODO: Move tail pointer properly
+
+        REQUIRE(length <= 1500);
+        // prepare descriptor
+        auto& td = tx_desc_[0];
+        REQUIRE(td.upper.fields.status == 0);
+        td.buffer_addr = virt_to_phys(data);
+        td.lower.data = length | i8254_TXD_CMD_RS | i8254_TXD_CMD_RPS | i8254_TXD_CMD_EOP | i8254_TXD_CMD_IFCS;
+        td.upper.data = 0;
+
+        reg(i8254_reg::TDT_BASE, 1);
+
+        dbgout() << "Waiting for packet to be sent.\n";
+        while (!td.upper.fields.status) {
+            __halt();
+        }
+        dbgout() << "Status = " << as_hex(td.upper.fields.status) << "\n";
+        REQUIRE(reg(i8254_reg::TDH_BASE) == reg(i8254_reg::TDT_BASE));
+
+    }
+
+    virtual void do_process_packets(const packet_process_function& ppf) override {
+        for (uint32_t i = 0; i < num_rx_descriptors; ++i) {
+            if (rx_desc_[i].status & i8254_RXD_STAT_DD) {
+                REQUIRE(rx_desc_[i].status & i8254_RXD_STAT_EOP);
+                if (rx_desc_[i].errors) {
+                    dbgout() << "Packet error(s): " << as_hex(rx_desc_[i].errors) << "\n";
+                    REQUIRE(false);
+                }
+                dbgout() << "status = " << as_hex(rx_desc_[i].status) << " length = " << as_hex(rx_desc_[i].length) << "\n";
+                ppf(&rx_buffer_[i][0], rx_desc_[i].length);
+                // TODO: Set status to zero and update tail
+            }
+        }
     }
 };
 
