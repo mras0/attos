@@ -102,6 +102,8 @@ out_stream& operator<<(out_stream& os, const ipv4_address& ip);
 
 using packet_process_function = function<void (const uint8_t*, uint32_t)>;
 
+constexpr uint16_t ethernet_max_bytes = 1500;
+
 class __declspec(novtable) ethernet_device {
 public:
     virtual ~ethernet_device();
@@ -183,6 +185,16 @@ struct ipv4_header {
 };
 static_assert(sizeof(ipv4_header) == 20, "");
 
+enum class icmp_type : uint8_t;
+
+struct icmp_header {
+    icmp_type   type;
+    uint8_t     code;
+    be_uint16_t checksum;
+    be_uint32_t rest_of_header;
+};
+static_assert(sizeof(icmp_header) == 8, "");
+
 struct udp_header {
     be_uint16_t src_port;
     be_uint16_t dst_port;
@@ -214,6 +226,36 @@ struct bootp_header {
     char            file[128];      // Boot filename (zero-terminated)
 };
 static_assert(sizeof(bootp_header) == 28+16+64+128,"");
+
+constexpr uint32_t dhcp_magic_cookie = 0x63825363;
+
+enum class dhcp_option : uint8_t {
+    // See RFC2132
+    padding             =   0,
+    subnet_mask         =   1, // Len 4, uint32_t
+    router              =   3, // Len 4 * N
+    domain_name_server  =   6, // Len 4 * N
+    domain_name         =  15, // Len 1-255
+    broadcast_address   =  28, // Len 4
+    netbios_name_server =  44, // Len 4 * N
+    lease_time          =  51, // Len 4, Seconds
+    message_type        =  53,
+    server_identifier   =  54, // Len 4, IP
+    renewal_time        =  58, // Len 4, Seconds
+    rebinding_time      =  59, // Len 4, Seconds
+    end                 = 255,
+};
+
+enum class dhcp_message_type : uint8_t {
+    discover = 1,
+    offer    = 2,
+    request  = 3,
+    decline  = 4,
+    ack      = 5,
+    nak      = 6,
+    release  = 7
+};
+
 #pragma pack(pop)
 
 uint16_t inet_csum(const void * src, uint16_t length, uint16_t init = 0);

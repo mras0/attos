@@ -66,7 +66,7 @@ private:
         F f_;
     };
 
-    static constexpr size_t impl_max_size = 16;
+    static constexpr size_t impl_max_size = 32;
     alignas(16) uint8_t impl_buffer_[impl_max_size];
 
     impl& f() const { return *reinterpret_cast<impl*>(const_cast<uint8_t*>(impl_buffer_)); }

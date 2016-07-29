@@ -8,6 +8,8 @@
 #pragma intrinsic(_enable)
 extern "C" void* memset(void* dest, int c, size_t count); // crt.asm
 #pragma function(memset)
+extern "C" void* memcpy(void* dest, const void* src, size_t count); // crt.asm
+#pragma function(memset)
 
 #include <attos/mem.h>
 

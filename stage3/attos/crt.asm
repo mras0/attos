@@ -1,33 +1,53 @@
     bits 64
     default rel
 
+%include "attos/pe.inc"
+
     section .text
 
     global memset
+    global memcpy
     global memcmp
     global switch_to ; void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags)
 
-; rcx = void* dest
-; rdx = int c
+; rcx = void*  dest
+; rdx = int    c
 ; r8  = size_t count
-memset:
-    push rsi
-    push rdi
+win64_proc memset
+    win64_prologue_push rsi
+    win64_prologue_push rdi
+    win64_prologue_end
     mov rdi, rcx
     mov rcx, r8
     mov al, dl
     rep stosb
-    pop rdi
-    pop rsi
+    win64_epilogue
     ret
+win64_proc_end
+
+; rcx = void*       dest
+; rdx = const void* src
+; r8  = size_t      count
+win64_proc memcpy
+    win64_prologue_push rsi
+    win64_prologue_push rdi
+    win64_prologue_end
+    mov rdi, rcx
+    mov rsi, rdx
+    mov rcx, r8
+    rep movsb
+    win64_epilogue
+    ret
+win64_proc_end
 
 ; rcx = const void* p1
 ; rdx = const void* p2
 ; r8  = size_t      count
-memcmp:
+win64_proc memcmp
 .inner:
-    push rsi
-    push rdi
+    win64_prologue_push rsi
+    win64_prologue_push rdi
+    win64_prologue_end
     mov rdi, rcx
     mov rsi, rdx
     mov rcx, r8
@@ -37,10 +57,10 @@ memcmp:
     mov al, [rdi-1]
     sub al, [rsi-1]
 .done:
-    pop rdi
-    pop rsi
     movsx eax, al
+    win64_epilogue
     ret
+win64_proc_end
 
 switch_to:
     mov rax, [rsp+0x28] ; rax <- flags (parameter)

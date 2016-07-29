@@ -449,73 +449,87 @@ void usermode_test(cpu_manager& cpum)
 
 namespace attos { namespace net {
 
-constexpr be_uint32_t dhcp_magic_cookie = 0x63825363;
+class udp_socket {
+public:
+    using send_function_type = function<void (uint8_t*, uint32_t)>;
+    using unregister_function_type = function<void (void)>;
 
-enum class dhcp_message_type : uint8_t {
-    discover = 1,
-    offer    = 2,
-    request  = 3,
-    decline  = 4,
-    ack      = 5,
-    nak      = 6,
-    release  = 7
-};
+    explicit udp_socket(send_function_type send_func, unregister_function_type unregister_func, ipv4_address local_addr, uint16_t local_port)
+        : send_func_(send_func)
+        , unregister_func_(unregister_func)
+        , local_addr_(local_addr)
+        , local_port_(local_port) {
+        REQUIRE(local_port != 0);
+    }
 
-#pragma pack(push, 1)
-struct dhcp_eth_packet {
-    ethernet_header   eh;
-    ipv4_header       ih;
-    udp_header        uh;
-    bootp_header      bh;
-    be_uint32_t       cookie;
-    uint8_t           message_type_opt;
-    uint8_t           message_type_len;
-    dhcp_message_type message_type;
-    uint8_t           end_octet;
+    ~udp_socket() {
+        unregister_func_();
+    }
+
+    ipv4_address local_addr() const { return local_addr_; }
+    uint16_t     local_port() const { return local_port_; }
+
+    void sendto(ipv4_address remote_addr, uint16_t remote_port, const void* data, uint32_t length) {
+        REQUIRE(length <= sizeof(send_buffer_) - (sizeof(ethernet_header) + sizeof(ipv4_header) + sizeof(udp_header)));
+
+        uint8_t* b = &send_buffer_[sizeof(ethernet_header)];
+
+        auto& ih = *reinterpret_cast<ipv4_header*>(b);
+        b += sizeof(ipv4_header);
+        memset(&ih, 0, sizeof(ipv4_header));
+        ih.ihl      = sizeof(ipv4_header)/4;
+        ih.ver      = 4;
+        ih.length   = static_cast<uint16_t>(sizeof(ipv4_header) + sizeof(udp_header) + length);
+        ih.ttl      = 255;
+        ih.protocol = ip_protocol::udp;
+        ih.src      = local_addr_;
+        ih.dst      = remote_addr;
+        ih.checksum = inet_csum(&ih, sizeof(ih));
+
+        auto& uh = *reinterpret_cast<udp_header*>(b);
+        b += sizeof(udp_header);
+        uh.src_port = local_port_;
+        uh.dst_port = remote_port;
+        uh.length   = static_cast<uint16_t>(sizeof(udp_header) + length);
+        uh.checksum = 0;
+
+        memcpy(b, data, length);
+        b += length;
+
+        send_func_(send_buffer_, static_cast<uint32_t>(b-&send_buffer_[0]));
+    }
+
+private:
+    send_function_type          send_func_;
+    unregister_function_type    unregister_func_;
+    ipv4_address                local_addr_;
+    uint16_t                    local_port_;
+    uint8_t                     send_buffer_[ethernet_max_bytes];
+    uint8_t                     recv_buffer_[ethernet_max_bytes];
+    bool                        recv_buffer_empty_ = true;
 };
-#pragma pack(pop)
 
 class ipv4_ethernet_device {
 public:
     explicit ipv4_ethernet_device(ethernet_device& ethdev) : ethdev_{ethdev}, ip_addr_{inaddr_any} {
-        dhcp_eth_packet p;
-        memset(&p, 0, sizeof(p));
+    }
 
-        p.eh.dst  = mac_address::broadcast;
-        p.eh.src  = ethdev_.hw_address();
-        p.eh.type = ethertype::ipv4;
-
-        p.ih.ihl      = 5;
-        p.ih.ver      = 4;
-        p.ih.length   = sizeof(dhcp_eth_packet) - sizeof(ethernet_header);
-        p.ih.ttl      = 255;
-        p.ih.protocol = ip_protocol::udp;
-        p.ih.src      = inaddr_any;
-        p.ih.dst      = inaddr_broadcast;
-        p.ih.checksum = inet_csum(&p.ih, sizeof(p.ih));
-
-        p.uh.src_port = 68;
-        p.uh.dst_port = 67;
-        p.uh.length   = sizeof(dhcp_eth_packet) - (sizeof(ethernet_header) + sizeof(ipv4_header));
-
-        p.bh.op       = bootp_operation::request;
-        p.bh.htype    = static_cast<uint8_t>(arp_htype::ethernet);
-        p.bh.hlen     = 6;
-        p.bh.flags    = 0;//0x8000;
-        p.bh.chaddr   = ethdev_.hw_address();
-
-        p.cookie           = dhcp_magic_cookie;
-        p.message_type_opt = 53;
-        p.message_type_len = 1;
-        p.message_type     = dhcp_message_type::discover;
-        p.end_octet        = 255;
-
-        dbgout() << "Sending DHCPDISCOVER\n";
-        ethdev_.send_packet(&p, sizeof(p));
+    kowned_ptr<udp_socket> udp_open(ipv4_address local_addr, uint16_t local_port, const packet_process_function& recv_func) {
+        REQUIRE(local_port != 0); // TODO: Support binding to an open port
+        REQUIRE(local_addr == ip_addr_ || local_addr == inaddr_any);
+        REQUIRE(!find_open_udp_socket(local_addr, local_port));
+        dbgout() << "[udp] Opening " << local_addr << ':' << local_port << " closed\n";
+        auto s = knew<udp_socket>([this] (uint8_t* data, uint32_t length) { ipv4_out(data, length); }, [this, local_addr, local_port] { udp_close(local_addr, local_port); }, local_addr, local_port);
+        udp_sockets_.push_back({s.get(), recv_func});
+        return s;
     }
 
     void process_packets() {
         ethdev_.process_packets([this] (const uint8_t* data, uint32_t length) { eth_in(data, length); });
+    }
+
+    mac_address hw_address() const {
+        return ethdev_.hw_address();
     }
 
 private:
@@ -523,9 +537,15 @@ private:
         ipv4_address pa;   // Protocol address
         mac_address  ha;   // Hardware address
     };
-    ethernet_device&   ethdev_;
-    ipv4_address       ip_addr_;
-    kvector<arp_entry> arp_entries_;
+    struct open_udp_socket {
+        udp_socket*             socket;
+        packet_process_function recv_func;
+    };
+
+    ethernet_device&            ethdev_;
+    ipv4_address                ip_addr_;
+    kvector<arp_entry>          arp_entries_;
+    kvector<open_udp_socket>    udp_sockets_;
 
     void eth_in(const uint8_t* data, uint32_t length) {
         REQUIRE(length >= sizeof(ethernet_header));
@@ -547,7 +567,7 @@ private:
                 }
             case net::ethertype::arp:
                 REQUIRE(length >= sizeof(arp_header));
-                arp_in(eh, *reinterpret_cast<const arp_header*>(data));
+                arp_in(*reinterpret_cast<const arp_header*>(data));
                 break;
             default:
                 hexdump(dbgout(), data, length);
@@ -556,6 +576,7 @@ private:
                 dbgout() << "Type:     " << as_hex(static_cast<uint16_t>(eh.type)).width(4) << "\n";
                 dbgout() << "Length:   " << length << "\n";
                 dbgout() << "Unknown ethernet type\n";
+                REQUIRE(false);
         }
     }
 
@@ -563,17 +584,16 @@ private:
     //
     // ARP
     //
-    void arp_in(const ethernet_header& eh, const arp_header& ah) {
+    void arp_in(const arp_header& ah) {
         REQUIRE(ah.htype == arp_htype::ethernet);
         REQUIRE(ah.ptype == ethertype::ipv4);
         REQUIRE(ah.hlen  == 0x06);
         REQUIRE(ah.plen  == 0x04);
         REQUIRE(ah.oper == arp_operation::request || ah.oper == arp_operation::reply);
         REQUIRE(ah.sha != mac_address::broadcast);
-        dbgout() << "[arp] Ethernet: dst=" << eh.dst << " src=" << eh.src << "\n";
-        dbgout() << "[arp] " << (ah.oper == arp_operation::request ? "Request" : "Reply") << "\n";
-        dbgout() << "[arp] Sender = " << ah.sha << ", " << ah.spa << "\n";
-        dbgout() << "[arp] Target = " << ah.tha << ", " << ah.tpa << "\n";
+        dbgout() << "[arp] " << (ah.oper == arp_operation::request ? "REQ" : "RSP")
+                 << " S " << ah.sha << " " << ah.spa
+                 << " T " << ah.tha << " " << ah.tpa << "\n";
 
         bool merge_flag = false;
         if (auto e = find_arp_entry(ah.spa)) {
@@ -583,12 +603,13 @@ private:
         }
 
         if (ip_addr_ == inaddr_any) {
-            dbgout() << "[arp] No IP address assigned yet\n";
+            //dbgout() << "[arp] No IP address assigned yet\n";
             return;
         }
 
         if (ip_addr_ == ah.tpa) { // Are we the target?
             if (!merge_flag) {
+                dbgout() << "[arp] Adding ARP entry for " << ah.spa << " -> " << ah.sha << "\n";
                 add_arp_entry(ah.spa, ah.sha);
             }
             if (ah.oper == arp_operation::request) {
@@ -616,25 +637,192 @@ private:
     // IPv4
     //
     void ipv4_in(const ipv4_header& ih, const uint8_t* data, uint32_t length) {
-        dbgout() << "[ipv4] protocol = " << as_hex(ih.protocol) << " src = " << ih.src << " dst = " << ih.dst << "\n";
-        (void)data; (void)length;
+        switch (ih.protocol) {
+            case ip_protocol::icmp:
+                REQUIRE(length >= sizeof(icmp_header));
+                icmp_in(ih, *reinterpret_cast<const icmp_header*>(data), data + sizeof(icmp_header), length - sizeof(icmp_header));
+                break;
+            case ip_protocol::udp:
+                REQUIRE(length >= sizeof(udp_header));
+                udp_in(ih, *reinterpret_cast<const udp_header*>(data), data + sizeof(udp_header), length - sizeof(udp_header));
+                break;
+            default:
+                hexdump(dbgout(), data, length);
+                dbgout() << "[ipv4] Unhandled protocol = " << as_hex(ih.protocol) << " src = " << ih.src << " dst = " << ih.dst << "\n";
+                REQUIRE(false);
+        }
+    }
+
+    // assumes room for ethernet header at front with ipv4 header and the rest of the packet immediately following
+    void ipv4_out(uint8_t* data, uint32_t length) {
+        REQUIRE(length >= sizeof(ethernet_header) + sizeof(ipv4_header) && length <= ethernet_max_bytes);
+        auto& eh = *reinterpret_cast<ethernet_header*>(data);
+        auto& ih = *reinterpret_cast<ipv4_header*>(data + sizeof(ethernet_header));
+        REQUIRE(ih.ver == 4 && ih.ihl == 5); // Sanity check, NOTE: IHL could legally be >= 5, but we know it isn't at the momemnt
+        REQUIRE(ih.src == inaddr_any);
+        REQUIRE(ih.dst == inaddr_broadcast);
+        eh.dst  = mac_address::broadcast;
+        eh.src  = ethdev_.hw_address();
+        eh.type = ethertype::ipv4;
+        ethdev_.send_packet(data, length);
+    }
+
+    //
+    // ICMP
+    //
+    void icmp_in(const ipv4_header& ih, const icmp_header& icmp_h, const uint8_t* data, uint32_t length) {
+        dbgout() << "[icmp] Ignoring type " << as_hex(static_cast<uint8_t>(icmp_h.type)) << " code " << as_hex(icmp_h.code) << "from " << ih.src << " to " << ih.dst << "\n";
+        (void) data; (void) length;
+    }
+
+    //
+    // UDP
+    //
+
+    open_udp_socket* find_open_udp_socket(ipv4_address local_addr, uint16_t local_port) {
+        auto it = std::find_if(udp_sockets_.begin(), udp_sockets_.end(),
+                [local_addr, local_port] (const open_udp_socket& s) {
+                    return (s.socket->local_addr() == inaddr_any || s.socket->local_addr() == local_addr) && s.socket->local_port() == local_port;
+                });
+        return it != udp_sockets_.end() ? &*it : nullptr;
+    }
+
+    void udp_in(const ipv4_header& ih, const udp_header& uh, const uint8_t* data, uint32_t length) {
+        if (auto s = find_open_udp_socket(ih.dst, uh.dst_port)) {
+            s->recv_func(data, length);
+            return;
+        }
+        dbgout() << "[udp] Ignoring data from " << ih.src << ':' << uh.src_port << " to " << ih.dst << ':' << uh.dst_port << "\n";
+        (void) data; (void) length;
+    }
+
+    void udp_close(ipv4_address local_addr, uint16_t port) {
+        dbgout() << "[udp] Closing " << local_addr << ':' << port << " closed\n";
+        // TODO: Remove from open sockets
+    }
+};
+
+class dhcp_handler {
+public:
+    explicit dhcp_handler(ipv4_ethernet_device& dev) : dev_(dev) {
+        dbgout() << "[dhcp] Sending DHCPDISCOVER\n";
+        auto& dh = *reinterpret_cast<dhcp_header*>(&buffer_[0]);
+
+        memset(&dh, 0, sizeof(dh));
+        dh.op       = bootp_operation::request;
+        dh.htype    = static_cast<uint8_t>(arp_htype::ethernet);
+        dh.hlen     = 6;
+        dh.flags    = 0x8000; // BOOTP_BROADCAST
+        dh.chaddr   = dev_.hw_address();
+
+        dh.cookie           = dhcp_magic_cookie;
+        dh.message_type_opt = dhcp_option::message_type;
+        dh.message_type_len = 1;
+        dh.message_type     = dhcp_message_type::discover;
+
+        uint8_t* b = &buffer_[sizeof(dhcp_header)];
+        *b++ = 0xff; // end_octet
+
+        auto s = dev_.udp_open(inaddr_any, 68, [this] (const uint8_t* data, uint32_t length) { dhcp_in(data, length); } );
+        s->sendto(inaddr_broadcast, 67, buffer_, static_cast<uint16_t>(b - buffer_));
+    }
+
+private:
+    ipv4_ethernet_device& dev_;
+
+#pragma pack(push, 1)
+    struct dhcp_header : bootp_header {
+        be_uint32_t       cookie;
+        dhcp_option      message_type_opt;
+        uint8_t           message_type_len;
+        dhcp_message_type message_type;
+    };
+#pragma pack(pop)
+
+    uint8_t buffer_[512];
+
+    void dhcp_in(const uint8_t* data, uint32_t length) {
+        REQUIRE(length >= sizeof(dhcp_header) + 1);
+        auto& dh = *reinterpret_cast<const dhcp_header*>(data);
+
+        REQUIRE(dh.op               == bootp_operation::reply);
+        REQUIRE(dh.htype            == static_cast<uint8_t>(arp_htype::ethernet));
+        REQUIRE(dh.hlen             == 6);
+        REQUIRE(dh.chaddr           == dev_.hw_address());
+        REQUIRE(dh.cookie           == dhcp_magic_cookie);
+        REQUIRE(dh.message_type_opt == dhcp_option::message_type);
+        REQUIRE(dh.message_type_len == 1);
+        REQUIRE(dh.message_type     == dhcp_message_type::offer);
+
+        dbgout() << "[dhcp] yip " << dh.yiaddr << " sip " << dh.siaddr << "\n";
+
+        data += sizeof(dhcp_header);
+        length -= sizeof(dhcp_header);
+
+        while (length > 1) {
+            const auto type = static_cast<dhcp_option>(data[0]);
+            if (type == dhcp_option::padding) continue;
+            if (type == dhcp_option::end) break;
+
+            const uint8_t len = data[1];
+            REQUIRE(length >= len+2U);
+            switch (type) {
+            default:
+                dbgout() << "[dhcp] Ignoring option " << data[0] << " of length " << len << "\n";
+            case dhcp_option::subnet_mask:
+                REQUIRE(len == 4);
+                break;
+            case dhcp_option::router:
+                REQUIRE(len >= 4 && len % 4 == 0);
+                break;
+            case dhcp_option::domain_name_server:
+                REQUIRE(len >= 4 && len % 4 == 0);
+                break;
+            case dhcp_option::domain_name:
+                REQUIRE(len > 0);
+                break;
+            case dhcp_option::broadcast_address:
+                REQUIRE(len == 4);
+                break;
+            case dhcp_option::netbios_name_server:
+                REQUIRE(len >= 4 && len % 4 == 0);
+                break;
+            case dhcp_option::lease_time:
+                REQUIRE(len == 4);
+                break;
+            case dhcp_option::server_identifier:
+                REQUIRE(len == 4);
+                break;
+            case dhcp_option::renewal_time:
+                REQUIRE(len == 4);
+                break;
+            case dhcp_option::rebinding_time:
+                REQUIRE(len == 4);
+                break;
+            }
+            length -= len + 2;
+            data += len + 2;
+        }
+        REQUIRE(length >= 1 && *data == 0xff);
     }
 };
 
 } } // namespace attos::net
 
+
 void nettest(net::ethernet_device& dev)
 {
     using namespace attos::net;
 
-    ipv4_ethernet_device ipv4ethdev{dev};
+    ipv4_ethernet_device ipv4dev{dev};
+    dhcp_handler dhcp_h{ipv4dev};
 
     for (;;) {
         auto& ps2c = ps2::controller::instance();
         if (ps2c.key_available() && ps2c.read_key() == '\x1b') {
             break;
         }
-        ipv4ethdev.process_packets();
+        ipv4dev.process_packets();
         __halt();
     }
 }
