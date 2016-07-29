@@ -160,7 +160,63 @@ struct arp_header {
     ipv4_address          tpa;   // Target protocol address
 };
 static_assert(sizeof(arp_header) == 28, "");
+
+enum class ip_protocol : uint8_t {
+    icmp = 0x01,
+    tcp  = 0x06,
+    udp  = 0x11,
+};
+
+struct ipv4_header {
+    uint8_t      ihl  : 4; // Internet Header Length
+    uint8_t      ver  : 4; // Version
+    uint8_t      ecn  : 2; // Explicit Congestion Notification
+    uint8_t      dscp : 6; // Differentiated Services Code Point
+    be_uint16_t  length;   // Total Length
+    be_uint16_t  id;       // Identification
+    be_uint16_t  fragment; // Fragment Offset / Flags
+    uint8_t      ttl;      // Time To Live
+    ip_protocol  protocol; // Protocol
+    be_uint16_t  checksum; // Header checksum
+    ipv4_address src;      // Source address
+    ipv4_address dst;      // Destination Address
+};
+static_assert(sizeof(ipv4_header) == 20, "");
+
+struct udp_header {
+    be_uint16_t src_port;
+    be_uint16_t dst_port;
+    be_uint16_t length;
+    be_uint16_t checksum;
+};
+static_assert(sizeof(udp_header) == 8, "");
+
+enum class bootp_operation : uint8_t {
+    request = 1,
+    reply = 2
+};
+
+struct bootp_header {
+    bootp_operation op;             // Operation
+    uint8_t         htype;          // Hardware type
+    uint8_t         hlen;           // Hardware address length
+    uint8_t         hops;           // Hops (client sets to zero)
+    be_uint32_t     xid;            // Transaction ID
+    be_uint16_t     secs;           // Seconds since start
+    be_uint16_t     flags;
+    ipv4_address    ciaddr;         // Client IP address, filled in by client in bootrequest if known
+    ipv4_address    yiaddr;         // 'Your' IP address, filled by server if client doesn't know its own address (ciaddr was 0)
+    ipv4_address    siaddr;         // Service IP address
+    ipv4_address    giaddr;         // Gateway IP address
+    mac_address     chaddr;         // Client hardware address
+    uint8_t         chaddrpad[10];
+    char            sname[64];      // Server name (zero-terminated)
+    char            file[128];      // Boot filename (zero-terminated)
+};
+static_assert(sizeof(bootp_header) == 28+16+64+128,"");
 #pragma pack(pop)
+
+uint16_t inet_csum(const void * src, uint16_t length, uint16_t init = 0);
 
 } } // namespace attos::net
 

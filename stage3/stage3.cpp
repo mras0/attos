@@ -449,9 +449,69 @@ void usermode_test(cpu_manager& cpum)
 
 namespace attos { namespace net {
 
+constexpr be_uint32_t dhcp_magic_cookie = 0x63825363;
+
+enum class dhcp_message_type : uint8_t {
+    discover = 1,
+    offer    = 2,
+    request  = 3,
+    decline  = 4,
+    ack      = 5,
+    nak      = 6,
+    release  = 7
+};
+
+#pragma pack(push, 1)
+struct dhcp_eth_packet {
+    ethernet_header   eh;
+    ipv4_header       ih;
+    udp_header        uh;
+    bootp_header      bh;
+    be_uint32_t       cookie;
+    uint8_t           message_type_opt;
+    uint8_t           message_type_len;
+    dhcp_message_type message_type;
+    uint8_t           end_octet;
+};
+#pragma pack(pop)
+
 class ipv4_ethernet_device {
 public:
     explicit ipv4_ethernet_device(ethernet_device& ethdev) : ethdev_{ethdev}, ip_addr_{inaddr_any} {
+        dhcp_eth_packet p;
+        memset(&p, 0, sizeof(p));
+
+        p.eh.dst  = mac_address::broadcast;
+        p.eh.src  = ethdev_.hw_address();
+        p.eh.type = ethertype::ipv4;
+
+        p.ih.ihl      = 5;
+        p.ih.ver      = 4;
+        p.ih.length   = sizeof(dhcp_eth_packet) - sizeof(ethernet_header);
+        p.ih.ttl      = 255;
+        p.ih.protocol = ip_protocol::udp;
+        p.ih.src      = inaddr_any;
+        p.ih.dst      = inaddr_broadcast;
+        p.ih.checksum = inet_csum(&p.ih, sizeof(p.ih));
+
+        p.uh.src_port = 68;
+        p.uh.dst_port = 67;
+        p.uh.length   = sizeof(dhcp_eth_packet) - (sizeof(ethernet_header) + sizeof(ipv4_header));
+
+        p.bh.op       = bootp_operation::request;
+        p.bh.htype    = static_cast<uint8_t>(arp_htype::ethernet);
+        p.bh.hlen     = 6;
+        p.bh.flags    = 0;//0x8000;
+        p.bh.chaddr   = ethdev_.hw_address();
+
+        p.cookie           = dhcp_magic_cookie;
+        p.message_type_opt = 53;
+        p.message_type_len = 1;
+        p.message_type     = dhcp_message_type::discover;
+        p.end_octet        = 255;
+
+        dbgout() << "Sending DHCPDISCOVER\n";
+        ethdev_.send_packet(&p, sizeof(p));
     }
 
     void process_packets() {
@@ -474,9 +534,17 @@ private:
         length -= sizeof(ethernet_header);
 
         switch (eh.type) {
-            //case net::ethertype::ipv4:
-            //    dbgout() << "IPV4!\n";
-            //    break;
+            case net::ethertype::ipv4:
+                {
+                    REQUIRE(length >= sizeof(ipv4_header));
+                    const auto& ih = *reinterpret_cast<const ipv4_header*>(data);
+                    REQUIRE(ih.ver == 4);
+                    REQUIRE(ih.ihl >= 5);
+                    REQUIRE(ih.ihl*4U <= length);
+                    REQUIRE(inet_csum(&ih, ih.ihl * 4) == 0);
+                    ipv4_in(ih, data + ih.ihl * 4, length - ih.ihl * 4);
+                    break;
+                }
             case net::ethertype::arp:
                 REQUIRE(length >= sizeof(arp_header));
                 arp_in(eh, *reinterpret_cast<const arp_header*>(data));
@@ -533,7 +601,6 @@ private:
         }
     }
 
-
     arp_entry* find_arp_entry(ipv4_address ip) {
         auto it = std::find_if(arp_entries_.begin(), arp_entries_.end(), [ip] (const arp_entry& e) { return e.pa == ip; });
         return it != arp_entries_.end() ? &*it : nullptr;
@@ -544,44 +611,23 @@ private:
         arp_entries_.push_back({pa, ha});
     }
 
+
+    //
+    // IPv4
+    //
+    void ipv4_in(const ipv4_header& ih, const uint8_t* data, uint32_t length) {
+        dbgout() << "[ipv4] protocol = " << as_hex(ih.protocol) << " src = " << ih.src << " dst = " << ih.dst << "\n";
+        (void)data; (void)length;
+    }
 };
 
 } } // namespace attos::net
-
 
 void nettest(net::ethernet_device& dev)
 {
     using namespace attos::net;
 
     ipv4_ethernet_device ipv4ethdev{dev};
-
-    // Ethernet header
-    uint8_t buffer[64]={};
-    uint8_t* b = buffer;
-    memcpy(b, &mac_address::broadcast[0], 6); b += 6;
-    memcpy(b, &dev.hw_address()[0], 6); b += 6;
-    *b++ = 0x08; // 0x0806 ARP
-    *b++ = 0x06;
-    // ARP
-    *b++ = 0x00; // Hardware type (0x0001 = Ethernet)
-    *b++ = 0x01;
-    *b++ = 0x08; // Protocol type (0x0800 = Ipv4)
-    *b++ = 0x00;
-    *b++ = 0x06; // Hardware address length
-    *b++ = 0x04; // Protocol address length
-    *b++ = 0x00; // Opcode (1=Request)
-    *b++ = 0x01;
-    memcpy(b, &dev.hw_address()[0], 6); b += 6;
-    *b++ = 0xff;
-    *b++ = 0xff;
-    *b++ = 0xff;
-    *b++ = 0xff;
-    memcpy(b, &mac_address::broadcast[0], 6); b += 6;
-    *b++ = 0xff;
-    *b++ = 0xff;
-    *b++ = 0xff;
-    *b++ = 0xff;
-    dev.send_packet(buffer, 64);
 
     for (;;) {
         auto& ps2c = ps2::controller::instance();

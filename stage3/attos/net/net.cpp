@@ -25,4 +25,19 @@ out_stream& operator<<(out_stream& os, const ipv4_address& ip) {
 ethernet_device::~ethernet_device() {
 }
 
+uint16_t inet_csum(const void * src, uint16_t length, uint16_t init) {
+    auto buf = static_cast<const uint8_t*>(src);
+    uint32_t result = init;
+    while (length > 1) {
+        result += bswap(*reinterpret_cast<const uint16_t*>(buf));
+        length -= 2;
+        buf    += 2;
+    }
+    if (length) result += *buf << 8;
+    result = (result >> 16) + (result & 0xFFFF);
+    result += (result >> 16);
+    result = (~result)&0xFFFF;
+    return static_cast<uint16_t>(result);
+}
+
 } } // namespace attos::net
