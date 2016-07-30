@@ -480,7 +480,7 @@ public:
         ih.ihl      = sizeof(ipv4_header)/4;
         ih.ver      = 4;
         ih.length   = static_cast<uint16_t>(sizeof(ipv4_header) + sizeof(udp_header) + length);
-        ih.ttl      = 255;
+        ih.ttl      = 64;
         ih.protocol = ip_protocol::udp;
         ih.src      = local_addr_;
         ih.dst      = remote_addr;
@@ -566,8 +566,9 @@ private:
                     REQUIRE(ih.ver == 4);
                     REQUIRE(ih.ihl >= 5);
                     REQUIRE(ih.ihl*4U <= length);
+                    REQUIRE(ih.length <= length);
                     REQUIRE(inet_csum(&ih, ih.ihl * 4) == 0);
-                    ipv4_in(ih, data + ih.ihl * 4, length - ih.ihl * 4);
+                    ipv4_in(ih, data + ih.ihl * 4, ih.length - ih.ihl * 4);
                     break;
                 }
             case net::ethertype::arp:
@@ -620,7 +621,7 @@ private:
                 // Swap hardware and protocol fields, putting the local hardware and protocol addresses in the sender fields.
                 // Set the ar$op field to ares_op$REPLY
                 // Send the packet to the (new) target hardware address on the same hardware on which the request was received.
-                dbgout() << "[arp] Sending ARP reply for " << ah.spa << " to " << ah.tpa << "\n";
+                dbgout() << "[arp] Sending ARP reply for " << ah.tpa << " to " << ah.spa << "\n";
                 send_arp(arp_operation::reply, ip_addr_, ah.sha, ah.spa);
             }
         }
@@ -662,6 +663,7 @@ private:
         switch (ih.protocol) {
             case ip_protocol::icmp:
                 REQUIRE(length >= sizeof(icmp_header));
+                REQUIRE(inet_csum(data, static_cast<uint16_t>(length)) == 0);
                 icmp_in(ih, *reinterpret_cast<const icmp_header*>(data), data + sizeof(icmp_header), length - sizeof(icmp_header));
                 break;
             case ip_protocol::udp:
@@ -681,9 +683,19 @@ private:
         auto& eh = *reinterpret_cast<ethernet_header*>(data);
         auto& ih = *reinterpret_cast<ipv4_header*>(data + sizeof(ethernet_header));
         REQUIRE(ih.ver == 4 && ih.ihl == 5); // Sanity check, NOTE: IHL could legally be >= 5, but we know it isn't at the momemnt
-        REQUIRE(ih.src == inaddr_any);
-        REQUIRE(ih.dst == inaddr_broadcast);
-        eh.dst  = mac_address::broadcast;
+        if (ih.dst == inaddr_broadcast) {
+            eh.dst  = mac_address::broadcast;
+        } else if (ih.dst == inaddr_any) {
+            REQUIRE(!"Invalid destination IP");
+        } else {
+            if (auto ae = find_arp_entry(ih.dst)) {
+                eh.dst = ae->ha;
+            } else {
+                dbgout() << "[arp] Sending ARP request for " << ih.dst << "\n";
+                send_arp(arp_operation::request, ip_addr_, mac_address::broadcast, ih.dst);
+                return;
+            }
+        }
         eh.src  = ethdev_.hw_address();
         eh.type = ethertype::ipv4;
         ethdev_.send_packet(data, length);
@@ -693,8 +705,48 @@ private:
     // ICMP
     //
     void icmp_in(const ipv4_header& ih, const icmp_header& icmp_h, const uint8_t* data, uint32_t length) {
+        uint8_t buffer[ethernet_max_bytes];
+        if (ip_addr_ != inaddr_any && ih.dst == ip_addr_) {
+            switch (icmp_h.type) {
+                case icmp_type::echo_request:
+                    {
+                        REQUIRE(icmp_h.code == 0);
+                        REQUIRE(length < sizeof(buffer) - (sizeof(ethernet_header) + sizeof(ipv4_header) + sizeof(icmp_header)));
+
+                        auto b = &buffer[sizeof(ethernet_header)];
+
+                        auto& oih = *reinterpret_cast<ipv4_header*>(b);
+                        b += sizeof(ipv4_header);
+                        memset(&oih, 0, sizeof(ipv4_header));
+                        oih.ihl      = sizeof(ipv4_header)/4;
+                        oih.ver      = 4;
+                        oih.length   = static_cast<uint16_t>(sizeof(ipv4_header) + sizeof(icmp_header) + length);
+                        oih.ttl      = 64;
+                        oih.protocol = ip_protocol::icmp;
+                        oih.src      = ih.dst;
+                        oih.dst      = ih.src;
+                        oih.checksum = inet_csum(&oih, sizeof(oih));
+
+                        auto& oicmp = *reinterpret_cast<icmp_header*>(b);
+                        b += sizeof(icmp_header);
+                        oicmp.type = icmp_type::echo_reply;
+                        oicmp.code = 0;
+                        oicmp.checksum = 0;
+                        oicmp.rest_of_header = icmp_h.rest_of_header;
+
+                        memcpy(b, data, length);
+                        b += length;
+
+                        oicmp.checksum = inet_csum(&oicmp, static_cast<uint16_t>(sizeof(icmp_header) + length));
+
+                        ipv4_out(buffer, static_cast<uint16_t>(b - buffer));
+                        return;
+                    }
+                default:
+                    break;
+            }
+        }
         dbgout() << "[icmp] Ignoring type " << as_hex(static_cast<uint8_t>(icmp_h.type)) << " code " << as_hex(icmp_h.code) << " from " << ih.src << " to " << ih.dst << "\n";
-        (void) data; (void) length;
     }
 
     //

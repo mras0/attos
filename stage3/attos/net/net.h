@@ -185,7 +185,10 @@ struct ipv4_header {
 };
 static_assert(sizeof(ipv4_header) == 20, "");
 
-enum class icmp_type : uint8_t;
+enum class icmp_type : uint8_t {
+    echo_reply   = 0,
+    echo_request = 8,
+};
 
 struct icmp_header {
     icmp_type   type;
