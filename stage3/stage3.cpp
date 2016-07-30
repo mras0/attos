@@ -585,7 +585,6 @@ private:
         }
     }
 
-
     //
     // ARP
     //
@@ -621,8 +620,8 @@ private:
                 // Swap hardware and protocol fields, putting the local hardware and protocol addresses in the sender fields.
                 // Set the ar$op field to ares_op$REPLY
                 // Send the packet to the (new) target hardware address on the same hardware on which the request was received.
-                dbgout() << "[arp] TODO: We need to respond to this arp request\n";
-                REQUIRE(false);
+                dbgout() << "[arp] Sending ARP reply for " << ah.spa << " to " << ah.tpa << "\n";
+                send_arp(arp_operation::reply, ip_addr_, ah.sha, ah.spa);
             }
         }
     }
@@ -637,6 +636,24 @@ private:
         arp_entries_.push_back({pa, ha});
     }
 
+    void send_arp(arp_operation oper, ipv4_address spa, mac_address tha, ipv4_address tpa) {
+        uint8_t buffer[sizeof(ethernet_header) + sizeof(arp_header)];
+        auto& eh = *reinterpret_cast<ethernet_header*>(buffer);
+        auto& ah = *reinterpret_cast<arp_header*>(buffer + sizeof(ethernet_header));
+        eh.dst   = tha;
+        eh.src   = ethdev_.hw_address();
+        eh.type  = ethertype::arp;
+        ah.htype = arp_htype::ethernet;
+        ah.ptype = ethertype::ipv4;
+        ah.hlen  = 0x06;
+        ah.plen  = 0x04;
+        ah.oper  = oper;
+        ah.sha   = eh.src;
+        ah.spa   = spa;
+        ah.tha   = tha;
+        ah.tpa   = tpa;
+        ethdev_.send_packet(buffer, sizeof(buffer));
+    }
 
     //
     // IPv4
@@ -676,7 +693,7 @@ private:
     // ICMP
     //
     void icmp_in(const ipv4_header& ih, const icmp_header& icmp_h, const uint8_t* data, uint32_t length) {
-        dbgout() << "[icmp] Ignoring type " << as_hex(static_cast<uint8_t>(icmp_h.type)) << " code " << as_hex(icmp_h.code) << "from " << ih.src << " to " << ih.dst << "\n";
+        dbgout() << "[icmp] Ignoring type " << as_hex(static_cast<uint8_t>(icmp_h.type)) << " code " << as_hex(icmp_h.code) << " from " << ih.src << " to " << ih.dst << "\n";
         (void) data; (void) length;
     }
 
@@ -934,7 +951,6 @@ void nettest(net::ethernet_device& dev)
     if (!do_dhcp(ipv4dev)) {
         return;
     }
-    read_key();
 
     while (!escape_pressed()) {
         ipv4dev.process_packets();

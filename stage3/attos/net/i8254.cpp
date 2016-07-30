@@ -389,7 +389,7 @@ private:
 
         // Initialize Receive Descriptor Head and Tail registers
         reg(i8254_reg::RDH_BASE, 0);
-        reg(i8254_reg::RDT_BASE, num_rx_descriptors);
+        reg(i8254_reg::RDT_BASE, num_rx_descriptors-1);
 
         for (uint32_t i = 0; i < num_rx_descriptors; ++i) {
             rx_desc_[i].buffer_addr = virt_to_phys(rx_buffer_[i]);
@@ -431,8 +431,9 @@ private:
         return mac_addr_;
     }
 
+    // TODO: proper queue management...
+
     virtual void do_send_packet(const void* data, uint32_t length) override {
-        // TODO: Move tail pointer properly
 
         REQUIRE(length <= 1500);
         // prepare descriptor
@@ -465,7 +466,7 @@ private:
                 dbgout() << "status = " << as_hex(rx_desc_[i].status) << " length = " << as_hex(rx_desc_[i].length) << " i = " << i << "\n";
                 ppf(&rx_buffer_[i][0], rx_desc_[i].length);
                 rx_desc_[i].status = 0;
-                // TODO: Update tail
+                reg(i8254_reg::RDT_BASE, i);
             }
         }
     }
