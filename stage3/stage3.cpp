@@ -518,7 +518,7 @@ public:
         REQUIRE(local_port != 0); // TODO: Support binding to an open port
         REQUIRE(local_addr == ip_addr_ || local_addr == inaddr_any);
         REQUIRE(!find_open_udp_socket(local_addr, local_port));
-        dbgout() << "[udp] Opening " << local_addr << ':' << local_port << " closed\n";
+        dbgout() << "[udp] Opening " << local_addr << ':' << local_port << "\n";
         auto s = knew<udp_socket>([this] (uint8_t* data, uint32_t length) { ipv4_out(data, length); }, [this, local_addr, local_port] { udp_close(local_addr, local_port); }, local_addr, local_port);
         udp_sockets_.push_back({s.get(), recv_func});
         return s;
@@ -530,6 +530,11 @@ public:
 
     mac_address hw_address() const {
         return ethdev_.hw_address();
+    }
+
+    void ip_address(ipv4_address addr) {
+        REQUIRE(ip_addr_ == inaddr_any);
+        ip_addr_ = addr;
     }
 
 private:
@@ -697,64 +702,101 @@ private:
     }
 
     void udp_close(ipv4_address local_addr, uint16_t port) {
-        dbgout() << "[udp] Closing " << local_addr << ':' << port << " closed\n";
+        dbgout() << "[udp] Closing " << local_addr << ':' << port << "\n";
         // TODO: Remove from open sockets
     }
 };
 
 class dhcp_handler {
 public:
-    explicit dhcp_handler(ipv4_ethernet_device& dev) : dev_(dev) {
-        dbgout() << "[dhcp] Sending DHCPDISCOVER\n";
+    explicit dhcp_handler(ipv4_ethernet_device& dev)
+        : dev_{dev}
+        , s_{dev_.udp_open(inaddr_any, 68, [this] (const uint8_t* data, uint32_t length) { dhcp_in(data, length); })} {
+        send_dhcp_discover();
+    }
+
+    ipv4_address address() const {
+        REQUIRE((state_ == state::finished) == (ip_ != inaddr_any));
+        return ip_;
+    }
+
+private:
+    ipv4_ethernet_device& dev_;
+    kowned_ptr<udp_socket> s_;
+    ipv4_address           ip_ = inaddr_any;
+    enum class state { wait_for_offer, wait_for_ack, finished } state_ = state::wait_for_offer;
+
+#pragma pack(push, 1)
+    struct dhcp_header : bootp_header {
+        be_uint32_t       cookie;
+        dhcp_option       message_type_opt;
+        uint8_t           message_type_len;
+        dhcp_message_type message_type;
+    };
+#pragma pack(pop)
+
+    static constexpr uint32_t transaction_id_ = 0x2A2A2A2A; // TODO: Randomize
+    uint8_t buffer_[512];
+
+    uint8_t* start_request(dhcp_message_type message_type, uint16_t flags = 0) {
         auto& dh = *reinterpret_cast<dhcp_header*>(&buffer_[0]);
 
         memset(&dh, 0, sizeof(dh));
         dh.op       = bootp_operation::request;
         dh.htype    = static_cast<uint8_t>(arp_htype::ethernet);
         dh.hlen     = 6;
-        dh.flags    = 0x8000; // BOOTP_BROADCAST
+        dh.xid      = transaction_id_;
+        dh.flags    = flags;
         dh.chaddr   = dev_.hw_address();
 
         dh.cookie           = dhcp_magic_cookie;
         dh.message_type_opt = dhcp_option::message_type;
         dh.message_type_len = 1;
-        dh.message_type     = dhcp_message_type::discover;
+        dh.message_type     = message_type;
 
         uint8_t* b = &buffer_[sizeof(dhcp_header)];
         *b++ = 0xff; // end_octet
 
-        auto s = dev_.udp_open(inaddr_any, 68, [this] (const uint8_t* data, uint32_t length) { dhcp_in(data, length); } );
-        s->sendto(inaddr_broadcast, 67, buffer_, static_cast<uint16_t>(b - buffer_));
+        return &buffer_[sizeof(dhcp_header)];
     }
 
-private:
-    ipv4_ethernet_device& dev_;
+    void finish_request(uint8_t* b) {
+        REQUIRE(b >= &buffer_[sizeof(dhcp_header)] && b < &buffer_[sizeof(buffer_)-1]);
+        *b++ = static_cast<uint8_t>(dhcp_option::end);
+        s_->sendto(inaddr_broadcast, 67, buffer_, static_cast<uint16_t>(b - buffer_));
+    }
 
-#pragma pack(push, 1)
-    struct dhcp_header : bootp_header {
-        be_uint32_t       cookie;
-        dhcp_option      message_type_opt;
-        uint8_t           message_type_len;
-        dhcp_message_type message_type;
+    static uint8_t* put_option(uint8_t* b, dhcp_option opt, ipv4_address addr) {
+        *b++ = static_cast<uint8_t>(opt);
+        *b++ = static_cast<uint8_t>(sizeof(addr));
+        *reinterpret_cast<ipv4_address*>(b) = addr;
+        b += 4;
+        return b;
+    }
+
+    struct dhcp_parse_result {
+        const dhcp_header* dh = nullptr;
+        ipv4_address       server_id = inaddr_any;
     };
-#pragma pack(pop)
 
-    uint8_t buffer_[512];
-
-    void dhcp_in(const uint8_t* data, uint32_t length) {
+    dhcp_parse_result parse_reply(dhcp_message_type expected_messge, const uint8_t* data, uint32_t length) const {
         REQUIRE(length >= sizeof(dhcp_header) + 1);
         auto& dh = *reinterpret_cast<const dhcp_header*>(data);
+
+        dhcp_parse_result res;
+        res.dh = &dh;
 
         REQUIRE(dh.op               == bootp_operation::reply);
         REQUIRE(dh.htype            == static_cast<uint8_t>(arp_htype::ethernet));
         REQUIRE(dh.hlen             == 6);
+        REQUIRE(dh.xid              == transaction_id_);
         REQUIRE(dh.chaddr           == dev_.hw_address());
         REQUIRE(dh.cookie           == dhcp_magic_cookie);
         REQUIRE(dh.message_type_opt == dhcp_option::message_type);
         REQUIRE(dh.message_type_len == 1);
-        REQUIRE(dh.message_type     == dhcp_message_type::offer);
+        REQUIRE(dh.message_type     == expected_messge);
 
-        dbgout() << "[dhcp] yip " << dh.yiaddr << " sip " << dh.siaddr << "\n";
+        REQUIRE(dh.giaddr           == inaddr_any); // We want to be on the same subnet as the DHCP server for now
 
         data += sizeof(dhcp_header);
         length -= sizeof(dhcp_header);
@@ -766,9 +808,14 @@ private:
 
             const uint8_t len = data[1];
             REQUIRE(length >= len+2U);
+
+            // Point at option data
+            data   += 2;
+            length -= 2;
+
             switch (type) {
             default:
-                dbgout() << "[dhcp] Ignoring option " << data[0] << " of length " << len << "\n";
+                dbgout() << "[dhcp] Ignoring option " << static_cast<uint8_t>(type) << " of length " << len << "\n";
             case dhcp_option::subnet_mask:
                 REQUIRE(len == 4);
                 break;
@@ -792,6 +839,8 @@ private:
                 break;
             case dhcp_option::server_identifier:
                 REQUIRE(len == 4);
+                res.server_id = *reinterpret_cast<const ipv4_address*>(data);
+                REQUIRE(res.server_id != inaddr_any && res.server_id != inaddr_broadcast);
                 break;
             case dhcp_option::renewal_time:
                 REQUIRE(len == 4);
@@ -800,28 +849,94 @@ private:
                 REQUIRE(len == 4);
                 break;
             }
-            length -= len + 2;
-            data += len + 2;
+
+            // Advance past option data
+            length -= len;
+            data += len;
         }
         REQUIRE(length >= 1 && *data == 0xff);
+
+        if (res.server_id == inaddr_any) {
+            res.server_id = dh.siaddr;
+        }
+
+        return res;
+    }
+
+    void send_dhcp_discover() {
+        dbgout() << "[dhcp] Sending DHCPDISCOVER\n";
+        auto b = start_request(dhcp_message_type::discover, bootp_broadcast_flag);
+        finish_request(b);
+        state_ = state::wait_for_offer;
+    }
+
+    void send_dhcp_request(ipv4_address address, ipv4_address server_id) {
+        dbgout() << "[dhcp] Sending DHCPREQUEST for " << address << "\n";
+        auto b = start_request(dhcp_message_type::request, bootp_broadcast_flag);
+        b = put_option(b, dhcp_option::requested_ip, address);
+        b = put_option(b, dhcp_option::server_identifier, server_id);
+        finish_request(b);
+        state_ = state::wait_for_ack;
+    }
+
+    void dhcp_in(const uint8_t* data, uint32_t length) {
+        switch (state_) {
+        case state::wait_for_offer:
+            {
+                auto pr = parse_reply(dhcp_message_type::offer, data, length);
+                dbgout() << "[dhcp] Got DHCPOFFER for " << pr.dh->yiaddr << " from " << pr.server_id << "\n";
+                ip_ = pr.dh->yiaddr;
+                state_ = state::wait_for_ack;
+                send_dhcp_request(pr.dh->yiaddr, pr.server_id);
+                break;
+            }
+        case state::wait_for_ack:
+            {
+                auto pr = parse_reply(dhcp_message_type::ack, data, length);
+                dbgout() << "[dhcp] Got DHCPACK for " << pr.dh->yiaddr << " from " << pr.server_id << "\n";
+                REQUIRE(pr.dh->yiaddr == ip_);
+                state_ = state::finished;
+                break;
+            }
+        }
     }
 };
 
 } } // namespace attos::net
 
+bool escape_pressed()
+{
+    auto& ps2c = ps2::controller::instance();
+    return ps2c.key_available() && ps2c.read_key() == '\x1b';
+}
+
+bool do_dhcp(net::ipv4_ethernet_device& ipv4dev)
+{
+    net::dhcp_handler dhcp_h{ipv4dev};
+    while (!escape_pressed()) {
+        if (dhcp_h.address() != net::inaddr_any) {
+            dbgout() << "Got DHCP IP: " << dhcp_h.address() << "\n";
+            ipv4dev.ip_address(dhcp_h.address());
+            return true;
+        }
+
+        ipv4dev.process_packets();
+        __halt();
+    }
+    return false;
+}
 
 void nettest(net::ethernet_device& dev)
 {
     using namespace attos::net;
 
     ipv4_ethernet_device ipv4dev{dev};
-    dhcp_handler dhcp_h{ipv4dev};
+    if (!do_dhcp(ipv4dev)) {
+        return;
+    }
+    read_key();
 
-    for (;;) {
-        auto& ps2c = ps2::controller::instance();
-        if (ps2c.key_available() && ps2c.read_key() == '\x1b') {
-            break;
-        }
+    while (!escape_pressed()) {
         ipv4dev.process_packets();
         __halt();
     }

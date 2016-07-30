@@ -229,6 +229,8 @@ static_assert(sizeof(bootp_header) == 28+16+64+128,"");
 
 constexpr uint32_t dhcp_magic_cookie = 0x63825363;
 
+constexpr uint16_t bootp_broadcast_flag = 0x8000;
+
 enum class dhcp_option : uint8_t {
     // See RFC2132
     padding             =   0,
@@ -238,6 +240,7 @@ enum class dhcp_option : uint8_t {
     domain_name         =  15, // Len 1-255
     broadcast_address   =  28, // Len 4
     netbios_name_server =  44, // Len 4 * N
+    requested_ip        =  50, // Len 4
     lease_time          =  51, // Len 4, Seconds
     message_type        =  53,
     server_identifier   =  54, // Len 4, IP

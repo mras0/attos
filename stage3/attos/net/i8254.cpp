@@ -328,6 +328,7 @@ private:
 #pragma warning(suppress: 4324) // struct was padded due to alignment specifier
     volatile i8254_tx_desc  tx_desc_[num_tx_descriptors];
     isr_registration_ptr    reg_;
+    uint32_t                tx_tail_ = 0;
 
     uint32_t reg(i8254_reg r) {
         return reg_base_[static_cast<uint32_t>(r)>>2];
@@ -416,6 +417,8 @@ private:
                            | i8254_TCTL_PSP
                            | i8254_TCTL_CT
                            | i8254_TCTL_COLD);
+
+        tx_tail_ = 0;
     }
 
     void isr() {
@@ -433,19 +436,20 @@ private:
 
         REQUIRE(length <= 1500);
         // prepare descriptor
-        auto& td = tx_desc_[0];
+        auto& td = tx_desc_[tx_tail_];
+        tx_tail_ = (tx_tail_ + 1) % num_tx_descriptors;
         REQUIRE(td.upper.fields.status == 0);
         td.buffer_addr = virt_to_phys(data);
         td.lower.data = length | i8254_TXD_CMD_RS | i8254_TXD_CMD_RPS | i8254_TXD_CMD_EOP | i8254_TXD_CMD_IFCS;
         td.upper.data = 0;
-
-        reg(i8254_reg::TDT_BASE, 1);
+        reg(i8254_reg::TDT_BASE, tx_tail_);
 
         dbgout() << "Waiting for packet to be sent.\n";
         while (!td.upper.fields.status) {
             __halt();
         }
         dbgout() << "Status = " << as_hex(td.upper.fields.status) << "\n";
+        td.upper.data = 0; // Mark ready
         REQUIRE(reg(i8254_reg::TDH_BASE) == reg(i8254_reg::TDT_BASE));
 
     }
