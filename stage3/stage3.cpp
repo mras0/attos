@@ -508,9 +508,17 @@ private:
     uint8_t                     send_buffer_[ethernet_max_bytes];
 };
 
+struct ipv4_net_config {
+    ipv4_address addr;
+    ipv4_address netmask;
+    ipv4_address gateway;
+};
+
+constexpr ipv4_net_config ipv4_net_config_none = { inaddr_any, inaddr_any, inaddr_any };
+
 class ipv4_ethernet_device {
 public:
-    explicit ipv4_ethernet_device(ethernet_device& ethdev) : ethdev_{ethdev}, ip_addr_{inaddr_any} {
+    explicit ipv4_ethernet_device(ethernet_device& ethdev) : ethdev_{ethdev} {
     }
 
     kowned_ptr<udp_socket> udp_open(ipv4_address local_addr, uint16_t local_port, const packet_process_function& recv_func) {
@@ -523,7 +531,7 @@ public:
                 }
             }
         }
-        REQUIRE(local_addr == ip_addr_ || local_addr == inaddr_any);
+        REQUIRE(local_addr == ipv4_config_.addr || local_addr == inaddr_any);
         REQUIRE(!find_open_udp_socket(local_addr, local_port));
         dbgout() << "[udp] Opening " << local_addr << ':' << local_port << "\n";
         auto s = knew<udp_socket>([this] (uint8_t* data, uint32_t length) { ipv4_out(data, length); }, [this, local_addr, local_port] { udp_close(local_addr, local_port); }, local_addr, local_port);
@@ -539,13 +547,16 @@ public:
         return ethdev_.hw_address();
     }
 
-    ipv4_address ip_address() const {
-        return ip_addr_;
+    ipv4_net_config ipv4_config() const {
+        return ipv4_config_;
     }
 
-    void ip_address(ipv4_address addr) {
-        REQUIRE(ip_addr_ == inaddr_any);
-        ip_addr_ = addr;
+    void ipv4_config(ipv4_net_config config) {
+        REQUIRE(ipv4_config_.addr == inaddr_any);
+        REQUIRE(config.addr != inaddr_any && config.addr != inaddr_broadcast);
+        REQUIRE(config.netmask != inaddr_any);
+        dbgout() << "[ipv4] Configuration IP " << config.addr << " Net " << config.netmask << " Gateway " << config.gateway << "\n";
+        ipv4_config_ = config;
     }
 
 private:
@@ -559,7 +570,7 @@ private:
     };
 
     ethernet_device&            ethdev_;
-    ipv4_address                ip_addr_;
+    ipv4_net_config             ipv4_config_ = ipv4_net_config_none;
     kvector<arp_entry>          arp_entries_;
     kvector<open_udp_socket>    udp_sockets_;
 
@@ -613,7 +624,7 @@ private:
         REQUIRE(ah.oper == arp_operation::request || ah.oper == arp_operation::reply);
         REQUIRE(ah.sha != mac_address::broadcast);
 
-        if (ip_addr_ == inaddr_any) {
+        if (ipv4_config_.addr == inaddr_any) {
             // Ignore ARP until we have an IP address assigned
             return;
         }
@@ -627,7 +638,7 @@ private:
             merge_flag = true;
         }
 
-        if (ip_addr_ == ah.tpa) { // Are we the target?
+        if (ipv4_config_.addr == ah.tpa) { // Are we the target?
             dbgout() << "[arp] " << (ah.oper == arp_operation::request ? "RQ" : "RP")
                 << " " << ah.sha << " " << ah.spa << " -> " << ah.tha << " " << ah.tpa << "\n";
 
@@ -640,7 +651,7 @@ private:
                 // Set the ar$op field to ares_op$REPLY
                 // Send the packet to the (new) target hardware address on the same hardware on which the request was received.
                 dbgout() << "[arp] Sending ARP reply for " << ah.tpa << " to " << ah.spa << "\n";
-                send_arp(arp_operation::reply, ip_addr_, ah.sha, ah.spa);
+                send_arp(arp_operation::reply, ah.tpa, ah.sha, ah.spa);
             }
         }
     }
@@ -712,11 +723,17 @@ private:
         } else if (ih.dst == inaddr_any) {
             REQUIRE(!"Invalid destination IP");
         } else {
-            if (auto ae = find_arp_entry(ih.dst)) {
+            auto tpa = ih.dst;
+            if ((tpa & ipv4_config_.netmask) != (ipv4_config_.addr & ipv4_config_.netmask)) {
+                REQUIRE(ipv4_config_.gateway != inaddr_any);
+                tpa = ipv4_config_.gateway;
+            }
+
+            if (auto ae = find_arp_entry(tpa)) {
                 eh.dst = ae->ha;
             } else {
-                dbgout() << "[arp] Sending ARP request for " << ih.dst << "\n";
-                send_arp(arp_operation::request, ip_addr_, mac_address::broadcast, ih.dst);
+                dbgout() << "[arp] Sending ARP request for " << tpa << "\n";
+                send_arp(arp_operation::request, ipv4_config_.addr, mac_address::broadcast, tpa);
                 return;
             }
         }
@@ -730,7 +747,7 @@ private:
     //
     void icmp_in(const ipv4_header& ih, const icmp_header& icmp_h, const uint8_t* data, uint32_t length) {
         uint8_t buffer[ethernet_max_bytes];
-        if (ip_addr_ != inaddr_any && ih.dst == ip_addr_) {
+        if (ih.dst != inaddr_any && ih.dst == ipv4_config_.addr) {
             switch (icmp_h.type) {
                 case icmp_type::echo_request:
                     {
@@ -813,8 +830,13 @@ public:
         send_dhcp_discover();
     }
 
-    ipv4_address address() const {
-        return state_ == state::finished ? ip_ : inaddr_any;
+    bool finished() const {
+        return state_ == state::finished;
+    }
+
+    ipv4_net_config config() const {
+        REQUIRE(finished());
+        return config_;
     }
 
     void tick() {
@@ -827,7 +849,7 @@ public:
 private:
     ipv4_ethernet_device& dev_;
     kowned_ptr<udp_socket> s_;
-    ipv4_address           ip_ = inaddr_any;
+    ipv4_net_config config_ = ipv4_net_config_none;
     enum class state { wait_for_offer, wait_for_ack, finished } state_ = state::wait_for_offer;
     static constexpr uint16_t dhcp_src_port = 68;
     static constexpr uint16_t dhcp_dst_port = 67;
@@ -885,6 +907,8 @@ private:
     struct dhcp_parse_result {
         const dhcp_header* dh = nullptr;
         ipv4_address       server_id = inaddr_any;
+        ipv4_address       netmask   = inaddr_any;
+        ipv4_address       router    = inaddr_any;
     };
 
     dhcp_parse_result parse_reply(dhcp_message_type expected_messge, const uint8_t* data, uint32_t length) const {
@@ -929,9 +953,11 @@ private:
                 dbgout() << "[dhcp] Ignoring option " << static_cast<uint8_t>(type) << " of length " << len << "\n";
             case dhcp_option::subnet_mask:
                 REQUIRE(len == 4);
+                res.netmask = *reinterpret_cast<const ipv4_address*>(data);
                 break;
             case dhcp_option::router:
                 REQUIRE(len >= 4 && len % 4 == 0);
+                res.router = *reinterpret_cast<const ipv4_address*>(data);
                 break;
             case dhcp_option::domain_name_server:
                 REQUIRE(len >= 4 && len % 4 == 0);
@@ -996,7 +1022,13 @@ private:
             {
                 auto pr = parse_reply(dhcp_message_type::offer, data, length);
                 dbgout() << "[dhcp] Got DHCPOFFER for " << pr.dh->yiaddr << " from " << pr.server_id << "\n";
-                ip_ = pr.dh->yiaddr;
+                config_.addr = pr.dh->yiaddr;
+                config_.netmask = pr.netmask;
+                config_.gateway = pr.router;
+                REQUIRE(config_.addr != inaddr_any && config_.addr != inaddr_broadcast);
+                if (config_.netmask == inaddr_any) {
+                    config_.netmask = ipv4_address{255, 255, 255, 0};
+                }
                 state_ = state::wait_for_ack;
                 send_dhcp_request(pr.dh->yiaddr, pr.server_id);
                 break;
@@ -1005,7 +1037,7 @@ private:
             {
                 auto pr = parse_reply(dhcp_message_type::ack, data, length);
                 dbgout() << "[dhcp] Got DHCPACK for " << pr.dh->yiaddr << " from " << pr.server_id << "\n";
-                REQUIRE(pr.dh->yiaddr == ip_);
+                REQUIRE(pr.dh->yiaddr == config_.addr);
                 state_ = state::finished;
                 break;
             }
@@ -1018,7 +1050,7 @@ public:
     explicit tftp_client(ipv4_ethernet_device& dev, ipv4_address remote_addr, const char* filename)
         : dev_{dev}
         , remote_addr_(remote_addr)
-        , s_{dev_.udp_open(dev.ip_address(), 0, [this] (const uint8_t* data, uint32_t length) { tftp_in(data, length); })} {
+        , s_{dev_.udp_open(dev.ipv4_config().addr, 0, [this] (const uint8_t* data, uint32_t length) { tftp_in(data, length); })} {
 
         const auto filename_length = string_length(filename);
         REQUIRE(filename_length < sizeof(filename_));
@@ -1126,9 +1158,8 @@ bool do_dhcp(net::ipv4_ethernet_device& ipv4dev)
 {
     net::dhcp_handler dhcp_h{ipv4dev};
     while (!escape_pressed()) {
-        if (dhcp_h.address() != net::inaddr_any) {
-            dbgout() << "Got DHCP IP: " << dhcp_h.address() << "\n";
-            ipv4dev.ip_address(dhcp_h.address());
+        if (dhcp_h.finished()) {
+            ipv4dev.ipv4_config(dhcp_h.config());
             return true;
         }
         dhcp_h.tick();
@@ -1147,7 +1178,10 @@ void nettest(net::ethernet_device& dev)
         return;
     }
 
-    tftp_client tftpc{ipv4dev, ipv4_address{192, 168, 10, 1}, "test.txt"};
+    // HAAAAACK
+    const auto tftp_ip = ipv4dev.ipv4_config().addr == ipv4_address{192, 168, 10, 2} ? ipv4_address{192, 168, 10, 1} : ipv4_address{192, 168, 1, 67};
+
+    tftp_client tftpc{ipv4dev, tftp_ip, "test.txt"};
     for (bool done = false; !escape_pressed() && !done; ) {
         __halt();
         ipv4dev.process_packets();

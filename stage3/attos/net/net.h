@@ -88,9 +88,19 @@ public:
 
     constexpr uint32_t host_u32() const { return ip_; }
 
-    static ipv4_address host_u32(uint32_t ip) { ipv4_address a{}; a.ip_ = ip; return a; }
+    constexpr ipv4_address operator~() const {
+        return ipv4_address{~ip_};
+    }
+
+    constexpr friend ipv4_address operator&(const ipv4_address& l, const ipv4_address& r) {
+        return ipv4_address{l.ip_ & r.ip_};
+    }
+
+    static constexpr ipv4_address host_u32(uint32_t ip) { return ipv4_address{ip}; }
 
 private:
+    constexpr ipv4_address(uint32_t ip) : ip_(ip) {}
+
     be_uint32_t ip_;
 };
 static constexpr ipv4_address inaddr_any       = ipv4_address{  0,   0,   0,   0};
