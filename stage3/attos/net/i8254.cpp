@@ -325,10 +325,11 @@ private:
 #pragma warning(suppress: 4324) // struct was padded due to alignment specifier
     volatile i8254_rx_desc  rx_desc_[num_rx_descriptors];
     uint8_t                 rx_buffer_[num_rx_descriptors][2048];
+    uint32_t                rx_head_ = 0;
 #pragma warning(suppress: 4324) // struct was padded due to alignment specifier
     volatile i8254_tx_desc  tx_desc_[num_tx_descriptors];
-    isr_registration_ptr    reg_;
     uint32_t                tx_tail_ = 0;
+    isr_registration_ptr    reg_;
 
     uint32_t reg(i8254_reg r) {
         return reg_base_[static_cast<uint32_t>(r)>>2];
@@ -403,6 +404,7 @@ private:
                            | i8254_RCTL_MPE // bad packets
                            | i8254_RCTL_BAM // and multicast..
                            | i8254_RCTL_SZ_2048);
+        rx_head_ = 0;
 
         // Enable TX
         const uint64_t tx_desc_phys = virt_to_phys((const void*)&tx_desc_[0]);
@@ -431,10 +433,7 @@ private:
         return mac_addr_;
     }
 
-    // TODO: proper queue management...
-
     virtual void do_send_packet(const void* data, uint32_t length) override {
-
         REQUIRE(length <= 1500);
         // prepare descriptor
         auto& td = tx_desc_[tx_tail_];
@@ -449,25 +448,29 @@ private:
         while (!td.upper.fields.status) {
             __halt();
         }
-        dbgout() << "Status = " << as_hex(td.upper.fields.status) << "\n";
+        dbgout() << "[i8254] TX Status = " << as_hex(td.upper.fields.status) << "\n";
         td.upper.data = 0; // Mark ready
         REQUIRE(reg(i8254_reg::TDH_BASE) == reg(i8254_reg::TDT_BASE));
 
     }
 
     virtual void do_process_packets(const packet_process_function& ppf) override {
+        // Process at most `num_rx_descriptors' in one call to this function
         for (uint32_t i = 0; i < num_rx_descriptors; ++i) {
-            if (rx_desc_[i].status & i8254_RXD_STAT_DD) {
-                REQUIRE(rx_desc_[i].status & i8254_RXD_STAT_EOP);
-                if (rx_desc_[i].errors) {
-                    dbgout() << "Packet error(s): " << as_hex(rx_desc_[i].errors) << "\n";
-                    REQUIRE(false);
-                }
-                dbgout() << "status = " << as_hex(rx_desc_[i].status) << " length = " << as_hex(rx_desc_[i].length) << " i = " << i << "\n";
-                ppf(&rx_buffer_[i][0], rx_desc_[i].length);
-                rx_desc_[i].status = 0;
-                reg(i8254_reg::RDT_BASE, i);
+            auto& rd = rx_desc_[rx_head_];
+            if (!(rd.status & i8254_RXD_STAT_DD)) {
+                break;
             }
+            REQUIRE(rd.status & i8254_RXD_STAT_EOP);
+            if (rd.errors) {
+                dbgout() << "Packet error(s): " << as_hex(rd.errors) << "\n";
+                REQUIRE(false);
+            }
+            dbgout() << "[i8254] RX Status = " << as_hex(rd.status) << " length = " << as_hex(rd.length) << " idx = " << rx_head_ << "\n";
+            ppf(rx_buffer_[rx_head_], rd.length);
+            rd.status = 0;                      // Mark available for SW
+            reg(i8254_reg::RDT_BASE, rx_head_); // Mark available for HW
+            rx_head_ = (rx_head_ + 1) % num_rx_descriptors;
         }
     }
 };

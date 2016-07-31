@@ -575,6 +575,11 @@ private:
                 REQUIRE(length >= sizeof(arp_header));
                 arp_in(*reinterpret_cast<const arp_header*>(data));
                 break;
+            case net::ethertype::ipv6:
+                REQUIRE(length >= 40);
+                REQUIRE((data[0]>>4) == 6); // Version
+                dbgout() << "[ipv6] Ignoring IPv6 packet\n";
+                break;
             default:
                 hexdump(dbgout(), data, length);
                 dbgout() << "Dst MAC:  " << eh.dst << "\n";
@@ -665,6 +670,12 @@ private:
                 REQUIRE(length >= sizeof(icmp_header));
                 REQUIRE(inet_csum(data, static_cast<uint16_t>(length)) == 0);
                 icmp_in(ih, *reinterpret_cast<const icmp_header*>(data), data + sizeof(icmp_header), length - sizeof(icmp_header));
+                break;
+            case ip_protocol::igmp:
+                dbgout() << "[ipv4] Ignoring IGMP message src = " << ih.src << " dst = " << ih.dst << "\n";
+                break;
+            case ip_protocol::tcp:
+                dbgout() << "[ipv4] Ignoring TCP message src = " << ih.src << " dst = " << ih.dst << "\n";
                 break;
             case ip_protocol::udp:
                 REQUIRE(length >= sizeof(udp_header));
@@ -772,7 +783,9 @@ private:
 
     void udp_close(ipv4_address local_addr, uint16_t port) {
         dbgout() << "[udp] Closing " << local_addr << ':' << port << "\n";
-        // TODO: Remove from open sockets
+        auto s = find_open_udp_socket(local_addr, port);
+        REQUIRE(s != nullptr);
+        udp_sockets_.erase(s);
     }
 };
 
@@ -780,7 +793,7 @@ class dhcp_handler {
 public:
     explicit dhcp_handler(ipv4_ethernet_device& dev)
         : dev_{dev}
-        , s_{dev_.udp_open(inaddr_any, 68, [this] (const uint8_t* data, uint32_t length) { dhcp_in(data, length); })} {
+        , s_{dev_.udp_open(inaddr_any, dhcp_src_port, [this] (const uint8_t* data, uint32_t length) { dhcp_in(data, length); })} {
         send_dhcp_discover();
     }
 
@@ -794,6 +807,8 @@ private:
     kowned_ptr<udp_socket> s_;
     ipv4_address           ip_ = inaddr_any;
     enum class state { wait_for_offer, wait_for_ack, finished } state_ = state::wait_for_offer;
+    static constexpr uint16_t dhcp_src_port = 68;
+    static constexpr uint16_t dhcp_dst_port = 67;
 
 #pragma pack(push, 1)
     struct dhcp_header : bootp_header {
@@ -832,7 +847,7 @@ private:
     void finish_request(uint8_t* b) {
         REQUIRE(b >= &buffer_[sizeof(dhcp_header)] && b < &buffer_[sizeof(buffer_)-1]);
         *b++ = static_cast<uint8_t>(dhcp_option::end);
-        s_->sendto(inaddr_broadcast, 67, buffer_, static_cast<uint16_t>(b - buffer_));
+        s_->sendto(inaddr_broadcast, dhcp_dst_port, buffer_, static_cast<uint16_t>(b - buffer_));
     }
 
     static uint8_t* put_option(uint8_t* b, dhcp_option opt, ipv4_address addr) {

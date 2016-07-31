@@ -103,6 +103,15 @@ public:
         begin_ = end_ = real_end_ = nullptr;
     }
 
+    void erase(T* elem) {
+        elem->~T();
+        while (elem + 1 < end_) {
+            *elem = std::move(*(elem + 1));
+            ++elem;
+        }
+        --end_;
+    }
+
     void reserve(size_t new_capacity) {
         if (capacity() >= new_capacity) {
             return;
@@ -156,14 +165,15 @@ private:
     }
 
     static void destroy_range(T* beg, T* end) {
-        if (end == beg) {
-            return;
+        if (end != beg) {
+            do {
+                --end;
+                end->~T();
+            } while (end != beg);
         }
-        do {
-            --end;
-            end->~T();
-        } while (end != beg);
-        kfree(beg);
+        if (beg) {
+            kfree(beg);
+        }
     }
 };
 

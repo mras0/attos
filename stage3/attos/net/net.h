@@ -131,6 +131,7 @@ using ethernet_device_ptr = kowned_ptr<ethernet_device>;
 enum class ethertype : uint16_t {
     ipv4 = 0x0800,
     arp  = 0x0806,
+    ipv6 = 0x86dd,
 };
 
 #pragma pack(push, 1)
@@ -165,6 +166,7 @@ static_assert(sizeof(arp_header) == 28, "");
 
 enum class ip_protocol : uint8_t {
     icmp = 0x01,
+    igmp = 0x02, // Internet Group Management RFC1112
     tcp  = 0x06,
     udp  = 0x11,
 };
