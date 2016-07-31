@@ -11,7 +11,7 @@
 #include <attos/pci.h>
 #include <attos/ata.h>
 #include <attos/vga/text_screen.h>
-#include <attos/net/i8254.h>
+#include <attos/net/i825x.h>
 #include <attos/string.h>
 
 #define assert REQUIRE // undefined yadayda
@@ -816,6 +816,13 @@ public:
         return state_ == state::finished ? ip_ : inaddr_any;
     }
 
+    void tick() {
+        if (timeout_ && !--timeout_) {
+            dbgout() << "[dhcp] Timed out.\n";
+            send_dhcp_discover();
+        }
+    }
+
 private:
     ipv4_ethernet_device& dev_;
     kowned_ptr<udp_socket> s_;
@@ -823,6 +830,7 @@ private:
     enum class state { wait_for_offer, wait_for_ack, finished } state_ = state::wait_for_offer;
     static constexpr uint16_t dhcp_src_port = 68;
     static constexpr uint16_t dhcp_dst_port = 67;
+    uint32_t timeout_ = 0;
 
 #pragma pack(push, 1)
     struct dhcp_header : bootp_header {
@@ -862,6 +870,7 @@ private:
         REQUIRE(b >= &buffer_[sizeof(dhcp_header)] && b < &buffer_[sizeof(buffer_)-1]);
         *b++ = static_cast<uint8_t>(dhcp_option::end);
         s_->sendto(inaddr_broadcast, dhcp_dst_port, buffer_, static_cast<uint16_t>(b - buffer_));
+        timeout_ = 50;
     }
 
     static uint8_t* put_option(uint8_t* b, dhcp_option opt, ipv4_address addr) {
@@ -892,6 +901,9 @@ private:
         REQUIRE(dh.cookie           == dhcp_magic_cookie);
         REQUIRE(dh.message_type_opt == dhcp_option::message_type);
         REQUIRE(dh.message_type_len == 1);
+        if (dh.message_type != expected_messge) {
+            dbgout() << "dh.message_type = " << as_hex((uint16_t)dh.message_type) << "\n";
+        }
         REQUIRE(dh.message_type     == expected_messge);
 
         REQUIRE(dh.giaddr           == inaddr_any); // We want to be on the same subnet as the DHCP server for now
@@ -1150,7 +1162,7 @@ bool do_dhcp(net::ipv4_ethernet_device& ipv4dev)
             ipv4dev.ip_address(dhcp_h.address());
             return true;
         }
-
+        dhcp_h.tick();
         ipv4dev.process_packets();
         __halt();
     }
@@ -1212,7 +1224,7 @@ void stage3_entry(const arguments& args)
     net::ethernet_device_ptr netdev{};
 
     for (const auto& d : pci->devices()) {
-        if (!!(netdev = net::i82545_probe(d))) {
+        if (!!(netdev = net::i825x::probe(d))) {
            break;
         }
     }
