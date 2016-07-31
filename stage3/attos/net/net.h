@@ -88,6 +88,8 @@ public:
 
     constexpr uint32_t host_u32() const { return ip_; }
 
+    static ipv4_address host_u32(uint32_t ip) { ipv4_address a{}; a.ip_ = ip; return a; }
+
 private:
     be_uint32_t ip_;
 };

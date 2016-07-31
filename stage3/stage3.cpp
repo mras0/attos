@@ -12,6 +12,7 @@
 #include <attos/ata.h>
 #include <attos/vga/text_screen.h>
 #include <attos/net/i825x.h>
+#include <attos/net/tftp.h>
 #include <attos/string.h>
 
 #define assert REQUIRE // undefined yadayda
@@ -1012,14 +1013,6 @@ private:
     }
 };
 
-enum class tftp_opcode : uint16_t {
-    rrq   = 1, // Read request (RRQ)
-    wrq   = 2, // Write request (WRQ)
-    data  = 3, // Data (DATA)
-    ack   = 4, // Acknowledgment (ACK)
-    error = 5, // Error (ERROR)
-};
-
 class tftp_client {
 public:
     explicit tftp_client(ipv4_ethernet_device& dev, ipv4_address remote_addr, const char* filename)
@@ -1063,61 +1056,37 @@ private:
 
     static constexpr uint32_t default_timeout = 50;
 
-    static constexpr uint16_t tftp_dst_port = 69;
-
-    uint8_t* start_packet(tftp_opcode opcode) {
-        return put_u16(buffer_, static_cast<uint16_t>(opcode));
+    uint8_t* start_packet(tftp::opcode op) {
+        return tftp::put(buffer_, op);
     }
 
     void send_packet(const uint8_t* b) {
-        s_->sendto(remote_addr_, tftp_dst_port, buffer_, static_cast<uint16_t>(b - buffer_));
+        s_->sendto(remote_addr_, tftp::dst_port, buffer_, static_cast<uint16_t>(b - buffer_));
         timeout_ = default_timeout;
-    }
-
-    static uint8_t* put_u16(uint8_t* b, uint16_t x) {
-        b[0] = static_cast<uint8_t>(x>>8);
-        b[1] = static_cast<uint8_t>(x);
-        return b + 2;
-    }
-
-    static uint8_t* put_string(uint8_t* b, const char* s) {
-        const auto l = string_length(s);
-        memcpy(b, s, l + 1); // also copy nul-terminator
-        return b + l + 1;
-    }
-
-    static uint16_t get_u16(const uint8_t*& data, uint32_t& length) {
-        REQUIRE(length >= 2);
-        const auto x = static_cast<uint16_t>(data[0]*256 + data[1]);
-        data   += 2;
-        length -= 2;
-        return x;
     }
 
     void send_rrq() {
         dbgout() << "[tftp] Sending RRQ for " << filename_ << "\n";
         last_block_ = 0;
-        auto b = start_packet(tftp_opcode::rrq);
-        b = put_string(b, filename_);
-        b = put_string(b, "octet");
+        auto b = start_packet(tftp::opcode::rrq);
+        b = tftp::put(b, filename_);
+        b = tftp::put(b, "octet");
         send_packet(b);
     }
 
     void send_ack(uint16_t block_number) {
-        auto b = start_packet(tftp_opcode::ack);
-        b = put_u16(b, block_number);
+        auto b = start_packet(tftp::opcode::ack);
+        b = tftp::put(b, block_number);
         send_packet(b);
     }
 
     void tftp_in(const uint8_t* data, uint32_t length) {
-        REQUIRE(length >= sizeof(tftp_opcode) && length <= 4 + 512);
-        const auto opcode = static_cast<tftp_opcode>(data[0]*256 + data[1]);
-        data += 2;
-        length -= 2;
+        REQUIRE(length <= 4 + 512);
+        const auto opcode = tftp::get_opcode(data, length);
         switch (opcode) {
-        case tftp_opcode::data:
+        case tftp::opcode::data:
             {
-                const auto block_number = get_u16(data, length);
+                const auto block_number = tftp::get_u16(data, length);
                 dbgout() << "[tftp] Got Data #" << block_number << ":\n";
                 hexdump(dbgout(), data, length);
                 REQUIRE(block_number - 1 == last_block_);
@@ -1129,11 +1098,11 @@ private:
                 }
                 break;
             }
-        case tftp_opcode::error:
+        case tftp::opcode::error:
             {
-                const auto error_code = get_u16(data, length);
-                REQUIRE(length >= 1);
-                dbgout() << "[tftp] Error " << error_code << ": " << reinterpret_cast<const char*>(data) << "\n";
+                const auto error_code = tftp::get_u16(data, length);
+                const auto error_msg  = tftp::get_string(data, length);
+                dbgout() << "[tftp] Error " << error_code << ": " << error_msg << "\n";
                 done_ = true;
                 break;
             }
