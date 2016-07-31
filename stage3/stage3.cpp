@@ -505,8 +505,6 @@ private:
     ipv4_address                local_addr_;
     uint16_t                    local_port_;
     uint8_t                     send_buffer_[ethernet_max_bytes];
-    uint8_t                     recv_buffer_[ethernet_max_bytes];
-    bool                        recv_buffer_empty_ = true;
 };
 
 class ipv4_ethernet_device {
@@ -515,7 +513,15 @@ public:
     }
 
     kowned_ptr<udp_socket> udp_open(ipv4_address local_addr, uint16_t local_port, const packet_process_function& recv_func) {
-        REQUIRE(local_port != 0); // TODO: Support binding to an open port
+        if (local_port == 0) {
+            // Find unused port
+            // TODO: Start search from last used port number + 1
+            for (local_port = 49152; local_port < 65535; ++local_port) {
+                if (!find_open_udp_socket(local_addr, local_port)) {
+                    break;
+                }
+            }
+        }
         REQUIRE(local_addr == ip_addr_ || local_addr == inaddr_any);
         REQUIRE(!find_open_udp_socket(local_addr, local_port));
         dbgout() << "[udp] Opening " << local_addr << ':' << local_port << "\n";
@@ -530,6 +536,10 @@ public:
 
     mac_address hw_address() const {
         return ethdev_.hw_address();
+    }
+
+    ipv4_address ip_address() const {
+        return ip_addr_;
     }
 
     void ip_address(ipv4_address addr) {
@@ -601,25 +611,27 @@ private:
         REQUIRE(ah.plen  == 0x04);
         REQUIRE(ah.oper == arp_operation::request || ah.oper == arp_operation::reply);
         REQUIRE(ah.sha != mac_address::broadcast);
-        dbgout() << "[arp] " << (ah.oper == arp_operation::request ? "REQ" : "RSP")
-                 << " S " << ah.sha << " " << ah.spa
-                 << " T " << ah.tha << " " << ah.tpa << "\n";
-
-        bool merge_flag = false;
-        if (auto e = find_arp_entry(ah.spa)) {
-            dbgout() << "[arp] Updating HW address for " << ah.spa << " to " << ah.sha << "\n";
-            e->ha = ah.sha;
-            merge_flag = true;
-        }
 
         if (ip_addr_ == inaddr_any) {
-            //dbgout() << "[arp] No IP address assigned yet\n";
+            // Ignore ARP until we have an IP address assigned
             return;
         }
 
+        bool merge_flag = false;
+        if (auto e = find_arp_entry(ah.spa)) {
+            if (e->ha != ah.sha) {
+                dbgout() << "[arp] Updating ARP entry " << ah.spa << " = " << ah.sha << "\n";
+                e->ha = ah.sha;
+            }
+            merge_flag = true;
+        }
+
         if (ip_addr_ == ah.tpa) { // Are we the target?
+            dbgout() << "[arp] " << (ah.oper == arp_operation::request ? "RQ" : "RP")
+                << " " << ah.sha << " " << ah.spa << " -> " << ah.tha << " " << ah.tpa << "\n";
+
             if (!merge_flag) {
-                dbgout() << "[arp] Adding ARP entry for " << ah.spa << " -> " << ah.sha << "\n";
+                dbgout() << "[arp] Adding ARP entry " << ah.spa << " = " << ah.sha << "\n";
                 add_arp_entry(ah.spa, ah.sha);
             }
             if (ah.oper == arp_operation::request) {
@@ -773,6 +785,9 @@ private:
     }
 
     void udp_in(const ipv4_header& ih, const udp_header& uh, const uint8_t* data, uint32_t length) {
+        REQUIRE(uh.length >= sizeof(udp_header));
+        REQUIRE(length >= uh.length - sizeof(udp_header));
+        length = uh.length - sizeof(udp_header);
         if (auto s = find_open_udp_socket(ih.dst, uh.dst_port)) {
             s->recv_func(data, length);
             return;
@@ -798,8 +813,7 @@ public:
     }
 
     ipv4_address address() const {
-        REQUIRE((state_ == state::finished) == (ip_ != inaddr_any));
-        return ip_;
+        return state_ == state::finished ? ip_ : inaddr_any;
     }
 
 private:
@@ -986,6 +1000,139 @@ private:
     }
 };
 
+enum class tftp_opcode : uint16_t {
+    rrq   = 1, // Read request (RRQ)
+    wrq   = 2, // Write request (WRQ)
+    data  = 3, // Data (DATA)
+    ack   = 4, // Acknowledgment (ACK)
+    error = 5, // Error (ERROR)
+};
+
+class tftp_client {
+public:
+    explicit tftp_client(ipv4_ethernet_device& dev, ipv4_address remote_addr, const char* filename)
+        : dev_{dev}
+        , remote_addr_(remote_addr)
+        , s_{dev_.udp_open(dev.ip_address(), 0, [this] (const uint8_t* data, uint32_t length) { tftp_in(data, length); })} {
+
+        const auto filename_length = string_length(filename);
+        REQUIRE(filename_length < sizeof(filename_));
+        memcpy(filename_, filename, filename_length + 1);
+
+        send_rrq();
+    }
+
+    enum class result { running, timeout, done };
+
+    result tick() {
+        if (done_) {
+            return result::done;
+        }
+        if (timeout_ && !--timeout_) {
+            dbgout() << "[tftp] Timed out! Last block " << last_block_ << "\n";
+            if (!last_block_) {
+                send_rrq();
+            }
+            return result::timeout;
+        }
+        return result::running;
+    }
+
+private:
+    ipv4_ethernet_device&  dev_;
+    const ipv4_address     remote_addr_;
+    kowned_ptr<udp_socket> s_;
+    char                   filename_[64];
+    uint8_t                buffer_[128];
+
+    uint16_t               last_block_;
+    uint32_t               timeout_;
+    bool                   done_ = false;
+
+    static constexpr uint32_t default_timeout = 50;
+
+    static constexpr uint16_t tftp_dst_port = 69;
+
+    uint8_t* start_packet(tftp_opcode opcode) {
+        return put_u16(buffer_, static_cast<uint16_t>(opcode));
+    }
+
+    void send_packet(const uint8_t* b) {
+        s_->sendto(remote_addr_, tftp_dst_port, buffer_, static_cast<uint16_t>(b - buffer_));
+        timeout_ = default_timeout;
+    }
+
+    static uint8_t* put_u16(uint8_t* b, uint16_t x) {
+        b[0] = static_cast<uint8_t>(x>>8);
+        b[1] = static_cast<uint8_t>(x);
+        return b + 2;
+    }
+
+    static uint8_t* put_string(uint8_t* b, const char* s) {
+        const auto l = string_length(s);
+        memcpy(b, s, l + 1); // also copy nul-terminator
+        return b + l + 1;
+    }
+
+    static uint16_t get_u16(const uint8_t*& data, uint32_t& length) {
+        REQUIRE(length >= 2);
+        const auto x = static_cast<uint16_t>(data[0]*256 + data[1]);
+        data   += 2;
+        length -= 2;
+        return x;
+    }
+
+    void send_rrq() {
+        dbgout() << "[tftp] Sending RRQ for " << filename_ << "\n";
+        last_block_ = 0;
+        auto b = start_packet(tftp_opcode::rrq);
+        b = put_string(b, filename_);
+        b = put_string(b, "octet");
+        send_packet(b);
+    }
+
+    void send_ack(uint16_t block_number) {
+        auto b = start_packet(tftp_opcode::ack);
+        b = put_u16(b, block_number);
+        send_packet(b);
+    }
+
+    void tftp_in(const uint8_t* data, uint32_t length) {
+        REQUIRE(length >= sizeof(tftp_opcode) && length <= 4 + 512);
+        const auto opcode = static_cast<tftp_opcode>(data[0]*256 + data[1]);
+        data += 2;
+        length -= 2;
+        switch (opcode) {
+        case tftp_opcode::data:
+            {
+                const auto block_number = get_u16(data, length);
+                dbgout() << "[tftp] Got Data #" << block_number << ":\n";
+                hexdump(dbgout(), data, length);
+                REQUIRE(block_number - 1 == last_block_);
+                last_block_ = block_number;
+                send_ack(block_number);
+                if (length != 512) {
+                    dbgout() << "[tftp] Done!\n";
+                    done_ = true;
+                }
+                break;
+            }
+        case tftp_opcode::error:
+            {
+                const auto error_code = get_u16(data, length);
+                REQUIRE(length >= 1);
+                dbgout() << "[tftp] Error " << error_code << ": " << reinterpret_cast<const char*>(data) << "\n";
+                done_ = true;
+                break;
+            }
+        default:
+            dbgout() << "Got Unhandled TFTP packet opcode " << static_cast<uint16_t>(opcode) << ":\n";
+            hexdump(dbgout(), data, length);
+        }
+
+    }
+};
+
 } } // namespace attos::net
 
 bool escape_pressed()
@@ -1019,9 +1166,13 @@ void nettest(net::ethernet_device& dev)
         return;
     }
 
-    while (!escape_pressed()) {
-        ipv4dev.process_packets();
+    tftp_client tftpc{ipv4dev, ipv4_address{192, 168, 10, 1}, "test.txt"};
+    for (bool done = false; !escape_pressed() && !done; ) {
         __halt();
+        ipv4dev.process_packets();
+        if (tftpc.tick() == tftp_client::result::done) {
+            break;
+        }
     }
 }
 

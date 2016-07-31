@@ -242,6 +242,7 @@ constexpr uint32_t i8254_TXD_CMD_TSE             = 0x04000000;   /* TCP Seg enab
 
 /* Interrupt Cause Read */
 constexpr uint32_t i8254_ICR_TXDW                = 0x00000001;/* Transmit desc written back */
+constexpr uint32_t i8254_ICR_TXQE                = 0x00000002;/* Transmit queue empty */
 constexpr uint32_t i8254_ICR_LSC                 = 0x00000004;/* Link Status Change */
 constexpr uint32_t i8254_ICR_RXSEQ               = 0x00000008;/* Rx sequence error */
 constexpr uint32_t i8254_ICR_RXDMT0              = 0x00000010;/* Rx desc min. threshold (0) */
@@ -426,7 +427,11 @@ private:
     void isr() {
         const auto icr = reg(i8254_reg::ICR);
         reg(i8254_reg::ICR, icr); // clear pending interrupts
-        dbgout() << "[i8254] IRQ. ICR = " << as_hex(icr) << "\n";
+        constexpr uint32_t i8254_ICR_INT_ASSERTED = 1U << 31; // Reported by bochs
+        if (icr & ~(i8254_ICR_RXT0 | i8254_ICR_TXDW | i8254_ICR_TXQE | i8254_ICR_INT_ASSERTED)) {
+            // Only report interesting IRQs
+            dbgout() << "[i8254] IRQ. ICR = " << as_hex(icr) << "\n";
+        }
     }
 
     virtual mac_address do_hw_address() const {
@@ -444,12 +449,13 @@ private:
         td.upper.data = 0;
         reg(i8254_reg::TDT_BASE, tx_tail_);
 
-        dbgout() << "Waiting for packet to be sent.\n";
+        //dbgout() << "Waiting for packet to be sent.\n";
         while (!td.upper.fields.status) {
             __halt();
         }
-        dbgout() << "[i8254] TX Status = " << as_hex(td.upper.fields.status) << "\n";
-        td.upper.data = 0; // Mark ready
+        //dbgout() << "[i8254] TX Status = " << as_hex(td.upper.fields.status) << "\n";
+        REQUIRE(td.upper.fields.status == i8254_TXD_STAT_DD);
+        td.upper.data = 0; // Mark ready for re-use
         REQUIRE(reg(i8254_reg::TDH_BASE) == reg(i8254_reg::TDT_BASE));
 
     }
