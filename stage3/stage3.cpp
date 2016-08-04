@@ -304,13 +304,21 @@ owned_ptr<memory_manager, destruct_deleter> construct_mm(const smap_entry* smap,
     auto mm = mm_init(base_addr, base_len);
     // Handle identity map
     static_assert(identity_map_length == 1<<30, "");
-    mm->map_memory(virtual_address(identity_map_start), identity_map_length, memory_type_rwx | memory_type::ps_2mb, physical_address{0ULL});
+    mm->map_memory(virtual_address(identity_map_start), identity_map_length, memory_type_rw | memory_type::ps_2mb, physical_address{0ULL});
 
     // Map in kernel executable image
     const auto& nth = image_base.nt_headers();
     const auto image_phys = physical_address::from_identity_mapped_ptr(&image_base);
     const auto image_size = round_up(static_cast<uint64_t>(nth.OptionalHeader.SizeOfImage), memory_manager::page_size);
-    mm->map_memory(virtual_address{nth.OptionalHeader.ImageBase}, image_size, memory_type_rwx, image_phys);
+
+    for (const auto& s : nth.sections()) {
+        //dbgout() << format_str((char*)s.Name).width(8) << " " << as_hex(s.Characteristics) << " " << as_hex(s.VirtualAddress) << " " << as_hex(s.Misc.VirtualSize) << "\n";
+        memory_type t{};
+        if (s.Characteristics & pe::IMAGE_SCN_MEM_EXECUTE) t = t | memory_type::execute;
+        if (s.Characteristics & pe::IMAGE_SCN_MEM_READ)    t = t | memory_type::read;
+        if (s.Characteristics & pe::IMAGE_SCN_MEM_WRITE)   t = t | memory_type::write;
+        mm->map_memory(virtual_address{nth.OptionalHeader.ImageBase + s.VirtualAddress}, (s.Misc.VirtualSize+memory_manager::page_size-1)&~(memory_manager::page_size-1), t, image_phys + s.PointerToRawData);
+    }
 
     // Switch to the new PML4
     __writecr3(mm->pml4());
@@ -436,7 +444,7 @@ void usermode_test(cpu_manager& cpum)
     user_area_ptr[0] = 0xCD; user_area_ptr[1] = 0x80; // int 0x80
 
     const virtual_address user_area_virt{1<<16};
-    const auto user_rsp = static_cast<uint64_t>(user_area + (1<<20));
+    const auto user_rsp = static_cast<uint64_t>(user_area) + (1<<20);
     auto mm = create_default_memory_manager();
     mm->map_memory(user_area_virt, memory_manager::page_size, memory_type_rwx | memory_type::user, user_area);
     //print_page_tables(mm->pml4());

@@ -445,7 +445,7 @@ volatile void* iomem_map(physical_address base, uint64_t length)
 {
     REQUIRE((base & (memory_manager::page_size-1)) == 0);
     auto virt = kernel_memory_manager::instance().virtual_alloc(length);
-    kernel_memory_manager::instance().map_memory(virt, length, memory_type::read | memory_type::write | memory_type::cache_disable, base);
+    kernel_memory_manager::instance().map_memory(virt, length, memory_type_rw | memory_type::cache_disable, base);
     return reinterpret_cast<volatile void*>(static_cast<uint64_t>(virt));
 }
 

@@ -36,6 +36,8 @@ enum class memory_type : uint32_t {
 };
 
 ENUM_BIT_OPS(memory_type, uint32_t)
+constexpr auto memory_type_rw = memory_type::read | memory_type::write;
+constexpr auto memory_type_rx = memory_type::read | memory_type::execute;
 constexpr auto memory_type_rwx = memory_type::read | memory_type::write | memory_type::execute;
 
 template<typename T>
@@ -54,6 +56,16 @@ public:
 protected:
     uint64_t addr_;
 };
+
+template<typename T>
+constexpr T operator+(address_base<T> l, uint32_t r) {
+    return T{static_cast<uint64_t>(l) + r};
+}
+
+template<typename T>
+constexpr T operator+(address_base<T> l, uint64_t r) {
+    return T{static_cast<uint64_t>(l) + r};
+}
 
 class virtual_address : public address_base<virtual_address> {
 public:
