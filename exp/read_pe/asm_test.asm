@@ -1,7 +1,7 @@
     bits 64
     default rel
 
-%include "../../stage3/attos/pe.inc"
+%include "../../attos/pe.inc"
 
 struc registers
     .rax             resq 1

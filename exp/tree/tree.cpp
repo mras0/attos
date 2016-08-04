@@ -1,5 +1,5 @@
 #include <assert.h>
-#include "../../stage3/attos/tree.h"
+#include "../../attos/tree.h"
 
 #define CONTAINING_RECORD(ptr, type, field) *reinterpret_cast<type*>(reinterpret_cast<char*>(ptr) - offsetof(type, field))
 
