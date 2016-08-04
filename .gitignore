@@ -4,6 +4,7 @@
 *.pdb
 *.ilk
 *.map
+attos/*.lib
 stage3/*.asm
 test-vm/*.log
 test-vm/*.nvram

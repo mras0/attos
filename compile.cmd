@@ -1,5 +1,6 @@
 pushd %~dp0
 call bootloader\compile.cmd || (popd & exit /b 1)
+call attos\compile.cmd || (popd & exit /b 1)
 call stage3\compile.cmd || (popd & exit /b 1)
 call make_vmdk\compile.cmd || (popd & exit /b 1)
 cd test-vm
