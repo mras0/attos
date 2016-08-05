@@ -54,7 +54,6 @@ A.2.2 Codes for Operand Type
 a Two one - word operands in memory or two double - word operands in memory, depending on operand - size attribute(used only by the BOUND instruction).
 c Byte or word, depending on operand - size attribute.
 p 32 - bit, 48 - bit, or 80 - bit pointer, depending on operand - size attribute.
-pd 128 - bit or 256 - bit packed double - precision floating - point data.
 pi Quadword MMX technology register (for example: mm0).
 qq Quad - Quadword(256 - bits), regardless of operand - size attribute.
 s 6 - byte or 10 - byte pseudo - descriptor.
@@ -97,6 +96,7 @@ enum class operand_type : uint8_t {
     z, // Word for 16 - bit operand - size or doubleword for 32 or 64 - bit operand - size.
     x, // dq or qq based on the operand - size attribute.
     y, // Doubleword or quadword(in 64 - bit mode), depending on operand - size attribute.
+    pd, // 128 - bit or 256 - bit packed double - precision floating - point data.
     ps, // 128 - bit or 256 - bit packed single - precision floating - point data.
     ss, // Scalar element of a 128 - bit single - precision floating data.
     sd, // Scalar element of a 128 - bit double - precision floating data.
@@ -115,7 +115,7 @@ enum class instruction_info_type {
     group
 };
 constexpr unsigned instruction_info_flag_f64 = 1;          // The operand size is forced to a 64-bit operand size when in 64-bit mode (prefixes that change operand size are ignored for this instruction in 64-bit mode).
-constexpr unsigned instruction_info_flag_d64 = 2;          // When in 64-bit mode, instruction defaults to 64-bit operand size and cannot encode 32-bit operand size. 
+constexpr unsigned instruction_info_flag_d64 = 2;          // When in 64-bit mode, instruction defaults to 64-bit operand size and cannot encode 32-bit operand size.
 constexpr unsigned instruction_info_flag_reg_group = 4;    // The group is selected based on the reg part of the following modr/m byte
 constexpr unsigned instruction_info_flag_prefix_group = 8; // The group is selected based on prefix (none, 0x66, 0xF3, 0xF2)
 constexpr unsigned instruction_info_flag_mem_group = 16;   // The group is selected based on whether the following modr/m byte selects memory or a register
@@ -318,6 +318,7 @@ constexpr auto Md = II(M, d);
 constexpr auto Mdq = II(M, dq);
 constexpr auto Ms = II(M, mem);
 constexpr auto Mw = II(M, w);
+constexpr auto Ob = II(O, b);
 constexpr auto Ov = II(O, v);
 constexpr auto Rd = II(R, d);
 constexpr auto Sw = II(S, w);
@@ -330,6 +331,7 @@ constexpr auto Vx = II(V, x);
 constexpr auto Vy = II(V, y);
 constexpr auto Wdq = II(W, dq);
 constexpr auto Wps = II(W, ps);
+constexpr auto Wpd = II(W, pd);
 constexpr auto Wsd = II(W, sd);
 constexpr auto Wss = II(W, ss);
 constexpr auto Wx = II(W, x);
@@ -366,6 +368,7 @@ decoded_operand do_reg(operand_type type, uint8_t reg, uint8_t rex)
         case operand_type::dq:
         case operand_type::ss:
         case operand_type::sd:
+        case operand_type::pd:
         case operand_type::ps:
         case operand_type::x:
             op.type = decoded_operand_type::xmmreg;
@@ -381,53 +384,60 @@ decoded_instruction do_disasm(const uint8_t* code)
     static bool init = false;
     if (!init) {
         using namespace operand_info_helpers;
-        instructions[0x00] = instruction_info{"add",  Eb, Gb};     // ADD r/m8, r8				
-        instructions[0x01] = instruction_info{"add",  Ev, Gv};     // ADD r/m16/32/64, r16/32/64	
-        instructions[0x02] = instruction_info{"add",  Gb, Eb};     // ADD r8, r/m8				
-        instructions[0x03] = instruction_info{"add",  Gv, Ev};     // ADD r16/32/64, r/m16/32/64	
-        instructions[0x04] = instruction_info{"add",  rAL, Ib};    // ADD AL, imm8				
+        instructions[0x00] = instruction_info{"add",  Eb, Gb};     // ADD r/m8, r8
+        instructions[0x01] = instruction_info{"add",  Ev, Gv};     // ADD r/m16/32/64, r16/32/64
+        instructions[0x02] = instruction_info{"add",  Gb, Eb};     // ADD r8, r/m8
+        instructions[0x03] = instruction_info{"add",  Gv, Ev};     // ADD r16/32/64, r/m16/32/64
+        instructions[0x04] = instruction_info{"add",  rAL, Ib};    // ADD AL, imm8
         instructions[0x05] = instruction_info{"add",  rAXz, Iz};   // ADD rAX, imm16/32
 
-        instructions[0x08] = instruction_info{"or",  Eb, Gb};      // OR r/m8, r8				
-        instructions[0x09] = instruction_info{"or",  Ev, Gv};      // OR r/m16/32/64, r16/32/64	
-        instructions[0x0a] = instruction_info{"or",  Gb, Eb};      // OR r8, r/m8				
-        instructions[0x0b] = instruction_info{"or",  Gv, Ev};      // OR r16/32/64, r/m16/32/64	
-        instructions[0x0c] = instruction_info{"or",  rAL, Ib};     // OR AL, imm8				
+        instructions[0x08] = instruction_info{"or",  Eb, Gb};      // OR r/m8, r8
+        instructions[0x09] = instruction_info{"or",  Ev, Gv};      // OR r/m16/32/64, r16/32/64
+        instructions[0x0a] = instruction_info{"or",  Gb, Eb};      // OR r8, r/m8
+        instructions[0x0b] = instruction_info{"or",  Gv, Ev};      // OR r16/32/64, r/m16/32/64
+        instructions[0x0c] = instruction_info{"or",  rAL, Ib};     // OR AL, imm8
         instructions[0x0d] = instruction_info{"or",  rAXz, Iz};    // OR rAX, imm16/32
 
-        instructions[0x18] = instruction_info{"sbb",  Eb, Gb};     // SBB r/m8, r8				
-        instructions[0x19] = instruction_info{"sbb",  Ev, Gv};     // SBB r/m16/32/64, r16/32/64	
-        instructions[0x1a] = instruction_info{"sbb",  Gb, Eb};     // SBB r8, r/m8				
-        instructions[0x1b] = instruction_info{"sbb",  Gv, Ev};     // SBB r16/32/64, r/m16/32/64	
-        instructions[0x1c] = instruction_info{"sbb",  rAL, Ib};    // SBB AL, imm8				
+        instructions[0x10] = instruction_info{"adc",  Eb, Gb};     // ADC r/m8, r8
+        instructions[0x11] = instruction_info{"adc",  Ev, Gv};     // ADC r/m16/32/64, r16/32/64
+        instructions[0x12] = instruction_info{"adc",  Gb, Eb};     // ADC r8, r/m8
+        instructions[0x13] = instruction_info{"adc",  Gv, Ev};     // ADC r16/32/64, r/m16/32/64
+        instructions[0x14] = instruction_info{"adc",  rAL, Ib};    // ADC AL, imm8
+        instructions[0x15] = instruction_info{"adc",  rAXz, Iz};   // ADC rAX, imm16/32
+
+        instructions[0x18] = instruction_info{"sbb",  Eb, Gb};     // SBB r/m8, r8
+        instructions[0x19] = instruction_info{"sbb",  Ev, Gv};     // SBB r/m16/32/64, r16/32/64
+        instructions[0x1a] = instruction_info{"sbb",  Gb, Eb};     // SBB r8, r/m8
+        instructions[0x1b] = instruction_info{"sbb",  Gv, Ev};     // SBB r16/32/64, r/m16/32/64
+        instructions[0x1c] = instruction_info{"sbb",  rAL, Ib};    // SBB AL, imm8
         instructions[0x1d] = instruction_info{"sbb",  rAXz, Iz};   // SBB rAX, imm16/32
 
-        instructions[0x20] = instruction_info{"and",  Eb, Gb};     // AND r/m8, r8				
-        instructions[0x21] = instruction_info{"and",  Ev, Gv};     // AND r/m16/32/64, r16/32/64	
-        instructions[0x22] = instruction_info{"and",  Gb, Eb};     // AND r8, r/m8				
-        instructions[0x23] = instruction_info{"and",  Gv, Ev};     // AND r16/32/64, r/m16/32/64	
-        instructions[0x24] = instruction_info{"and",  rAL, Ib};    // AND AL, imm8				
+        instructions[0x20] = instruction_info{"and",  Eb, Gb};     // AND r/m8, r8
+        instructions[0x21] = instruction_info{"and",  Ev, Gv};     // AND r/m16/32/64, r16/32/64
+        instructions[0x22] = instruction_info{"and",  Gb, Eb};     // AND r8, r/m8
+        instructions[0x23] = instruction_info{"and",  Gv, Ev};     // AND r16/32/64, r/m16/32/64
+        instructions[0x24] = instruction_info{"and",  rAL, Ib};    // AND AL, imm8
         instructions[0x25] = instruction_info{"and",  rAXz, Iz};   // AND rAX, imm16/32
 
-        instructions[0x28] = instruction_info{"sub",  Eb, Gb};     // SUB r/m8, r8				
-        instructions[0x29] = instruction_info{"sub",  Ev, Gv};     // SUB r/m16/32/64, r16/32/64	
-        instructions[0x2a] = instruction_info{"sub",  Gb, Eb};     // SUB r8, r/m8				
-        instructions[0x2b] = instruction_info{"sub",  Gv, Ev};     // SUB r16/32/64, r/m16/32/64	
-        instructions[0x2c] = instruction_info{"sub",  rAL, Ib};    // SUB AL, imm8				
+        instructions[0x28] = instruction_info{"sub",  Eb, Gb};     // SUB r/m8, r8
+        instructions[0x29] = instruction_info{"sub",  Ev, Gv};     // SUB r/m16/32/64, r16/32/64
+        instructions[0x2a] = instruction_info{"sub",  Gb, Eb};     // SUB r8, r/m8
+        instructions[0x2b] = instruction_info{"sub",  Gv, Ev};     // SUB r16/32/64, r/m16/32/64
+        instructions[0x2c] = instruction_info{"sub",  rAL, Ib};    // SUB AL, imm8
         instructions[0x2d] = instruction_info{"sub",  rAXz, Iz};   // SUB rAX, imm16/32
 
-        instructions[0x30] = instruction_info{"xor",  Eb, Gb};     // XOR r/m8, r8				
-        instructions[0x31] = instruction_info{"xor",  Ev, Gv};     // XOR r/m16/32/64, r16/32/64	
-        instructions[0x32] = instruction_info{"xor",  Gb, Eb};     // XOR r8, r/m8				
-        instructions[0x33] = instruction_info{"xor",  Gv, Ev};     // XOR r16/32/64, r/m16/32/64	
-        instructions[0x34] = instruction_info{"xor",  rAL, Ib};    // XOR AL, imm8				
+        instructions[0x30] = instruction_info{"xor",  Eb, Gb};     // XOR r/m8, r8
+        instructions[0x31] = instruction_info{"xor",  Ev, Gv};     // XOR r/m16/32/64, r16/32/64
+        instructions[0x32] = instruction_info{"xor",  Gb, Eb};     // XOR r8, r/m8
+        instructions[0x33] = instruction_info{"xor",  Gv, Ev};     // XOR r16/32/64, r/m16/32/64
+        instructions[0x34] = instruction_info{"xor",  rAL, Ib};    // XOR AL, imm8
         instructions[0x35] = instruction_info{"xor",  rAXz, Iz};   // XOR rAX, imm16/32
 
-        instructions[0x38] = instruction_info{"cmp",  Eb, Gb};     // CMP r/m8, r8				
-        instructions[0x39] = instruction_info{"cmp",  Ev, Gv};     // CMP r/m16/32/64, r16/32/64	
-        instructions[0x3a] = instruction_info{"cmp",  Gb, Eb};     // CMP r8, r/m8				
-        instructions[0x3b] = instruction_info{"cmp",  Gv, Ev};     // CMP r16/32/64, r/m16/32/64	
-        instructions[0x3c] = instruction_info{"cmp",  rAL, Ib};    // CMP AL, imm8				
+        instructions[0x38] = instruction_info{"cmp",  Eb, Gb};     // CMP r/m8, r8
+        instructions[0x39] = instruction_info{"cmp",  Ev, Gv};     // CMP r/m16/32/64, r16/32/64
+        instructions[0x3a] = instruction_info{"cmp",  Gb, Eb};     // CMP r8, r/m8
+        instructions[0x3b] = instruction_info{"cmp",  Gv, Ev};     // CMP r16/32/64, r/m16/32/64
+        instructions[0x3c] = instruction_info{"cmp",  rAL, Ib};    // CMP AL, imm8
         instructions[0x3d] = instruction_info{"cmp",  rAXz, Iz};   // CMP rAX, imm16/32
 
         instructions[0x50] = instruction_info{"push", R64};        // PUSH RAX/R8
@@ -510,8 +520,10 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0x9c] = instruction_info{"pushfq", d64/*Fv*/};// PUSHFD/Q
 
         instructions[0xa1] = instruction_info{"mov", rAXz, Ov};    // MOV rAX, moffs16/32/64
+        instructions[0xa2] = instruction_info{"mov", Ob, rAL};     // MOV moffs8, rAL
         instructions[0xa4] = instruction_info{"movsb", /*Yb, Xb*/};// MOVSB
         instructions[0xa5] = instruction_info{"stos", /*Yv, Xv*/}; // MOVS
+        instructions[0xa6] = instruction_info{"cmpsb", /*Xb, Yb*/};// CMPSB
 
         instructions[0xa8] = instruction_info{"test", rAL, Ib};    // TEST AL, imm8
         instructions[0xa9] = instruction_info{"test", rAXz, Iz};   // TEST rAX, imm16/32
@@ -696,6 +708,13 @@ decoded_instruction do_disasm(const uint8_t* code)
             {"cvttsd2si", Gy, Wsd},
         };
         ins0f[0x2c] = instruction_info{group_0f_2c};
+        static const instruction_info group_0f_2f[4] = {
+            {"comiss", Vss, Wss},
+            {"comisd", Vsd, Wsd},
+            {},
+            {},
+        };
+        ins0f[0x2f] = instruction_info{group_0f_2f};
 
         ins0f[0x30] = instruction_info{"wrmsr"};
         ins0f[0x31] = instruction_info{"rdtsc"};
@@ -720,6 +739,13 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0x4e] = instruction_info{"cmovle",  Gv, Ev};         // CMOVLE r16/32/64, r/m16/32/64
         ins0f[0x4f] = instruction_info{"cmovg",   Gv, Ev};         // CMOVG r16/32/64, r/m16/32/64
 
+        static const instruction_info group_0f_54[4] = {
+            {"andps",Vps,Wps},
+            {},
+            {},
+            {},
+        };
+        ins0f[0x54] = instruction_info{group_0f_54};
         static const instruction_info group_0f_57[4] = {
             {"xorps",Vps,Wps},
             {},
@@ -742,6 +768,13 @@ decoded_instruction do_disasm(const uint8_t* code)
             {"mulsd", Vsd, Wsd},
         };
         ins0f[0x59] = instruction_info{group_0f_59};
+        static const instruction_info group_0f_5a[4] = {
+            {},
+            {},
+            {"cvtss2sd", Vx, Wx},
+            {"cvtsd2ss", Vss, Wsd},
+        };
+        ins0f[0x5a] = instruction_info{group_0f_5a};
         static const instruction_info group_0f_5b[4] = {
             {"cvtdq2ps", Vps, Wdq},
             {},
@@ -838,15 +871,11 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0xa3] = instruction_info{"bt", Ev, Gv};              // BT r/m16/32/64, r16/32/64
 
         ins0f[0xab] = instruction_info{"bts", Ev, Gv};             // BTS r/m16/32/64, r16/32/64
-        static const instruction_info group15[8] = {
-            {"fxsave",  M},
-            {"fxrstor", M},
-            {"ldmxcsr", Md},
-            {"stmxcsr", Md},
-            {},
-            {},
-            {},
-            {},
+
+        static const instruction_info group15[16] = {
+            /*        /0              /1              /2               /3               /4  /5  /6          /7 */
+            /* mem */ {"fxsave",  M}, {"fxrstor", M}, {"ldmxcsr", Md}, {"stmxcsr", Md}, {}, {}, {},         {},
+            /* 11b */ {},             {},             {},              {},              {}, {}, {"mfence"}, {},
         };
         ins0f[0xae] = instruction_info{group15};
         ins0f[0xaf] = instruction_info{"imul", Gv, Ev};            // IMUL r16/32/64, r/m16/32/64
@@ -884,6 +913,13 @@ decoded_instruction do_disasm(const uint8_t* code)
         ins0f[0xce] = instruction_info{"bswap", R64v};             // BSWAP RSI/R14
         ins0f[0xcf] = instruction_info{"bswap", R64v};             // BSWAP RDI/R15
 
+        static const instruction_info group_0f_e6[4] = {
+            {},
+            {},
+            {"cvtdq2pd", Vx, Wpd},
+            {},
+        };
+        ins0f[0xe6] = instruction_info{group_0f_e6};
         static const instruction_info group_0f_ef[4] = {
             {}, //{"pxor", Pq, Qq},
             {"pxor", Vx, Wx},
@@ -1129,7 +1165,7 @@ decoded_instruction do_disasm(const uint8_t* code)
                         }
                     }
                     if (opinfo.addr_mode == addressing_mode::W) {
-                        assert(opinfo.op_type == operand_type::ps || opinfo.op_type == operand_type::x || opinfo.op_type == operand_type::dq || opinfo.op_type == operand_type::ss || opinfo.op_type == operand_type::sd);
+                        assert(opinfo.op_type == operand_type::pd || opinfo.op_type == operand_type::ps || opinfo.op_type == operand_type::x || opinfo.op_type == operand_type::dq || opinfo.op_type == operand_type::ss || opinfo.op_type == operand_type::sd);
                         assert(op.type == decoded_operand_type::xmmreg);
                     }
                 } else {
@@ -1323,11 +1359,11 @@ decoded_instruction do_disasm(const uint8_t* code)
                 used_prefixes |= prefix_flag_rex | rex_r_mask;
                 break;
             case addressing_mode::O:
-                assert(opinfo.op_type == operand_type::v);
-                assert(rex & rex_w_mask);
+                assert(opinfo.op_type == operand_type::b || opinfo.op_type == operand_type::v);
+                //assert(rex & rex_w_mask);
                 op.type = decoded_operand_type::absaddr;
                 op.absaddr = get_u64();
-                used_prefixes |= prefix_flag_rex | rex_w_mask;
+                //used_prefixes |= prefix_flag_rex | rex_w_mask;
                 break;
             default:
                 assert(false);
@@ -1347,9 +1383,9 @@ using namespace attos;
 using namespace attos::pe;
 using namespace attos::disasm;
 
-void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
+void disasm_section(uint64_t virtual_address, const uint8_t* code, uint64_t virtual_end)
 {
-    for (int count=0;count<maxinst;count++) {
+    while (virtual_address < virtual_end) {
         auto ins = do_disasm(code);
 
         if (virtual_address < (1ULL<<48)) dbgout() << "  "; // Stupid hack to match objdump output
@@ -1552,7 +1588,7 @@ void disasm_section(uint64_t virtual_address, const uint8_t* code, int maxinst)
         dbgout() << "\n";
 
         const auto ignore_mask = 0x4F | used_prefixes; // Ignore unused reg prefixes
-        if (ins.unused_prefixes & ~ignore_mask) { 
+        if (ins.unused_prefixes & ~ignore_mask) {
             dbgout() << "Unused prefixes:" << as_hex(ins.unused_prefixes & ~ignore_mask) << "\n";
             return;
         }
@@ -1618,7 +1654,7 @@ int main(int argc, char* argv[])
         auto offset = use_hack ? image.nt_headers().OptionalHeader.AddressOfEntryPoint - section.VirtualAddress : 0;
         if (offset < 0 || offset >= section.SizeOfRawData) offset = 0;
         uint64_t virtual_address = image.nt_headers().OptionalHeader.ImageBase + section.VirtualAddress + offset;
-        disasm_section(virtual_address, &f[section.PointerToRawData + offset], 2000000);
+        disasm_section(virtual_address, &f[section.PointerToRawData + offset], virtual_address + section.Misc.VirtualSize);
     }
 #else
     disasm_section(reinterpret_cast<uint64_t>(_ReturnAddress()), reinterpret_cast<const uint8_t*>(_ReturnAddress()), 20);
