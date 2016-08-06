@@ -436,10 +436,8 @@ void alloc_and_copy_section(memory_manager& mm, virtual_address virt, uint32_t v
 
     if (src_size) {
         const auto to_copy = std::min(virt_size, src_size);
-        //dbgout() << "Copy from " << as_hex((uint64_t)source) << " size " << as_hex(to_copy) << "\n";
         memcpy(static_cast<void*>(phys), source, to_copy);
     }
-    //dbgout() << "Map " << as_hex(static_cast<uint64_t>(virt)) << " size " << as_hex(virt_size) << " " << as_hex((uint32_t)t) << "\n";
     mm.map_memory(virt, phys_size, t, phys);
 }
 
@@ -488,26 +486,10 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
     __writemsr(msr_fmask, rflag_mask_tf | rflag_mask_if | rflag_mask_df | rflag_mask_iopl | rflag_mask_ac);
     __writemsr(msr_efer, old_efer | efer_mask_sce);
 
-#if 1
     alloc_and_map_user_exe(*mm, image);
     const uint64_t image_base = image.nt_headers().OptionalHeader.ImageBase;
     const uint64_t user_rsp = image_base - 8;
     const uint64_t user_rip = image_base + image.nt_headers().OptionalHeader.AddressOfEntryPoint;
-#else
-    (void)image;
-    const physical_address user_area{4<<20};
-    auto user_area_ptr = static_cast<uint8_t*>(user_area);
-
-    //*user_area_ptr++ = 0x66; *user_area_ptr++ = 0x87; *user_area_ptr++ = 0xDB; // xchg bx,bx
-    *user_area_ptr++ = 0x0F; *user_area_ptr++ = 0x05;                          // syscall
-    *user_area_ptr++ = 0xCD; *user_area_ptr++ = 0x80;                          // int 0x80
-
-    const virtual_address user_area_virt{1<<16};
-    const auto user_rsp = static_cast<uint64_t>(user_area) + (1<<20);
-    mm->map_memory(user_area_virt, memory_manager::page_size, memory_type_rwx | memory_type::user, user_area);
-    //print_page_tables(mm->pml4());
-    const uint64_t user_rip = user_area_virt;
-#endif
 
     __writecr3(mm->pml4()); // set user process PML4
     dbgout() << "Doing magic!\n";

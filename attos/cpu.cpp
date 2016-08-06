@@ -100,8 +100,8 @@ const auto iretq = make_fun<void (uint64_t)>(
 );
 
 // crt.asm - yeah doesn't belong there...
-extern "C" void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags, uint64_t& tss_rsp0);
-extern "C" void switch_to_restore();
+extern "C" void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags, uint64_t& saved_rsp);
+extern "C" void switch_to_restore(uint64_t& saved_rsp);
 
 class cpu_manager_impl : public cpu_manager, public singleton<cpu_manager_impl> {
 public:
@@ -140,7 +140,8 @@ public:
     }
 
     void restore_original_context() {
-        switch_to_restore();
+        REQUIRE(tss_.rsp0 != 0);
+        switch_to_restore(tss_.rsp0);
     }
 
 private:

@@ -64,11 +64,11 @@ win64_proc memcmp
     ret
 win64_proc_end
 
-; void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags, uint64_t& tss_rsp0)
+; void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags, uint64_t& saved_rsp)
 switch_to:
 ; On entry:
 ;
-; rsp + 0x30  tss_rsp0
+; rsp + 0x30  saved_rsp
 ; rsp + 0x28  flags
 ; rsp + 0x20  shadow space
 ; rsp + 0x18  shadow space
@@ -77,7 +77,7 @@ switch_to:
 ; rsp + 0x00  return address
 
     mov rax, [rsp+0x28] ; rax <- flags (parameter)
-    mov r10, [rsp+0x30] ; r10 <- tss_rsp0
+    mov r10, [rsp+0x30] ; r10 <- saved_rsp
 
     ; Save nonvolatile reigsters
     pushfq
@@ -90,9 +90,6 @@ switch_to:
     push rbx
     push rbp
     ; TODO: Save XMM6-XMM15
-    mov r11, rsp
-    mov [switch_to_orig_rsp], r11
-
     mov [r10], rsp
 
     ; Make room for IRETQ frame
@@ -119,9 +116,9 @@ switch_to:
 
     iretq
 
-; void switch_to_restore()
+; void switch_to_restore(uint64_t& saved_rsp)
 switch_to_restore:
-    mov rsp, [switch_to_orig_rsp]
+    mov rsp, [rcx]
     pop rbp
     pop rbx
     pop rsi
@@ -136,6 +133,3 @@ switch_to_restore:
 bochs_magic:
     xchg bx, bx
     ret
-
-    section .bss
-switch_to_orig_rsp resq 1
