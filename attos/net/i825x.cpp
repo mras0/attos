@@ -524,12 +524,10 @@ private:
                 break;
             }
             REQUIRE(rd.status & RXD_STAT_EOP);
-            if (rd.errors) {
-                dbgout() << "Packet error(s): " << as_hex(rd.errors) << "\n";
-                REQUIRE(false);
+            dbgout() << "[i825x] RX Status = " << as_hex(rd.status) << " length = " << as_hex(rd.length) << " idx = " << rx_head_ << " error = " << as_hex(rd.errors) << "\n";
+            if (!rd.errors) {
+                ppf(rx_buffer_[rx_head_], rd.length);
             }
-            dbgout() << "[i825x] RX Status = " << as_hex(rd.status) << " length = " << as_hex(rd.length) << " idx = " << rx_head_ << "\n";
-            ppf(rx_buffer_[rx_head_], rd.length);
             rd.status = 0;              // Mark available for SW
             ioreg(reg::RDT0, rx_head_); // Mark available for HW
             rx_head_ = (rx_head_ + 1) % num_rx_descriptors;

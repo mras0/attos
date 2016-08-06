@@ -277,39 +277,38 @@ private:
 struct symbol_info {
     uint64_t    address;
     const char* text;
+    int         text_length;
 };
 
 class debug_info_manager : public singleton<debug_info_manager> {
 public:
-    explicit debug_info_manager(char* data) {
-        while (*data) {
-            // TODO: Don't modify text data...
-            const auto symval = process_hex_number(data);
-            data += 16;
-            REQUIRE(*data++ == ' ');
-            const char* text = data;
-            while (*data != '\r') data++;
-            *data = '\0';
-            REQUIRE(*++data == '\n');
-            ++data;
-            symbols.push_back(symbol_info{symval, text});
-        }
+    explicit debug_info_manager(const char* symbols) : symbols_(symbols) {
+#if 0
         REQUIRE(symbols.size() != 0);
         REQUIRE(symbols[0].address == 0);
         REQUIRE(symbols.back().address == ~0ULL);
+#endif
     }
 
-    const symbol_info& closest_symbol(uint64_t addr) const {
-        const symbol_info* best = &symbols[0];
-        for (const auto& s : symbols) {
-            if (s.address > addr) break;
-            best = &s;
+    symbol_info closest_symbol(uint64_t addr) const {
+        symbol_info res;
+        for (auto data = symbols_; *data; ) {
+            const auto symval = process_hex_number(data);
+            if (symval > addr) break;
+            data += 16;
+            REQUIRE(*data++ == ' ');
+            res.address     = symval;
+            res.text        = data;
+            for (res.text_length = 0; *data != '\r'; ++data, ++res.text_length)
+                ;
+            REQUIRE(*++data == '\n');
+            ++data;
         }
-        return *best;
+        return res;
     }
 
 private:
-    kvector<symbol_info> symbols;
+    const char* symbols_;
 
     static uint64_t hex_val(char c) {
         if (c >= '0' && c <= '9') return c - '0';
@@ -325,10 +324,6 @@ private:
         return n;
     }
 };
-
-const symbol_info& closest_symbol(uint64_t addr) {
-    return debug_info_manager::instance().closest_symbol(addr);
-}
 
 void interrupt_service_routine(registers& r);
 
@@ -346,7 +341,7 @@ void set_idt_entry(interrupt_gate& idt, void* code, descriptor_privilege_level d
 
 class isr_handler_impl : public isr_handler, public singleton<isr_handler_impl> {
 public:
-    explicit isr_handler_impl(char* debug_info_text) : debug_info_(debug_info_text), irq_handlers_() {
+    explicit isr_handler_impl(const char* debug_info_text) : debug_info_(debug_info_text), irq_handlers_() {
         __sidt(&old_idt_desc_);
         dbgout() << "[isr] Loading interrupt descriptor table.\n";
 
@@ -455,8 +450,9 @@ const pe::IMAGE_DOS_HEADER* find_image(uint64_t rip)
 
 void print_address(out_stream& os, const pe::IMAGE_DOS_HEADER&, uint64_t address)
 {
-    const auto& symbol = closest_symbol(address);
-    os << symbol.text << "+0x" << as_hex(static_cast<uint32_t>(address - symbol.address)).width(4);
+    const auto& symbol = debug_info_manager::instance().closest_symbol(address);
+    os.write(symbol.text, symbol.text_length);
+    os << "+0x" << as_hex(static_cast<uint32_t>(address - symbol.address)).width(4);
 }
 
 __declspec(noreturn) void unhandled_interrupt(const registers& r)
@@ -497,7 +493,7 @@ __declspec(noreturn) void unhandled_interrupt(const registers& r)
     REQUIRE(!isr_recurse_flag);
     isr_recurse_flag = true;
 
-    print_stack(dbgout(), find_image, print_address, 4);
+    print_stack(dbgout(), find_image, print_address, /*4*/0);
 
     isr_recurse_flag = false;
 
@@ -515,7 +511,7 @@ void interrupt_service_routine(registers& r)
 
 object_buffer<isr_handler_impl> isr_handler_buffer;
 
-owned_ptr<isr_handler, destruct_deleter> isr_init(char* debug_info_text) {
+owned_ptr<isr_handler, destruct_deleter> isr_init(const char* debug_info_text) {
     return owned_ptr<isr_handler, destruct_deleter>{isr_handler_buffer.construct(debug_info_text).release()};
 }
 

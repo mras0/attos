@@ -19,7 +19,7 @@ public:
     virtual ~isr_handler() {}
 };
 
-owned_ptr<isr_handler, destruct_deleter> isr_init(char* debug_info_text);
+owned_ptr<isr_handler, destruct_deleter> isr_init(const char* debug_info_text);
 
 isr_registration_ptr register_irq_handler(uint8_t irq, irq_handler_t irq_handler);
 
