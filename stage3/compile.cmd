@@ -3,7 +3,7 @@
 @call ..\setflags.cmd
 nasm %ATTOS_ASFLAGS% ..\attos\isr_common.asm -o isr_common.obj || (popd & exit /b 1)
 nasm %ATTOS_ASFLAGS% ..\attos\crt.asm -o crt.obj || (popd & exit /b 1)
-cl %ATTOS_CXXFLAGS% stage3.cpp isr_common.obj crt.obj ..\attos\attos.lib  /link%ATTOS_LDFLAGS% /nodefaultlib /entry:stage3_entry /subsystem:NATIVE /FILEALIGN:4096 /BASE:0xFFFFFFFFFF000000 /merge:.pdata=.rdata /merge:.xdata:=.rdata /merge:.CRT=.bss /map || (popd & exit /b 1)
+cl %ATTOS_CXXFLAGS% /FAs stage3.cpp isr_common.obj crt.obj ..\attos\attos.lib  /link%ATTOS_LDFLAGS% /nodefaultlib /entry:stage3_entry /subsystem:NATIVE /FILEALIGN:4096 /BASE:0xFFFFFFFFFF000000 /merge:.pdata=.rdata /merge:.xdata:=.rdata /merge:.CRT=.bss /map || (popd & exit /b 1)
 call parse_map.cmd stage3.map > stage3.map.bin || (popd & exit /b 1)
 echo>stage3_bin.asm incbin "stage3.exe"|| (popd & exit /b 1)
 echo>>stage3_bin.asm incbin "stage3.map.bin"|| (popd & exit /b 1)

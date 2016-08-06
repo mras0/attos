@@ -67,6 +67,7 @@ enum rflag_bits {
     rflag_bit_ac   = 18, // alignment check
 };
 
+constexpr auto rflag_mask_res1 = 1U << rflag_bit_res1;
 constexpr auto rflag_mask_tf   = 1U << rflag_bit_tf;
 constexpr auto rflag_mask_if   = 1U << rflag_bit_if;
 constexpr auto rflag_mask_df   = 1U << rflag_bit_df;
@@ -156,7 +157,7 @@ enum class descriptor_privilege_level : uint8_t {
     user   = 3
 };
 
-void restore_switch_to_context(registers& r);
+void restore_original_context();
 
 }  // namespace attos
 

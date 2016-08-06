@@ -99,7 +99,9 @@ const auto iretq = make_fun<void (uint64_t)>(
     C_IRETQ
 );
 
-extern "C" void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags); // crt.asm - yeah doesn't belong there...
+// crt.asm - yeah doesn't belong there...
+extern "C" void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags, uint64_t& tss_rsp0);
+extern "C" void switch_to_restore();
 
 class cpu_manager_impl : public cpu_manager, public singleton<cpu_manager_impl> {
 public:
@@ -137,13 +139,8 @@ public:
         iretq(old_cs_);
     }
 
-    void restore_switch_to_context(registers& r) {
-        REQUIRE(switch_to_context_rip_ != 0);
-        r.ss  = kernel_ds;
-        r.rsp = tss_.rsp0;
-        r.cs  = kernel_cs;
-        r.rip = switch_to_context_rip_;
-        switch_to_context_rip_ = 0;
+    void restore_original_context() {
+        switch_to_restore();
     }
 
 private:
@@ -151,7 +148,6 @@ private:
     uint16_t       old_cs_;
     tss            tss_;
     uint64_t       old_efer_;
-    uint64_t       switch_to_context_rip_ = 0;
 
     enum gdt_entries {
         gdt_null,
@@ -176,10 +172,8 @@ private:
         REQUIRE(tss_.rsp0 == 0);
         REQUIRE(tss_.rsp1 == 0);
         REQUIRE(tss_.rsp2 == 0);
-        REQUIRE(switch_to_context_rip_ == 0);
-        tss_.rsp0 = ((uint64_t)_AddressOfReturnAddress());
-        switch_to_context_rip_ = (uint64_t)_ReturnAddress();
-        switch_to(cs, rip, ss, rsp, flags);
+        switch_to(cs, rip, ss, rsp, flags, tss_.rsp0);
+        tss_.rsp0 = 0;
     }
 
 };
@@ -190,8 +184,8 @@ owned_ptr<cpu_manager, destruct_deleter> cpu_init() {
     return owned_ptr<cpu_manager, destruct_deleter>{cpu_manager_buffer.construct().release()};
 }
 
-void restore_switch_to_context(registers& r) {
-    cpu_manager_impl::instance().restore_switch_to_context(r);
+void restore_original_context() {
+    cpu_manager_impl::instance().restore_original_context();
 }
 
 } // namespace attos

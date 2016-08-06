@@ -2,7 +2,9 @@
 
 using namespace attos;
 
+extern "C" void syscall1(uint64_t n, uint64_t arg0);
+
 int main()
 {
-//    dbgout() << "Hello world from user mode!\n";
+    syscall1(1, (uint64_t)"Hello world from user mode!\n");
 }

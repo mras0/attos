@@ -66,8 +66,6 @@ enum class interrupt_number : uint8_t {
     IRQD = 0x3D, // FPU
     IRQE = 0x3E, // Primary ATA
     IRQF = 0x3F, // Secondary ATA
-
-    TEST = 0x80,
 };
 
 constexpr uint8_t irq_number(interrupt_number n) {
@@ -86,10 +84,6 @@ constexpr bool has_error_code(interrupt_number n) {
            n == interrupt_number::GP ||
            n == interrupt_number::PF ||
            n == interrupt_number::AC;
-}
-
-constexpr bool is_user_callable(interrupt_number n) {
-    return n == interrupt_number::TEST;
 }
 
 out_stream& operator<<(out_stream& os, interrupt_number n) {
@@ -376,7 +370,7 @@ public:
             }
             c.push_imm8(static_cast<uint8_t>(i));
             c.jmp_rel32(&isr_common);
-            set_idt_entry(idt_[i], code, is_user_callable(n) ? descriptor_privilege_level::user : descriptor_privilege_level::kernel);
+            set_idt_entry(idt_[i], code, /*is_user_callable(n) ? descriptor_privilege_level::user : */descriptor_privilege_level::kernel);
         }
         idt_desc_.limit = sizeof(idt_)-1;
         idt_desc_.base  = virtual_address::in_current_address_space(&idt_);
@@ -513,13 +507,7 @@ __declspec(noreturn) void unhandled_interrupt(const registers& r)
 void interrupt_service_routine(registers& r)
 {
     if (is_irq(r.interrupt_no) && isr_handler_impl::instance().on_irq(irq_number(r.interrupt_no))) {
-    } else if (r.interrupt_no == interrupt_number::TEST) {
-        if (r.cs == user_cs) {
-            dbgout() << "Returning from user mode\n";
-            restore_switch_to_context(r);
-        } else {
-            dbgout() << "HACK: Ignoring interrupt 0x" << as_hex(static_cast<uint8_t>(interrupt_number::TEST)) << "\n";
-        }
+        // Handled
     } else {
         unhandled_interrupt(r);
     }

@@ -73,8 +73,13 @@ unwind_context unwind_once(const unwind_context& context, const IMAGE_DOS_HEADER
     REQUIRE(ui.Version == UNWIND_INFO_VERSION);
     // TODO: We don't handle UNWIND_INFO_FLAG_EHANDLER / UNWIND_INFO_FLAG_UHANDLER
     REQUIRE((ui.Flags & UNWIND_INFO_FLAG_CHAININFO) == 0);
-    REQUIRE(ui.FrameRegister == 0);
-    REQUIRE(ui.FrameOffset == 0);
+    if (ui.FrameRegister != 0) {
+#if SHOW_OPS_VERBOSE >= 1
+        dbgout() << "    Unhandled: Frame register " << unwind_reg_names[ui.FrameRegister] << " = rsp + 0x" << as_hex(16*ui.FrameOffset).width(0) << "\n";
+#endif
+    } else {
+        REQUIRE(ui.FrameOffset == 0);
+    }
 
     if (offset_in_function <= ui.SizeOfProlog) {
         // We don't handle unwinds inside the prolog
@@ -113,8 +118,9 @@ unwind_context unwind_once(const unwind_context& context, const IMAGE_DOS_HEADER
                 break;
             }
             case UWOP_SET_FPREG:
-                //printf("Unhandled: UWOP_SET_FPREG %d\n", uc.OpInfo);
-                REQUIRE(false);
+#if SHOW_OPS_VERBOSE >= 1
+                dbgout() << "Unhandled: frame pointer = rsp + 0x" << as_hex(16*uc.OpInfo).width(0) << "\n";
+#endif
                 break;
             case UWOP_SAVE_NONVOL:
             {

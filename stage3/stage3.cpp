@@ -411,7 +411,19 @@ extern "C" void syscall_handler(void);
 
 extern "C" void syscall_service_routine(registers& regs)
 {
-    dbgout() << "Got syscall from " << as_hex(regs.rcx) << " flags = " << as_hex(regs.r11) << "!\n";
+    dbgout() << "Got syscall 0x" << as_hex(regs.rax).width(0) << " from " << as_hex(regs.rcx) << " flags = " << as_hex(regs.r11) << "!\n";
+
+    switch (regs.rax) {
+        case 0:
+            dbgout() << "[user] Exiting with error code " << as_hex(regs.rdx) << "\n";
+            restore_original_context();
+            REQUIRE(false);
+        case 1:
+            dbgout() << "[user] '" << reinterpret_cast<const char*>(regs.rdx) << "'\n";
+            break;
+        default:
+            REQUIRE(!"Unimplemented syscall");
+    }
 }
 
 void alloc_and_copy_section(memory_manager& mm, virtual_address virt, uint32_t virt_size, memory_type t, const void* source, uint32_t src_size)
@@ -458,6 +470,11 @@ void alloc_and_map_user_exe(memory_manager& mm, const pe::IMAGE_DOS_HEADER& imag
 
 void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
 {
+    // Stress switch_to_context in kernel mode only
+    for (int i = 0; i < 10; ++i) {
+        cpum.switch_to_context(kernel_cs, (uint64_t)&restore_original_context, kernel_ds, (uint64_t)physical_address{6<<20}, __readeflags());
+    }
+
     auto mm = create_default_memory_manager();
 
     const auto old_efer = __readmsr(msr_efer);
