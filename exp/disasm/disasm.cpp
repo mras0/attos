@@ -652,6 +652,8 @@ decoded_instruction do_disasm(const uint8_t* code)
             /* 11b */ instruction_info{},           instruction_info{},           instruction_info{"xgetbv"},   instruction_info{},           instruction_info{}, instruction_info{}, instruction_info{}, instruction_info{},
         };
         ins0f[0x01] = instruction_info{group7};                    // Grp 7
+        ins0f[0x05] = instruction_info{"syscall"};
+        ins0f[0x07] = instruction_info{"sysret"};
 
         ins0f[0x0d] = instruction_info{"prefetchw", Eb/*Ev*/};
 
