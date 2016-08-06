@@ -43,6 +43,8 @@ void iomem_unmap(volatile void* virt, uint64_t length);
 void* kalloc(uint64_t size);
 void kfree(void* ptr);
 
+memory_manager& kmemory_manager();
+
 struct kfree_deleter {
     template<typename T>
     void operator()(T* ptr) {

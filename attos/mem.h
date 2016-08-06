@@ -67,6 +67,11 @@ constexpr T operator+(address_base<T> l, uint64_t r) {
     return T{static_cast<uint64_t>(l) + r};
 }
 
+template<typename T>
+constexpr T operator&(address_base<T> l, uint64_t r) {
+    return T{static_cast<uint64_t>(l) & r};
+}
+
 class virtual_address : public address_base<virtual_address> {
 public:
     constexpr explicit virtual_address(uint64_t addr=0) : address_base(addr) {

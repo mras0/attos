@@ -9,6 +9,7 @@
     global memcpy
     global memcmp
     global switch_to ; void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags)
+    global bochs_magic
 
 ; rcx = void*  dest
 ; rdx = int    c
@@ -78,3 +79,7 @@ switch_to:
 
     ;xchg bx, bx ;bochs_magic
     iretq
+
+bochs_magic:
+    xchg bx, bx
+    ret

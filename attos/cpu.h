@@ -18,7 +18,7 @@ extern "C" void* memcpy(void* dest, const void* src, size_t count); // crt.asm
 
 namespace attos {
 
-extern void (*bochs_magic)();
+extern "C" void bochs_magic();
 
 template<uint8_t InterruptNo>
 void sw_int() {
@@ -28,8 +28,8 @@ void sw_int() {
 
 __declspec(noreturn) void fatal_error(const char* file, int line, const char* detail);
 
-template<typename T>
-constexpr auto round_up(T val, T align)
+template<typename T, typename U>
+constexpr auto round_up(T val, U align)
 {
     return val % align ? val + align - (val % align) : val;
 }
@@ -106,6 +106,12 @@ struct registers {
     uint16_t ss;
     uint8_t  reserved4[6];
 };
+
+constexpr uint8_t pf_error_code_mask_p = 0x01; // Page fault was caused by a page-protection violation
+constexpr uint8_t pf_error_code_mask_w = 0x02; // Page fault was caused by a page write
+constexpr uint8_t pf_error_code_mask_u = 0x04; // Page fault was caused while CPL = 3
+constexpr uint8_t pf_error_code_mask_r = 0x08; // Page fault was caused by reading a 1 in a reserved field
+constexpr uint8_t pf_error_code_mask_i = 0x10; // Page fault was caused by an instruction fetch
 
 class interrupt_disabler {
 public:

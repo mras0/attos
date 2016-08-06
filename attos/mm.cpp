@@ -9,7 +9,7 @@
 namespace attos {
 
 inline uint64_t* table_entry(uint64_t table_value) {
-    return static_cast<uint64_t*>(physical_address{table_value & ~(memory_manager::page_size - 1)});
+    return static_cast<uint64_t*>(physical_address{table_value & ~(PAGEF_NX | (memory_manager::page_size - 1))});
 }
 
 template<uint64_t Alignment>
@@ -85,12 +85,14 @@ auto find_mapping(memory_mapping::tree_type& t, virtual_address addr, uint64_t l
 
 physical_address alloc_physical_page();
 
+constexpr uint64_t kernel_map_start    = 0xFFFFFFFF'FF000000;
+
 class memory_manager_base : public memory_manager {
 public:
     explicit memory_manager_base()
         : memory_mappings_{alloc_physical_page(), page_size}
         , pml4_{static_cast<uint64_t*>(alloc_physical_page())}
-        , free_virt_base_{identity_map_start + identity_map_length} {
+        , free_virt_base_{kernel_map_start-(1<<30)} { // HACK: ISR needs virtual memory within 2GB of the kernel code...
     }
 
     ~memory_manager_base() {
@@ -135,18 +137,28 @@ private:
         REQUIRE((length & (page_size-1)) == 0);
         const auto addr = free_virt_base_;
         free_virt_base_ += length;
+        REQUIRE(free_virt_base_ <= kernel_map_start);
         REQUIRE(free_virt_base_ >= addr); // Make sure we didn't wrap around
         return addr;
     }
 
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
-        dbgout() << "[mem] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << " type = " << as_hex(type).width(0) << "\n";
+        dbgout() << "[mem] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << ' ';
+        if (static_cast<uint32_t>(type & memory_type::read))          dbgout() << "R";
+        if (static_cast<uint32_t>(type & memory_type::write))         dbgout() << "W";
+        if (static_cast<uint32_t>(type & memory_type::execute))       dbgout() << "X";
+        if (static_cast<uint32_t>(type & memory_type::user))          dbgout() << "U";
+        if (static_cast<uint32_t>(type & memory_type::cache_disable)) dbgout() << "C";
+        if (static_cast<uint32_t>(type & memory_type::ps_2mb))        dbgout() << "2";
+        if (static_cast<uint32_t>(type & memory_type::ps_1gb))        dbgout() << "1";
+        dbgout() << "\n";
 
         const uint64_t map_page_size = static_cast<uint32_t>(type & memory_type::ps_1gb) ? (1<<30) : static_cast<uint32_t>(type & memory_type::ps_2mb) ? (2<<20) : (1<<12);
 
         // Check address alignment
         REQUIRE((virt & (map_page_size - 1)) == 0);
         REQUIRE((phys & (map_page_size - 1)) == 0);
+        REQUIRE(phys < 1ULL<<32); // Probably more work required before we support > 4GB addresses
 
         // Check length
         REQUIRE(length > 0);
@@ -159,7 +171,15 @@ private:
             REQUIRE(false);
         }
 
-        const uint64_t flags = PAGEF_PRESENT | PAGEF_WRITE | (static_cast<uint32_t>(type & memory_type::user) ? PAGEF_USER : 0);
+        // Flags
+        REQUIRE(static_cast<uint32_t>(type & memory_type::read));
+
+        const uint64_t flags  = PAGEF_PRESENT
+            | (static_cast<uint32_t>(type & memory_type::user) ? PAGEF_USER : 0);
+        const auto page_flags = flags
+            | (static_cast<uint32_t>(type & memory_type::write) ? PAGEF_WRITE : 0)
+            | (static_cast<uint32_t>(type & memory_type::execute) ? 0 : PAGEF_NX)
+            | (static_cast<uint32_t>(type & memory_type::cache_disable) ? PAGEF_PWT | PAGEF_PCD : 0);
 
         auto mm = memory_mappings_.construct(virt, length, type);
         memory_map_tree_.insert(*mm);
@@ -168,17 +188,17 @@ private:
             auto* pdp = alloc_if_not_present(pml4_[virt.pml4e()], flags);
 
             if (static_cast<uint32_t>(type & memory_type::ps_1gb)) {
-                pdp[virt.pdpe()] = phys | PAGEF_PAGESIZE | PAGEF_PRESENT | flags;
+                pdp[virt.pdpe()] = phys | PAGEF_PAGESIZE | page_flags;
             } else {
                 auto* pd = alloc_if_not_present(pdp[virt.pdpe()], flags);
                 if (static_cast<uint32_t>(type & memory_type::ps_2mb)) {
-                    pd[virt.pde()] = phys | PAGEF_PAGESIZE | PAGEF_PRESENT | flags;
+                    pd[virt.pde()] = phys | PAGEF_PAGESIZE | page_flags;
                 } else {
                     auto* pt = alloc_if_not_present(pd[virt.pde()], flags);
-                    pt[virt.pte()] = phys | PAGEF_PRESENT | flags | (static_cast<uint32_t>(type & memory_type::cache_disable) ? PAGEF_PWT | PAGEF_PCD : 0);
+                    pt[virt.pte()] = phys | page_flags;
                 }
             }
-            //dbgout() << "[mem] " << as_hex(virt) << " " << as_hex(phys) << "\n";
+            //dbgout() << "[mem] " << as_hex(virt) << " " << as_hex(phys) << " " << as_hex(page_flags) << "\n";
         }
     }
 };
@@ -409,7 +429,7 @@ physical_address virt_to_phys(physical_address pml4, virtual_address virt)
     REQUIRE(pdpe & PAGEF_PRESENT);
     if (pdpe & PAGEF_PAGESIZE) {
         constexpr uint64_t page_mask = (1ULL<<30) - 1;
-        return physical_address{(pdpe & ~page_mask) | (virt & page_mask)};
+        return physical_address{(pdpe & ~(PAGEF_NX | page_mask)) | (virt & page_mask)};
     }
 
     const auto pde = table_entry(pdpe)[virt.pde()];
@@ -417,14 +437,14 @@ physical_address virt_to_phys(physical_address pml4, virtual_address virt)
     REQUIRE(pde & PAGEF_PRESENT);
     if (pde & PAGEF_PAGESIZE) {
         constexpr uint64_t page_mask = (2ULL<<20) - 1;
-        return physical_address{(pde & ~page_mask) | (virt & page_mask)};
+        return physical_address{(pde & ~(PAGEF_NX | page_mask)) | (virt & page_mask)};
     }
 
     const auto pte = table_entry(pde)[virt.pte()];
     //dbgout() << "PT   " << as_hex(pte) << "\n";
     REQUIRE(pte & PAGEF_PRESENT);
 
-    return physical_address{(pte & ~(memory_manager::page_size-1)) | (virt & (memory_manager::page_size-1)) };
+    return physical_address{(pte & ~(PAGEF_NX | (memory_manager::page_size-1))) | (virt & (memory_manager::page_size-1)) };
 }
 
 physical_address virt_to_phys(const void* ptr)
@@ -439,6 +459,11 @@ void* kalloc(uint64_t size) {
 
 void kfree(void* ptr) {
     kernel_memory_manager::instance().kfree(ptr);
+}
+
+memory_manager& kmemory_manager()
+{
+    return kernel_memory_manager::instance();
 }
 
 volatile void* iomem_map(physical_address base, uint64_t length)

@@ -309,15 +309,17 @@ owned_ptr<memory_manager, destruct_deleter> construct_mm(const smap_entry* smap,
     // Map in kernel executable image
     const auto& nth = image_base.nt_headers();
     const auto image_phys = physical_address::from_identity_mapped_ptr(&image_base);
-    const auto image_size = round_up(static_cast<uint64_t>(nth.OptionalHeader.SizeOfImage), memory_manager::page_size);
+    const auto image_size = round_up(nth.OptionalHeader.SizeOfImage, memory_manager::page_size);
 
+    // Map headers
+    mm->map_memory(virtual_address{nth.OptionalHeader.ImageBase}, round_up(nth.OptionalHeader.SizeOfHeaders, memory_manager::page_size), memory_type::read, image_phys);
     for (const auto& s : nth.sections()) {
         //dbgout() << format_str((char*)s.Name).width(8) << " " << as_hex(s.Characteristics) << " " << as_hex(s.VirtualAddress) << " " << as_hex(s.Misc.VirtualSize) << "\n";
         memory_type t{};
         if (s.Characteristics & pe::IMAGE_SCN_MEM_EXECUTE) t = t | memory_type::execute;
         if (s.Characteristics & pe::IMAGE_SCN_MEM_READ)    t = t | memory_type::read;
         if (s.Characteristics & pe::IMAGE_SCN_MEM_WRITE)   t = t | memory_type::write;
-        mm->map_memory(virtual_address{nth.OptionalHeader.ImageBase + s.VirtualAddress}, (s.Misc.VirtualSize+memory_manager::page_size-1)&~(memory_manager::page_size-1), t, image_phys + s.PointerToRawData);
+        mm->map_memory(virtual_address{nth.OptionalHeader.ImageBase + s.VirtualAddress}, round_up(s.Misc.VirtualSize, memory_manager::page_size), t, image_phys + s.PointerToRawData);
     }
 
     // Switch to the new PML4
@@ -421,6 +423,11 @@ void interactive_mode(ps2::controller& ps2c)
                     } else if (string_equal(cmd.begin(), "T")) {
                         dbgout() << "\nTest\n";
                         test_func2();
+                    } else if (string_equal(cmd.begin(), "X")) {
+                        dbgout() << "\nTesting NX\n";
+                        using fp = void(*)(void);
+                        auto f = (fp)(void*)"\xc3";
+                        f();
                     } else {
                         dbgout() << "\nCOMMAND IGNORED: '" << cmd.begin() << "'\n";
                     }

@@ -57,6 +57,18 @@ constexpr uint64_t gdt_entry(uint16_t flags, uint32_t base, uint32_t limit) {
          | ((uint64_t)(base  & 0xff000000) << (56-24));
 }
 
+
+constexpr uint32_t msr_efer = 0xc0000080;
+
+constexpr uint32_t efer_sce_flag   = 1U<<0;  // SysCall exetension
+constexpr uint32_t efer_lme_flag   = 1U<<8;  // Long Mode Enabled
+constexpr uint32_t efer_lma_flag   = 1U<<9;  // Long Mode Active
+constexpr uint32_t efer_nxe_flag   = 1U<<11; // No-eXecute Enabled
+constexpr uint32_t efer_svme_flag  = 1U<<12; // Secure Virtual Machine Enabled
+constexpr uint32_t efer_lmsle_flag = 1U<<13; // Long Mode Segment Limit Enabled
+constexpr uint32_t efer_ffxsr_flag = 1U<<14; // Fast fxsave/fxrstor
+constexpr uint32_t efer_tce_flag   = 1U<<15; // Translation Cache Extension
+
 template<typename F>
 inline F* make_fun(const char* code) {
     return (F*)(void*)code;
@@ -83,7 +95,6 @@ inline F* make_fun(const char* code) {
 #define C_XCHG_BX_BX        C_OPSIZE "\x87\xDB"
 #define C_LTR_CX            "\x0F\x00\xD9"
 
-void (*bochs_magic)() = make_fun<void (void)>(C_XCHG_BX_BX C_RET);
 const auto read_cs = make_fun<uint16_t ()>(C_MOV_AX_CS C_RET);
 const auto ltr = make_fun<void (uint16_t)>(C_LTR_CX C_RET);
 
@@ -111,7 +122,7 @@ public:
 
         constexpr uint64_t tss_limit = sizeof(tss)-1;
         constexpr uint64_t tss_type  = 0x89; // Type=64 bit TSS (available) + present
-        const auto tss_base = virtual_address::in_current_address_space(&tss_);
+        const auto tss_base = static_cast<uint64_t>(virtual_address::in_current_address_space(&tss_));
         gdt[gdt_null]      = gdt_entry(0x0000, 0, 0x00000); // 0x00 null
         gdt[gdt_kernel_cs] = gdt_entry(0xa09a, 0, 0xfffff); // 0x08 kernel code
         gdt[gdt_kernel_ds] = gdt_entry(0x8092, 0, 0xfffff); // 0x10 kernel data
@@ -124,10 +135,16 @@ public:
         _lgdt(&gdt_desc);
         ltr(gdt_tss0_low * 8);
         iretq(kernel_cs);
+
+        // Enable NX (after using all the dirty functions)
+        old_efer_ = __readmsr(msr_efer);
+        __writemsr(msr_efer, old_efer_ | efer_nxe_flag);
     }
 
     ~cpu_manager_impl() {
         dbgout() << "[cpu] Shutting down. Restoring GDT to limit " << as_hex(old_gdt_desc_.limit) << " base " << as_hex(old_gdt_desc_.base) << " CS " << as_hex(old_cs_) << "\n";
+        // Restore EFER first (disabling NX) first
+        __writemsr(msr_efer, old_efer_);
         _lgdt(&old_gdt_desc_);
         iretq(old_cs_);
     }
@@ -149,6 +166,7 @@ private:
     gdt_descriptor old_gdt_desc_;
     uint16_t       old_cs_;
     tss            tss_;
+    uint64_t       old_efer_;
     uint64_t       switch_to_context_rip_ = 0;
 
     enum gdt_entries {

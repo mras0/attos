@@ -166,7 +166,7 @@ void default_print_address(out_stream& os, const IMAGE_DOS_HEADER&, uint64_t add
 // Unwind public
 //
 
-void print_stack(out_stream& os, find_image_function_type find_image, print_address_function_type print_address) {
+void print_stack(out_stream& os, find_image_function_type find_image, print_address_function_type print_address, int skip) {
     if (!print_address) print_address = &default_print_address;
 
     os << "Child-SP          RetAddr           Call Site\n";
@@ -177,9 +177,13 @@ void print_stack(out_stream& os, find_image_function_type find_image, print_addr
             break;
         }
         auto next = unwind_once(context, *image);
-        os << as_hex(context.rsp) << " " << as_hex(next.rip) << " ";
-        print_address(os, *image, context.rip);
-        os << "\n";
+        if (!skip) {
+            os << as_hex(context.rsp) << " " << as_hex(next.rip) << " ";
+            print_address(os, *image, context.rip);
+            os << "\n";
+        } else {
+            --skip;
+        }
         context = next;
     }
 }

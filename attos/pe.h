@@ -288,7 +288,7 @@ uint32_t file_size_from_header(const IMAGE_DOS_HEADER& image);
 //
 using find_image_function_type = const IMAGE_DOS_HEADER* (*)(uint64_t);
 using print_address_function_type = void (out_stream&, const IMAGE_DOS_HEADER&, uint64_t);
-void print_stack(out_stream& os, find_image_function_type find_image, print_address_function_type print_address);
+void print_stack(out_stream& os, find_image_function_type find_image, print_address_function_type print_address, int skip);
 
 } } // namespace attos::pe
 

@@ -107,11 +107,11 @@ public:
         code_[pos_++] = static_cast<uint8_t>(imm);
     }
 
-    void call_rel32(const void* target) {
-        constexpr uint8_t call_rel32_opcode = 0xE9;
+    void jmp_rel32(const void* target) {
+        constexpr uint8_t jmp_rel32_opcode = 0xE9;
         const int64_t offset =  static_cast<const uint8_t*>(target) - (code_ + pos_ + 5);
         REQUIRE(offset >= INT32_MIN && offset <= INT32_MAX);
-        code_[pos_++] = call_rel32_opcode;
+        code_[pos_++] = jmp_rel32_opcode;
         *reinterpret_cast<int32_t*>(code_ + pos_) = static_cast<int32_t>(offset);
         pos_ += 4;
     }
@@ -309,15 +309,27 @@ public:
     explicit isr_handler_impl(char* debug_info_text) : debug_info_(debug_info_text), irq_handlers_() {
         __sidt(&old_idt_desc_);
         dbgout() << "[isr] Loading interrupt descriptor table.\n";
+
+        const auto page_mask          = memory_manager::page_size - 1;
+        const auto old_isr_code_virt  = virtual_address::in_current_address_space(&isr_code_[0]);
+        const auto isr_code_page      = old_isr_code_virt & ~page_mask;
+        const auto isr_code_end_page  = (old_isr_code_virt + sizeof(isr_code_)) & ~page_mask;
+        const auto isr_code_virt_size = (isr_code_end_page + memory_manager::page_size) - isr_code_page;
+        const auto isr_code_virt = kmemory_manager().virtual_alloc(isr_code_virt_size);
+        dbgout() << "old " << as_hex(isr_code_page) << " size " << as_hex((uint32_t)isr_code_virt_size) << " new " << as_hex((uint64_t)isr_code_virt) << "\n";
+        kmemory_manager().map_memory(isr_code_virt, isr_code_virt_size, memory_type_rx, virt_to_phys(&isr_code_) & ~page_mask);
+
+        auto isr_code = reinterpret_cast<uint8_t*>(static_cast<uint64_t>(isr_code_virt + (old_isr_code_virt & page_mask)));
+
         for (int i = 0; i < idt_count; ++i) {
             const auto n = static_cast<interrupt_number>(i);
-            uint8_t* const code = &isr_code_[isr_code_size * i];
+            uint8_t* const code = &isr_code[isr_code_size * i];
             code_builder c{code};
             if (!has_error_code(n)) {
                 c.push_imm8(0);
             }
             c.push_imm8(static_cast<uint8_t>(i));
-            c.call_rel32(&isr_common);
+            c.jmp_rel32(&isr_common);
             set_idt_entry(idt_[i], code, is_user_callable(n) ? descriptor_privilege_level::user : descriptor_privilege_level::kernel);
         }
         idt_desc_.limit = sizeof(idt_)-1;
@@ -356,6 +368,7 @@ public:
 private:
     static constexpr int idt_count     = 256;
     static constexpr int isr_code_size = 9;
+    static_assert(isr_code_size * idt_count <= memory_manager::page_size, "");
 
     debug_info_manager              debug_info_;
     pic_state                       pic_state_;
@@ -436,14 +449,20 @@ __declspec(noreturn) void unhandled_interrupt(const registers& r)
     dbgout() << "cs: " << as_hex(r.cs).width(2) << " ss: " << as_hex(r.ss).width(2) << "\n";
 
     if (r.interrupt_no == interrupt_number::PF) {
-        dbgout() << "Page fault. cr2 = " << as_hex(__readcr2()) << "\n";
+        dbgout() << "Page fault. cr2 = " << as_hex(__readcr2()) << " error ";
+        dbgout() << (r.error_code & pf_error_code_mask_p ? 'P' : ' ');
+        dbgout() << (r.error_code & pf_error_code_mask_w ? 'W' : ' ');
+        dbgout() << (r.error_code & pf_error_code_mask_u ? 'U' : ' ');
+        dbgout() << (r.error_code & pf_error_code_mask_r ? 'R' : ' ');
+        dbgout() << (r.error_code & pf_error_code_mask_i ? 'I' : ' ');
+        dbgout() << "\n";
     }
 
     static bool isr_recurse_flag;
     REQUIRE(!isr_recurse_flag);
     isr_recurse_flag = true;
 
-    print_stack(dbgout(), find_image, print_address);
+    print_stack(dbgout(), find_image, print_address, 4);
 
     isr_recurse_flag = false;
 
