@@ -68,6 +68,12 @@ constexpr T operator+(address_base<T> l, uint64_t r) {
 }
 
 template<typename T>
+constexpr T operator-(address_base<T> l, uint64_t r) {
+    return T{static_cast<uint64_t>(l) - r};
+}
+
+
+template<typename T>
 constexpr T operator&(address_base<T> l, uint64_t r) {
     return T{static_cast<uint64_t>(l) & r};
 }

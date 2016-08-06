@@ -281,6 +281,13 @@ inline array_view<IMAGE_SECTION_HEADER> IMAGE_NT_HEADERS::sections() const {
     return {begin, end};
 }
 
+inline constexpr bool is_64bit_exe(const pe::IMAGE_DOS_HEADER& h) {
+    return h.e_magic == IMAGE_DOS_SIGNATURE
+        && h.nt_headers().Signature == IMAGE_NT_SIGNATURE
+        && h.nt_headers().FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64
+        && h.nt_headers().OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+}
+
 uint32_t file_size_from_header(const IMAGE_DOS_HEADER& image);
 
 //

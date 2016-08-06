@@ -6,7 +6,7 @@
 @set vgaobj=text_screen.obj
 @set netcpp=net\net.cpp net\i825x.cpp net\tftp.cpp
 @set netobj=net.obj i825x.obj tftp.obj
-cl %ATTOS_CXXFLAGS% /c %cpp%
-lib /out:attos.lib /nologo /ignore:4221 %cpp:.cpp=.obj% %vgaobj% %netobj%
+cl %ATTOS_CXXFLAGS% /c %cpp% || (popd & exit /b 1)
+lib /out:attos.lib /nologo /ignore:4221 %cpp:.cpp=.obj% %vgaobj% %netobj% || (popd & exit /b 1)
 @endlocal
 @popd

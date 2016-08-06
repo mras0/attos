@@ -179,6 +179,8 @@ private:
     }
 };
 
+physical_address alloc_physical(uint64_t bytes);
+
 kowned_ptr<memory_manager> create_default_memory_manager();
 
 } // namespace attos

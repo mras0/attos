@@ -312,7 +312,6 @@ owned_ptr<memory_manager, destruct_deleter> construct_mm(const smap_entry* smap,
     // Map in kernel executable image
     const auto& nth = image_base.nt_headers();
     const auto image_phys = physical_address::from_identity_mapped_ptr(&image_base);
-    const auto image_size = round_up(nth.OptionalHeader.SizeOfImage, memory_manager::page_size);
 
     // Map headers
     mm->map_memory(virtual_address{nth.OptionalHeader.ImageBase}, round_up(nth.OptionalHeader.SizeOfHeaders, memory_manager::page_size), memory_type::read, image_phys);
@@ -333,26 +332,6 @@ owned_ptr<memory_manager, destruct_deleter> construct_mm(const smap_entry* smap,
 } // namespace attos
 
 using namespace attos;
-
-struct arguments {
-    const pe::IMAGE_DOS_HEADER& image_base() const {
-        return *static_cast<const pe::IMAGE_DOS_HEADER*>(image_base_);
-    }
-
-    const uint8_t* orig_file_data() const {
-        return static_cast<const uint8_t*>(orig_file_data_);
-    }
-
-    const smap_entry* smap_entries() const {
-        return static_cast<const smap_entry*>(smap_entries_);
-    }
-
-private:
-    physical_address image_base_;
-    physical_address orig_file_data_;
-    physical_address smap_entries_;
-};
-
 
 class interrupt_timer : public singleton<interrupt_timer> {
 public:
@@ -435,8 +414,52 @@ extern "C" void syscall_service_routine(registers& regs)
     dbgout() << "Got syscall from " << as_hex(regs.rcx) << " flags = " << as_hex(regs.r11) << "!\n";
 }
 
-void usermode_test(cpu_manager& cpum)
+void alloc_and_copy_section(memory_manager& mm, virtual_address virt, uint32_t virt_size, memory_type t, const void* source, uint32_t src_size)
 {
+    constexpr auto page_mask = memory_manager::page_size-1;
+    REQUIRE((virt & page_mask) == 0);
+
+    const auto phys_size = round_up(virt_size, memory_manager::page_size);
+    auto phys = alloc_physical(phys_size);
+
+    if (src_size) {
+        const auto to_copy = std::min(virt_size, src_size);
+        //dbgout() << "Copy from " << as_hex((uint64_t)source) << " size " << as_hex(to_copy) << "\n";
+        memcpy(static_cast<void*>(phys), source, to_copy);
+    }
+    //dbgout() << "Map " << as_hex(static_cast<uint64_t>(virt)) << " size " << as_hex(virt_size) << " " << as_hex((uint32_t)t) << "\n";
+    mm.map_memory(virt, phys_size, t, phys);
+}
+
+void alloc_and_map_user_exe(memory_manager& mm, const pe::IMAGE_DOS_HEADER& image)
+{
+    REQUIRE(is_64bit_exe(image));
+    const auto& nth = image.nt_headers();
+
+    const auto image_base = virtual_address{nth.OptionalHeader.ImageBase};
+
+    // Map headers
+    alloc_and_copy_section(mm, image_base, nth.OptionalHeader.SizeOfHeaders, memory_type::read | memory_type::user, &image, nth.OptionalHeader.SizeOfHeaders);
+
+    // Map sections
+    for (const auto& s : nth.sections()) {
+        memory_type t = memory_type::user;
+        if (s.Characteristics & pe::IMAGE_SCN_MEM_EXECUTE) t = t | memory_type::execute;
+        if (s.Characteristics & pe::IMAGE_SCN_MEM_READ)    t = t | memory_type::read;
+        if (s.Characteristics & pe::IMAGE_SCN_MEM_WRITE)   t = t | memory_type::write;
+        alloc_and_copy_section(mm, image_base + s.VirtualAddress, s.Misc.VirtualSize, t, reinterpret_cast<const uint8_t*>(&image) + s.PointerToRawData, s.SizeOfRawData);
+    }
+
+    // Map stack
+    const uint64_t stack_size = 0x1000;
+    REQUIRE(nth.OptionalHeader.SizeOfStackCommit == stack_size);
+    alloc_and_copy_section(mm, image_base - stack_size, stack_size, memory_type_rw | memory_type::user, nullptr, 0);
+}
+
+void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
+{
+    auto mm = create_default_memory_manager();
+
     const auto old_efer = __readmsr(msr_efer);
     const auto old_cr3 = __readcr3();
 
@@ -448,6 +471,13 @@ void usermode_test(cpu_manager& cpum)
     __writemsr(msr_fmask, rflag_mask_tf | rflag_mask_if | rflag_mask_df | rflag_mask_iopl | rflag_mask_ac);
     __writemsr(msr_efer, old_efer | efer_mask_sce);
 
+#if 1
+    alloc_and_map_user_exe(*mm, image);
+    const uint64_t image_base = image.nt_headers().OptionalHeader.ImageBase;
+    const uint64_t user_rsp = image_base - 8;
+    const uint64_t user_rip = image_base + image.nt_headers().OptionalHeader.AddressOfEntryPoint;
+#else
+    (void)image;
     const physical_address user_area{4<<20};
     auto user_area_ptr = static_cast<uint8_t*>(user_area);
 
@@ -457,13 +487,14 @@ void usermode_test(cpu_manager& cpum)
 
     const virtual_address user_area_virt{1<<16};
     const auto user_rsp = static_cast<uint64_t>(user_area) + (1<<20);
-    auto mm = create_default_memory_manager();
     mm->map_memory(user_area_virt, memory_manager::page_size, memory_type_rwx | memory_type::user, user_area);
     //print_page_tables(mm->pml4());
+    const uint64_t user_rip = user_area_virt;
+#endif
 
     __writecr3(mm->pml4()); // set user process PML4
     dbgout() << "Doing magic!\n";
-    cpum.switch_to_context(user_cs, user_area_virt, user_ds, user_rsp, __readeflags());
+    cpum.switch_to_context(user_cs, user_rip, user_ds, user_rsp, __readeflags());
     __writecr3(old_cr3); // restore CR3
     __writemsr(msr_efer, old_efer); // Disable SYSCALL
     dbgout() << "Bach from magic!\n";
@@ -1212,6 +1243,25 @@ void nettest(net::ethernet_device& dev)
     }
 }
 
+struct arguments {
+    const pe::IMAGE_DOS_HEADER& image_base() const {
+        return *static_cast<const pe::IMAGE_DOS_HEADER*>(image_base_);
+    }
+
+    const uint8_t* orig_file_data() const {
+        return static_cast<const uint8_t*>(orig_file_data_);
+    }
+
+    const smap_entry* smap_entries() const {
+        return static_cast<const smap_entry*>(smap_entries_);
+    }
+
+private:
+    physical_address image_base_;
+    physical_address orig_file_data_;
+    physical_address smap_entries_;
+};
+
 void stage3_entry(const arguments& args)
 {
     // First make sure we can output debug information
@@ -1221,13 +1271,18 @@ void stage3_entry(const arguments& args)
     // Initialize GDT
     auto cpu = cpu_init();
 
+    REQUIRE(is_64bit_exe(args.image_base()));
+
     // Construct initial memory manager
     auto mm = construct_mm(args.smap_entries(), args.image_base());
 
     // Prepare debugging data
     const auto file_size = file_size_from_header(args.image_base());
     auto debug_info_text = (char*)args.orig_file_data() + file_size;
+    const auto& user_exe = *reinterpret_cast<const pe::IMAGE_DOS_HEADER*>(debug_info_text + string_length(debug_info_text) + 1);
+
     // Initialize interrupt handlers
+
     auto ih = isr_init(debug_info_text);
 
     interrupt_timer timer{}; // IRQ0 PIT
@@ -1242,7 +1297,7 @@ void stage3_entry(const arguments& args)
     //ata::test();
 
     // User mode
-    usermode_test(*cpu);
+    usermode_test(*cpu, user_exe);
 
     // Networking
     net::ethernet_device_ptr netdev{};

@@ -83,7 +83,7 @@ auto find_mapping(memory_mapping::tree_type& t, virtual_address addr, uint64_t l
     return std::find_if(t.begin(), t.end(), [addr, length](const auto& m) { return memory_areas_overlap(addr, length, m.address(), m.length()); });
 }
 
-physical_address alloc_physical_page();
+physical_address alloc_physical_page() { return alloc_physical(memory_manager::page_size); }
 
 constexpr uint64_t kernel_map_start    = 0xFFFFFFFF'FF000000;
 
@@ -185,16 +185,16 @@ private:
         memory_map_tree_.insert(*mm);
 
         for (; length; length -= map_page_size, virt += map_page_size, phys += map_page_size) {
-            auto* pdp = alloc_if_not_present(pml4_[virt.pml4e()], flags);
+            auto* pdp = alloc_if_not_present(pml4_[virt.pml4e()], flags | PAGEF_WRITE);
 
             if (static_cast<uint32_t>(type & memory_type::ps_1gb)) {
                 pdp[virt.pdpe()] = phys | PAGEF_PAGESIZE | page_flags;
             } else {
-                auto* pd = alloc_if_not_present(pdp[virt.pdpe()], flags);
+                auto* pd = alloc_if_not_present(pdp[virt.pdpe()], flags | PAGEF_WRITE);
                 if (static_cast<uint32_t>(type & memory_type::ps_2mb)) {
                     pd[virt.pde()] = phys | PAGEF_PAGESIZE | page_flags;
                 } else {
-                    auto* pt = alloc_if_not_present(pd[virt.pde()], flags);
+                    auto* pt = alloc_if_not_present(pd[virt.pde()], flags | PAGEF_WRITE);
                     pt[virt.pte()] = phys | page_flags;
                 }
             }
@@ -479,9 +479,8 @@ void iomem_unmap(volatile void* virt, uint64_t length)
     dbgout() << "[mem] Ignoring I/O mem unmap request virt = " << as_hex((uint64_t)virt) << " length = " << as_hex(length) << "\n";
 }
 
-// Internal use only
-physical_address alloc_physical_page() {
-    return kernel_memory_manager::instance().alloc_physical(memory_manager::page_size);
+physical_address alloc_physical(uint64_t bytes) {
+    return kernel_memory_manager::instance().alloc_physical(bytes);
 }
 
 kowned_ptr<memory_manager> create_default_memory_manager() {
