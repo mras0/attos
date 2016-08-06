@@ -419,7 +419,9 @@ extern "C" void syscall_service_routine(registers& regs)
             restore_original_context();
             REQUIRE(false);
         case 1:
-            dbgout() << "[user] '" << reinterpret_cast<const char*>(regs.rdx) << "'\n";
+            dbgout() << "[user] '";
+            dbgout().write(reinterpret_cast<const char*>(regs.rdx), regs.r8);
+            dbgout() << "'\n";
             break;
         default:
             REQUIRE(!"Unimplemented syscall");
@@ -488,7 +490,7 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
 
     alloc_and_map_user_exe(*mm, image);
     const uint64_t image_base = image.nt_headers().OptionalHeader.ImageBase;
-    const uint64_t user_rsp = image_base - 8;
+    const uint64_t user_rsp = image_base - 0x28;
     const uint64_t user_rip = image_base + image.nt_headers().OptionalHeader.AddressOfEntryPoint;
 
     __writecr3(mm->pml4()); // set user process PML4
