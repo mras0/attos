@@ -25,8 +25,14 @@ constexpr uint8_t data_port    = 0x60;
 constexpr uint8_t status_port  = 0x64; // when reading
 constexpr uint8_t command_port = 0x64; // when writing
 
-constexpr uint8_t status_mask_output_full = 0x01;
-constexpr uint8_t status_mask_input_fill  = 0x02;
+constexpr uint8_t status_mask_output_full      = 0x01;
+constexpr uint8_t status_mask_input_fill       = 0x02;
+constexpr uint8_t status_mask_system_status    = 0x04;
+constexpr uint8_t status_mask_is_command       = 0x08;
+constexpr uint8_t status_mask_keyboard_lock    = 0x10;
+constexpr uint8_t status_mask_transmit_timeout = 0x20;
+constexpr uint8_t status_mask_receive_timeout  = 0x40;
+constexpr uint8_t status_mask_parity_error     = 0x80;
 
 uint8_t data() {
     return __inbyte(ps2::data_port);
@@ -222,9 +228,6 @@ private:
     void isr() {
         const auto st = status();
         REQUIRE(st & status_mask_output_full);
-        if (st & ~status_mask_output_full) {
-            dbgout() << "[ps2] Status = 0x" << as_hex(st) << "\n";
-        }
 
         if (!buffer_.full()) {
             buffer_.push(data());
@@ -388,17 +391,6 @@ private:
     T& c_;
 };
 
-__declspec(noinline) void test_func()
-{
-    __debugbreak();
-}
-
-__declspec(noinline) void test_func2()
-{
-    dbgout() << "Trigger interrupt 0x80\n";
-    sw_int<0x80>();
-}
-
 void interactive_mode(ps2::controller& ps2c)
 {
     dbgout() << "Interactive mode. Use escape to quit.\n";
@@ -417,12 +409,6 @@ void interactive_mode(ps2::controller& ps2c)
                     if (string_equal(cmd.begin(), "EXIT")) {
                         dbgout() << "\nExit\n";
                         return;
-                    } else if (string_equal(cmd.begin(), "B")) {
-                        dbgout() << "\nBreak\n";
-                        test_func();
-                    } else if (string_equal(cmd.begin(), "T")) {
-                        dbgout() << "\nTest\n";
-                        test_func2();
                     } else if (string_equal(cmd.begin(), "X")) {
                         dbgout() << "\nTesting NX\n";
                         using fp = void(*)(void);
@@ -442,13 +428,32 @@ void interactive_mode(ps2::controller& ps2c)
     }
 }
 
+extern "C" void syscall_handler(void);
+
+extern "C" void syscall_service_routine(registers& regs)
+{
+    dbgout() << "Got syscall from " << as_hex(regs.rcx) << " flags = " << as_hex(regs.r11) << "!\n";
+}
+
 void usermode_test(cpu_manager& cpum)
 {
+    const auto old_efer = __readmsr(msr_efer);
     const auto old_cr3 = __readcr3();
+
+    // Enable SYSCALL
+    static_assert(kernel_cs + 8 == kernel_ds, "");
+    static_assert(user_ds + 8 == user_cs, "");
+    __writemsr(msr_star, (static_cast<uint64_t>(kernel_cs) << 32) | ((static_cast<uint64_t>(user_ds - 8)) << 48));
+    __writemsr(msr_lstar, reinterpret_cast<uint64_t>(&syscall_handler));
+    __writemsr(msr_fmask, rflag_mask_tf | rflag_mask_if | rflag_mask_df | rflag_mask_iopl | rflag_mask_ac);
+    __writemsr(msr_efer, old_efer | efer_mask_sce);
 
     const physical_address user_area{4<<20};
     auto user_area_ptr = static_cast<uint8_t*>(user_area);
-    user_area_ptr[0] = 0xCD; user_area_ptr[1] = 0x80; // int 0x80
+
+    //*user_area_ptr++ = 0x66; *user_area_ptr++ = 0x87; *user_area_ptr++ = 0xDB; // xchg bx,bx
+    *user_area_ptr++ = 0x0F; *user_area_ptr++ = 0x05;                          // syscall
+    *user_area_ptr++ = 0xCD; *user_area_ptr++ = 0x80;                          // int 0x80
 
     const virtual_address user_area_virt{1<<16};
     const auto user_rsp = static_cast<uint64_t>(user_area) + (1<<20);
@@ -460,6 +465,7 @@ void usermode_test(cpu_manager& cpum)
     dbgout() << "Doing magic!\n";
     cpum.switch_to_context(user_cs, user_area_virt, user_ds, user_rsp, __readeflags());
     __writecr3(old_cr3); // restore CR3
+    __writemsr(msr_efer, old_efer); // Disable SYSCALL
     dbgout() << "Bach from magic!\n";
 }
 

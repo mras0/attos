@@ -70,12 +70,12 @@ enum class interrupt_number : uint8_t {
     TEST = 0x80,
 };
 
-constexpr bool is_irq(interrupt_number n) {
-    return  n >= interrupt_number::IRQ0 && n <= interrupt_number::IRQF;
-}
-
 constexpr uint8_t irq_number(interrupt_number n) {
     return static_cast<uint8_t>(n) - static_cast<uint8_t>(interrupt_number::IRQ0);
+}
+
+constexpr bool is_irq(interrupt_number n) {
+    return  n >= interrupt_number::IRQ0 && n <= interrupt_number::IRQF;
 }
 
 constexpr bool has_error_code(interrupt_number n) {
@@ -90,6 +90,52 @@ constexpr bool has_error_code(interrupt_number n) {
 
 constexpr bool is_user_callable(interrupt_number n) {
     return n == interrupt_number::TEST;
+}
+
+out_stream& operator<<(out_stream& os, interrupt_number n) {
+    switch (n) {
+        case interrupt_number::DE:  return os << "#DE";
+        case interrupt_number::DB:  return os << "#DB";
+        case interrupt_number::NMI: return os << "NMI";
+        case interrupt_number::BP:  return os << "#BP";
+        case interrupt_number::OF:  return os << "#OF";
+        case interrupt_number::BR:  return os << "#BR";
+        case interrupt_number::UD:  return os << "#UD";
+        case interrupt_number::NM:  return os << "#NM";
+        case interrupt_number::DF:  return os << "#DF";
+        case interrupt_number::TS:  return os << "#TS";
+        case interrupt_number::NP:  return os << "#NP";
+        case interrupt_number::SS:  return os << "#SS";
+        case interrupt_number::GP:  return os << "#GP";
+        case interrupt_number::PF:  return os << "#PF";
+        case interrupt_number::MF:  return os << "#MF";
+        case interrupt_number::AC:  return os << "#AC";
+        case interrupt_number::MC:  return os << "#MC";
+        case interrupt_number::XF:  return os << "#XF";
+        case interrupt_number::SX:  return os << "#SX";
+
+    // Remapped IRQs
+        case interrupt_number::IRQ0:
+        case interrupt_number::IRQ1:
+        case interrupt_number::IRQ2:
+        case interrupt_number::IRQ3:
+        case interrupt_number::IRQ4:
+        case interrupt_number::IRQ5:
+        case interrupt_number::IRQ6:
+        case interrupt_number::IRQ7:
+        case interrupt_number::IRQ8:
+        case interrupt_number::IRQ9:
+        case interrupt_number::IRQA:
+        case interrupt_number::IRQB:
+        case interrupt_number::IRQC:
+        case interrupt_number::IRQD:
+        case interrupt_number::IRQE:
+        case interrupt_number::IRQF:
+            return os << "IRQ#" << irq_number(n);
+
+        default:
+            return os << "0x" << as_hex(n);
+    }
 }
 
 
@@ -421,14 +467,9 @@ void print_address(out_stream& os, const pe::IMAGE_DOS_HEADER&, uint64_t address
 
 __declspec(noreturn) void unhandled_interrupt(const registers& r)
 {
-    dbgout() << "Unhandled interrupt 0x" << as_hex(r.interrupt_no);
+    dbgout() << "Unhandled interrupt " << r.interrupt_no;
     if (has_error_code(r.interrupt_no)) {
         dbgout() << " error_code = " << as_hex(r.error_code);
-    }
-
-    if (is_irq(r.interrupt_no)) {
-        const auto irq = irq_number(r.interrupt_no);
-        dbgout() << " IRQ#" << irq << "\n";
     }
     dbgout() << "\n";
 

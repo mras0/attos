@@ -6,7 +6,10 @@
     section .text
 
     global isr_common
-    extern interrupt_service_routine ; void interrupt_service_routine(registers&);
+    global syscall_handler
+
+    extern interrupt_service_routine ; void interrupt_service_routine(registers&)
+    extern syscall_service_routine   ; void syscall_service_routine(registers&)
 
 struc registers
     .rax             resq 1
@@ -52,7 +55,7 @@ endstruc
 
 %define isr_common_reg_offset(REG)  isr_registers_offset + registers.%+REG
 
-%macro save_reg 1
+%macro isr_save_reg 1
     ;mov [rsp + isr_common_reg_offset(%1)], %1
     win64_prologue_save_reg isr_common_reg_offset(%1), %1
 %endmacro
@@ -63,22 +66,21 @@ win64_proc isr_common
     win64_prologue_alloc_unwind 2*8 ; error_code and interrupt_no
     ; save registers
     win64_prologue_alloc isr_common_stack_alloc
-    save_reg rax
-    save_reg rbx
-    save_reg rcx
-    save_reg rdx
-    save_reg rbp
-    save_reg rsi
-    save_reg rdi
-    save_reg r8
-    save_reg r9
-    save_reg r10
-    save_reg r11
-    save_reg r12
-    save_reg r13
-    save_reg r14
-    save_reg r15
-
+    isr_save_reg rax
+    isr_save_reg rbx
+    isr_save_reg rcx
+    isr_save_reg rdx
+    isr_save_reg rbp
+    isr_save_reg rsi
+    isr_save_reg rdi
+    isr_save_reg r8
+    isr_save_reg r9
+    isr_save_reg r10
+    isr_save_reg r11
+    isr_save_reg r12
+    isr_save_reg r13
+    isr_save_reg r14
+    isr_save_reg r15
     win64_prologue_end
 
     ; save fx state
@@ -87,7 +89,7 @@ win64_proc isr_common
     ; ensure direction flag is cleared
     cld
 
-    lea  rcx, [rsp+isr_registers_offset] ; arg = registers*
+    lea  rcx, [rsp+isr_registers_offset] ; arg = registers&
     call interrupt_service_routine
 
     ; restore fx state
@@ -97,3 +99,62 @@ win64_proc isr_common
     win64_epilogue
 
 win64_proc_end
+
+%define syscall_local_size (32+8) ; 32 bytes for the shadow space + 8 for alignment
+%define syscall_common_stack_alloc registers_size + syscall_local_size
+%define syscall_registers_offset syscall_local_size
+%define syscall_common_reg_offset(REG)  syscall_registers_offset + registers.%+REG
+
+%macro syscall_save_reg 1
+    win64_prologue_save_reg syscall_common_reg_offset(%1), %1
+%endmacro
+
+    align 16
+win64_proc syscall_handler
+    ; switch to kernel stack
+    xchg [syscall_stack_ptr], rsp
+    ; save registers
+    win64_prologue_alloc registers_saved_size
+    syscall_save_reg rax
+    syscall_save_reg rbx
+    syscall_save_reg rcx
+    syscall_save_reg rdx
+    syscall_save_reg rbp
+    syscall_save_reg rsi
+    syscall_save_reg rdi
+    syscall_save_reg r8
+    syscall_save_reg r9
+    syscall_save_reg r10
+    syscall_save_reg r11
+    syscall_save_reg r12
+    syscall_save_reg r13
+    syscall_save_reg r14
+    syscall_save_reg r15
+    win64_prologue_end
+
+    ; save fx state
+    fxsave [rsp+syscall_common_reg_offset(fx_state)]
+
+    lea  rcx, [rsp+syscall_registers_offset] ; arg = registers&
+    call syscall_service_routine
+
+    ; restore fx state
+    fxrstor [rsp+syscall_common_reg_offset(fx_state)]
+
+    ; restore registers
+    win64_epilogue
+    ; restore user stack
+    xchg [syscall_stack_ptr], rsp
+
+    ; Force REX.W prefix to ensure 64-bit return
+    o64 sysret
+
+win64_proc_end
+
+    section .data
+    syscall_stack_ptr dq syscall_kernel_stack_top
+
+    section .bss
+    align 4096
+    resb 4096
+syscall_kernel_stack_top:

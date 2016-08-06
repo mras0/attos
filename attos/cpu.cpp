@@ -57,18 +57,6 @@ constexpr uint64_t gdt_entry(uint16_t flags, uint32_t base, uint32_t limit) {
          | ((uint64_t)(base  & 0xff000000) << (56-24));
 }
 
-
-constexpr uint32_t msr_efer = 0xc0000080;
-
-constexpr uint32_t efer_sce_flag   = 1U<<0;  // SysCall exetension
-constexpr uint32_t efer_lme_flag   = 1U<<8;  // Long Mode Enabled
-constexpr uint32_t efer_lma_flag   = 1U<<9;  // Long Mode Active
-constexpr uint32_t efer_nxe_flag   = 1U<<11; // No-eXecute Enabled
-constexpr uint32_t efer_svme_flag  = 1U<<12; // Secure Virtual Machine Enabled
-constexpr uint32_t efer_lmsle_flag = 1U<<13; // Long Mode Segment Limit Enabled
-constexpr uint32_t efer_ffxsr_flag = 1U<<14; // Fast fxsave/fxrstor
-constexpr uint32_t efer_tce_flag   = 1U<<15; // Translation Cache Extension
-
 template<typename F>
 inline F* make_fun(const char* code) {
     return (F*)(void*)code;
@@ -138,7 +126,7 @@ public:
 
         // Enable NX (after using all the dirty functions)
         old_efer_ = __readmsr(msr_efer);
-        __writemsr(msr_efer, old_efer_ | efer_nxe_flag);
+        __writemsr(msr_efer, old_efer_ | efer_mask_nxe);
     }
 
     ~cpu_manager_impl() {
@@ -147,10 +135,6 @@ public:
         __writemsr(msr_efer, old_efer_);
         _lgdt(&old_gdt_desc_);
         iretq(old_cs_);
-    }
-
-    uint64_t& tss_rsp0() {
-        return tss_.rsp0;
     }
 
     void restore_switch_to_context(registers& r) {

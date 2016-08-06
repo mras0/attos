@@ -20,12 +20,6 @@ namespace attos {
 
 extern "C" void bochs_magic();
 
-template<uint8_t InterruptNo>
-void sw_int() {
-    static constexpr uint8_t code[] = { 0xCD, InterruptNo, 0xC3 }; // int InterruptNo; ret
-    ((void (*)(void))(void*)code)();
-}
-
 __declspec(noreturn) void fatal_error(const char* file, int line, const char* detail);
 
 template<typename T, typename U>
@@ -69,9 +63,15 @@ enum rflag_bits {
     rflag_bit_iopl = 12, // iopl
                          // iopl
     rflag_bit_nt   = 14, // nested task
+
+    rflag_bit_ac   = 18, // alignment check
 };
 
-constexpr auto rflag_mask_if = 1ULL << rflag_bit_if;
+constexpr auto rflag_mask_tf   = 1U << rflag_bit_tf;
+constexpr auto rflag_mask_if   = 1U << rflag_bit_if;
+constexpr auto rflag_mask_df   = 1U << rflag_bit_df;
+constexpr auto rflag_mask_iopl = 3U << rflag_bit_iopl;
+constexpr auto rflag_mask_ac   = 1U << rflag_bit_ac;
 
 enum class interrupt_number : uint8_t;
 
@@ -112,6 +112,28 @@ constexpr uint8_t pf_error_code_mask_w = 0x02; // Page fault was caused by a pag
 constexpr uint8_t pf_error_code_mask_u = 0x04; // Page fault was caused while CPL = 3
 constexpr uint8_t pf_error_code_mask_r = 0x08; // Page fault was caused by reading a 1 in a reserved field
 constexpr uint8_t pf_error_code_mask_i = 0x10; // Page fault was caused by an instruction fetch
+
+//
+// Model Specific Registers (MSRs)
+//
+
+constexpr uint32_t msr_efer           = 0xc0000080; // extended feature register
+constexpr uint32_t msr_star           = 0xc0000081; // legacy mode SYSCALL target
+constexpr uint32_t msr_lstar          = 0xc0000082; // long mode SYSCALL target
+constexpr uint32_t msr_cstar          = 0xc0000083; // compat mode SYSCALL target
+constexpr uint32_t msr_fmask          = 0xc0000084; // EFLAGS mask for syscall
+constexpr uint32_t msr_fs_base        = 0xc0000100; // FS base
+constexpr uint32_t msr_gs_base        = 0xc0000101; // GS base
+constexpr uint32_t msr_kernel_gs_base = 0xc0000102; // SWAPGS shadow base
+
+constexpr uint32_t efer_mask_sce   = 1U<<0;  // SysCall exetension
+constexpr uint32_t efer_mask_lme   = 1U<<8;  // Long Mode Enabled
+constexpr uint32_t efer_mask_lma   = 1U<<9;  // Long Mode Active
+constexpr uint32_t efer_mask_nxe   = 1U<<11; // No-eXecute Enabled
+constexpr uint32_t efer_mask_svme  = 1U<<12; // Secure Virtual Machine Enabled
+constexpr uint32_t efer_mask_lmsle = 1U<<13; // Long Mode Segment Limit Enabled
+constexpr uint32_t efer_mask_ffxsr = 1U<<14; // Fast fxsave/fxrstor
+constexpr uint32_t efer_mask_tce   = 1U<<15; // Translation Cache Extension
 
 class interrupt_disabler {
 public:
