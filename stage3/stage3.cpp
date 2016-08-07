@@ -14,6 +14,7 @@
 #include <attos/net/i825x.h>
 #include <attos/net/tftp.h>
 #include <attos/string.h>
+#include <attos/syscall.h>
 
 #define assert REQUIRE // undefined yadayda
 #include <attos/tree.h>
@@ -409,20 +410,29 @@ void interactive_mode(ps2::controller& ps2c)
 
 extern "C" void syscall_handler(void);
 
+net::ethernet_device* hack_netdev;
+
 extern "C" void syscall_service_routine(registers& regs)
 {
     dbgout() << "Got syscall 0x" << as_hex(regs.rax).width(0) << " from " << as_hex(regs.rcx) << " flags = " << as_hex(regs.r11) << "!\n";
 
-    switch (regs.rax) {
-        case 0:
+    switch (static_cast<syscall_number>(regs.rax)) {
+        case syscall_number::exit:
             dbgout() << "[user] Exiting with error code " << as_hex(regs.rdx) << "\n";
             restore_original_context();
             REQUIRE(false);
-        case 1:
+        case syscall_number::debug_print:
             dbgout() << "[user] '";
             dbgout().write(reinterpret_cast<const char*>(regs.rdx), regs.r8);
             dbgout() << "'\n";
             break;
+
+        case syscall_number::ethdev_hw_address:
+            REQUIRE("!ethdev_hw_address");
+        // mac_address hw_address();
+            break;
+// void send_packet(const void* data, uint32_t length);
+// void process_packets(const packet_process_function& ppf);
         default:
             REQUIRE(!"Unimplemented syscall");
     }
@@ -466,6 +476,8 @@ void alloc_and_map_user_exe(memory_manager& mm, const pe::IMAGE_DOS_HEADER& imag
     const uint64_t stack_size = 0x1000;
     REQUIRE(nth.OptionalHeader.SizeOfStackCommit == stack_size);
     alloc_and_copy_section(mm, image_base - stack_size, stack_size, memory_type_rw | memory_type::user, nullptr, 0);
+
+    hack_set_user_image(*(pe::IMAGE_DOS_HEADER*)(uint64_t)image_base);
 }
 
 void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
@@ -554,17 +566,20 @@ void stage3_entry(const arguments& args)
     // ATA
     //ata::test();
 
-    // User mode
-    usermode_test(*cpu, user_exe);
-
     // Networking
     net::ethernet_device_ptr netdev{};
 
     for (const auto& d : pci->devices()) {
         if (!!(netdev = net::i825x::probe(d))) {
-           break;
+            hack_netdev = netdev.get();
+            break;
         }
     }
+
+    // User mode
+    usermode_test(*cpu, user_exe);
+
+    hack_netdev = nullptr;
 
     if (netdev) {
         nettest(*netdev, []() {

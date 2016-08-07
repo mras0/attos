@@ -432,27 +432,42 @@ private:
     };
 };
 
-extern "C" pe::IMAGE_DOS_HEADER __ImageBase;
+pe::IMAGE_DOS_HEADER* user_image;
 
-bool in_image(uint64_t rip)
+void hack_set_user_image(pe::IMAGE_DOS_HEADER& image)
 {
-    const auto& ioh = __ImageBase.nt_headers().OptionalHeader;
+    REQUIRE(user_image == nullptr);
+    user_image = &image;
+}
+
+bool in_image(pe::IMAGE_DOS_HEADER& image, uint64_t rip)
+{
+    const auto& ioh = image.nt_headers().OptionalHeader;
     return (rip >= ioh.ImageBase && rip < ioh.ImageBase + ioh.SizeOfImage);
 }
 
+extern "C" pe::IMAGE_DOS_HEADER __ImageBase;
+
 const pe::IMAGE_DOS_HEADER* find_image(uint64_t rip)
 {
-    if (!in_image(rip)) {
-        return nullptr;
+    if (in_image(__ImageBase, rip)) {
+        return &__ImageBase;
     }
-    return &__ImageBase;
+    if (user_image && in_image(*user_image, rip)) {
+        return user_image;
+    }
+    return nullptr;
 }
 
-void print_address(out_stream& os, const pe::IMAGE_DOS_HEADER&, uint64_t address)
+void print_address(out_stream& os, const pe::IMAGE_DOS_HEADER& pe, uint64_t address)
 {
-    const auto& symbol = debug_info_manager::instance().closest_symbol(address);
-    os.write(symbol.text, symbol.text_length);
-    os << "+0x" << as_hex(static_cast<uint32_t>(address - symbol.address)).width(4);
+    if (&pe == &__ImageBase) {
+        const auto& symbol = debug_info_manager::instance().closest_symbol(address);
+        os.write(symbol.text, symbol.text_length);
+        os << "+0x" << as_hex(static_cast<uint32_t>(address - symbol.address)).width(4);
+    } else {
+        os << "<user-exe>+0x" << as_hex(address - pe.nt_headers().OptionalHeader.ImageBase).width(4);
+    }
 }
 
 __declspec(noreturn) void unhandled_interrupt(const registers& r)

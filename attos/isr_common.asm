@@ -113,8 +113,9 @@ win64_proc_end
 win64_proc syscall_handler
     ; switch to kernel stack
     xchg [syscall_stack_ptr], rsp
+
     ; save registers
-    win64_prologue_alloc registers_saved_size
+    win64_prologue_alloc syscall_common_stack_alloc
     syscall_save_reg rax
     syscall_save_reg rbx
     syscall_save_reg rcx
@@ -143,6 +144,7 @@ win64_proc syscall_handler
 
     ; restore registers
     win64_epilogue
+
     ; restore user stack
     xchg [syscall_stack_ptr], rsp
 
