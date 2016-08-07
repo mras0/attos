@@ -128,14 +128,14 @@ public:
         do_send_packet(data, length);
     }
 
-    void process_packets(const packet_process_function& ppf) {
-        do_process_packets(ppf);
+    void process_packets(const packet_process_function& ppf, int max_packets) {
+        do_process_packets(ppf, max_packets);
     }
 
 private:
     virtual mac_address do_hw_address() const = 0;
     virtual void do_send_packet(const void* data, uint32_t length) = 0;
-    virtual void do_process_packets(const packet_process_function& ppf) = 0;
+    virtual void do_process_packets(const packet_process_function& ppf, int max_packets) = 0;
 };
 
 using ethernet_device_ptr = kowned_ptr<ethernet_device>;

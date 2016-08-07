@@ -1,2 +1,2 @@
 @call ..\..\setflags.cmd
-cl %ATTOS_CXXFLAGS% disasm.cpp ..\..\attos\attos.lib || exit /b 1
+cl %ATTOS_CXXFLAGS% disasm.cpp ..\..\attos\attos_host.lib || exit /b 1

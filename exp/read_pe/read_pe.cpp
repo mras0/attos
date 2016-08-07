@@ -101,7 +101,7 @@ extern "C" void test_fun(void);
 constexpr uint32_t my_exception_code = 0x0000'FEDE; // WinDBG doesn't like exceptions that use the upper 16-bits of the exception code TODO: why?
 
 extern "C" void foo(void) {
-    print_stack(dbgout(), find_image, print_address);
+    print_stack(dbgout(), find_image, print_address, 0);
     dbgout() << "\nRaising exception " << as_hex(my_exception_code) << "\n";
     RaiseException(my_exception_code, 0, 0, nullptr);
 }

@@ -3,16 +3,6 @@
 
 namespace attos {
 
-void fatal_error(const char* file, int line, const char* detail)
-{
-    _disable();
-    dbgout() << file << ':' << line << ": " << detail << ".\nHanging\n";
-    bochs_magic();
-    for (;;) {
-        __halt();
-    }
-}
-
 #pragma pack(push, 1)
 struct gdt_descriptor {
     uint16_t limit;

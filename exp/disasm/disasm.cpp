@@ -518,6 +518,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0x98] = instruction_info{"cdqe"};             // CDQE
         instructions[0x99] = instruction_info{"cdq"};              // CDQ
         instructions[0x9c] = instruction_info{"pushfq", d64/*Fv*/};// PUSHFD/Q
+        instructions[0x9d] = instruction_info{"popfq", d64/*Fv*/}; // POPFD/Q
 
         instructions[0xa1] = instruction_info{"mov", rAXz, Ov};    // MOV rAX, moffs16/32/64
         instructions[0xa2] = instruction_info{"mov", Ob, rAL};     // MOV moffs8, rAL

@@ -134,7 +134,7 @@ public:
     }
 
     void process_packets() {
-        ethdev_.process_packets([this] (const uint8_t* data, uint32_t length) { eth_in(data, length); });
+        ethdev_.process_packets([this] (const uint8_t* data, uint32_t length) { eth_in(data, length); }, /*max_packets*/ 8);
     }
 
     mac_address hw_address() const {
@@ -750,7 +750,7 @@ bool do_dhcp(ipv4_ethernet_device& ipv4dev, should_quit_function_type should_qui
         }
         dhcp_h.tick();
         ipv4dev.process_packets();
-        __halt();
+        yield();
     }
     return false;
 }
@@ -767,11 +767,11 @@ void nettest(ethernet_device& dev, should_quit_function_type should_quit)
 
     tftp_client tftpc{ipv4dev, tftp_ip, "test.txt"};
     for (bool done = false; !should_quit() && !done; ) {
-        __halt();
         ipv4dev.process_packets();
         if (tftpc.tick() == tftp_client::result::done) {
             break;
         }
+        yield();
     }
 }
 

@@ -4,14 +4,6 @@
 #include <attos/net/tftp.h>
 #include <attos/cpu.h>
 
-namespace attos {
-void fatal_error(const char* file, int line, const char* detail) {
-    fprintf(stderr, "%s:%d: %s\n", file, line, detail);
-    abort();
-}
-
-} // namespace attos
-
 using namespace attos;
 using namespace attos::net;
 
@@ -31,27 +23,12 @@ private:
     const uint16_t     remote_port_;
 };
 
-#include <iostream>
 #include <winsock2.h>
 #include <memory>
 #include <vector>
 
-class attos_stream_wrapper : public attos::out_stream {
-public:
-    explicit attos_stream_wrapper(std::ostream& os) : os_(os) {
-        attos::set_dbgout(*this);
-    }
-    virtual void write(const void* data, size_t n) {
-        os_.write(reinterpret_cast<const char*>(data), n);
-    }
-private:
-    std::ostream& os_;
-};
-
 int main()
 {
-    attos_stream_wrapper asw{std::cout};
-
     WSADATA wsa_data;
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data)) {
         dbgout() << "Error initializing winsock\n";

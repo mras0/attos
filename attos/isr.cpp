@@ -478,6 +478,10 @@ __declspec(noreturn) void unhandled_interrupt(const registers& r)
     }
     dbgout() << "\n";
 
+    static bool isr_recurse_flag;
+    REQUIRE(!isr_recurse_flag);
+    isr_recurse_flag = true;
+
 #define PREG(reg, s) dbgout() << format_str(#reg).width(3) << ": " << as_hex(r.reg) << s
 #define PREG2(reg1, reg2) PREG(reg1, ' '); PREG(reg2, '\n')
     PREG2(rax, rcx);
@@ -491,7 +495,7 @@ __declspec(noreturn) void unhandled_interrupt(const registers& r)
     PREG(rip, ' ');
 #undef PREG2
 #undef PREG
-    dbgout() << "eflags " << as_hex(r.eflags) << "\n"; // eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
+    dbgout() << "eflags " << as_hex(r.eflags) << " "; // eflags 0x00000082: id vip vif ac vm rf nt IOPL=0 of df if tf SF zf af pf cf
     dbgout() << "cs: " << as_hex(r.cs).width(2) << " ss: " << as_hex(r.ss).width(2) << "\n";
 
     if (r.interrupt_no == interrupt_number::PF) {
@@ -504,11 +508,7 @@ __declspec(noreturn) void unhandled_interrupt(const registers& r)
         dbgout() << "\n";
     }
 
-    static bool isr_recurse_flag;
-    REQUIRE(!isr_recurse_flag);
-    isr_recurse_flag = true;
-
-    print_stack(dbgout(), find_image, print_address, /*4*/0);
+    print_stack(dbgout(), find_image, print_address, 4);
 
     isr_recurse_flag = false;
 

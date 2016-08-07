@@ -516,9 +516,9 @@ private:
 
     }
 
-    virtual void do_process_packets(const packet_process_function& ppf) override {
-        // Process at most `num_rx_descriptors' in one call to this function
-        for (uint32_t i = 0; i < num_rx_descriptors; ++i) {
+    virtual void do_process_packets(const packet_process_function& ppf, int max_packets) override {
+        REQUIRE(max_packets >= 1);
+        for (int i = 0; i < max_packets; ++i) {
             auto& rd = rx_desc_[rx_head_];
             if (!(rd.status & RXD_STAT_DD)) {
                 break;

@@ -5,11 +5,15 @@
 
     section .text
 
+    global syscall0
     global syscall1
     global syscall2
+    global syscall3
 
+syscall3:
 syscall2:
-win64_proc syscall1
+syscall1:
+win64_proc syscall0
     win64_prologue_push r11
     win64_prologue_end
     mov rax, rcx

@@ -23,10 +23,20 @@ public:
         do_map_memory(virt, length, type, phys);
     }
 
+    void* alloc(uint64_t length) {
+        return do_alloc(length);
+    }
+
+    void free(void* ptr) {
+        do_free(ptr);
+    }
+
 private:
     virtual physical_address do_pml4() const = 0;
     virtual virtual_address do_virtual_alloc(uint64_t length) = 0;
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) = 0;
+    virtual void* do_alloc(uint64_t length) = 0;
+    virtual void do_free(void* ptr) = 0;
 };
 
 using memory_manager_ptr = owned_ptr<memory_manager, destruct_deleter>;

@@ -9,7 +9,7 @@
 extern "C" void* memset(void* dest, int c, size_t count); // crt.asm
 #pragma function(memset)
 extern "C" void* memcpy(void* dest, const void* src, size_t count); // crt.asm
-#pragma function(memset)
+#pragma function(memcpy)
 
 #include <attos/mem.h>
 
@@ -21,6 +21,7 @@ namespace attos {
 extern "C" void bochs_magic();
 
 __declspec(noreturn) void fatal_error(const char* file, int line, const char* detail);
+void yield();
 
 template<typename T, typename U>
 constexpr auto round_up(T val, U align)

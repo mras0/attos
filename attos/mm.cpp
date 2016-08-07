@@ -201,6 +201,17 @@ private:
             //dbgout() << "[mem] " << as_hex(virt) << " " << as_hex(phys) << " " << as_hex(page_flags) << "\n";
         }
     }
+
+    virtual void* do_alloc(uint64_t size) override {
+        (void)size;
+        REQUIRE(!"Not implemented");
+        return nullptr;
+    }
+
+    virtual void do_free(void* ptr) override {
+        (void)ptr;
+        REQUIRE(!"Not implemented");
+    }
 };
 
 // Simple heap. The free blocks are kept in list sorted according to memory address. Memory blocks are coalesced on free().
@@ -341,14 +352,6 @@ public:
     kernel_memory_manager(const kernel_memory_manager&) = delete;
     kernel_memory_manager& operator=(const kernel_memory_manager&) = delete;
 
-    void* kalloc(uint64_t size) {
-        return kernel_heap_.alloc(size);
-    }
-
-    void kfree(void* ptr) {
-        kernel_heap_.free(reinterpret_cast<uint8_t*>(ptr));
-    }
-
     physical_address alloc_physical(uint64_t size) {
         size = round_up(size, page_size);
         auto ptr = physical_pages_.alloc(size);
@@ -373,6 +376,14 @@ private:
 
     virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
         return mm_->map_memory(virt, length, type, phys);
+    }
+
+    virtual void* do_alloc(uint64_t size) override {
+        return kernel_heap_.alloc(size);
+    }
+
+    virtual void do_free(void* ptr) override {
+        kernel_heap_.free(reinterpret_cast<uint8_t*>(ptr));
     }
 };
 object_buffer<kernel_memory_manager> mm_buffer;
@@ -450,15 +461,6 @@ physical_address virt_to_phys(physical_address pml4, virtual_address virt)
 physical_address virt_to_phys(const void* ptr)
 {
     return virt_to_phys(physical_address{__readcr3()}, virtual_address::in_current_address_space(ptr));
-}
-
-
-void* kalloc(uint64_t size) {
-    return kernel_memory_manager::instance().kalloc(size);
-}
-
-void kfree(void* ptr) {
-    kernel_memory_manager::instance().kfree(ptr);
 }
 
 memory_manager& kmemory_manager()

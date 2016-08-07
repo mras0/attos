@@ -21,6 +21,28 @@
 
 namespace attos {
 
+void* kalloc(uint64_t size) {
+    return kmemory_manager().alloc(size);
+}
+
+void kfree(void* ptr) {
+    kmemory_manager().free(ptr);
+}
+
+void yield() {
+    __halt();
+}
+
+void fatal_error(const char* file, int line, const char* detail) {
+    _disable();
+    dbgout() << file << ':' << line << ": " << detail << ".\nHanging\n";
+    bochs_magic();
+    for (;;) {
+        __halt();
+    }
+}
+
+
 namespace ps2 {
 constexpr uint8_t data_port    = 0x60;
 constexpr uint8_t status_port  = 0x64; // when reading
@@ -411,31 +433,70 @@ void interactive_mode(ps2::controller& ps2c)
 extern "C" void syscall_handler(void);
 
 net::ethernet_device* hack_netdev;
+const uint64_t hack_netdev_id = 42;
+uint64_t hack_process_exit_code;
 
 extern "C" void syscall_service_routine(registers& regs)
 {
-    dbgout() << "Got syscall 0x" << as_hex(regs.rax).width(0) << " from " << as_hex(regs.rcx) << " flags = " << as_hex(regs.r11) << "!\n";
-
+    // TODO: Check user addresses...
     switch (static_cast<syscall_number>(regs.rax)) {
         case syscall_number::exit:
             dbgout() << "[user] Exiting with error code " << as_hex(regs.rdx) << "\n";
+            hack_process_exit_code = regs.rdx;
             restore_original_context();
             REQUIRE(false);
         case syscall_number::debug_print:
-            dbgout() << "[user] '";
             dbgout().write(reinterpret_cast<const char*>(regs.rdx), regs.r8);
-            dbgout() << "'\n";
             break;
-
+        case syscall_number::yield:
+            _enable();
+            yield();
+            break;
+        case syscall_number::ethdev_create:
+            dbgout() << "[user] ethdev_create - id = " << hack_netdev_id << "\n";
+            *reinterpret_cast<uint64_t*>(regs.rdx) = hack_netdev_id;
+            break;
+        case syscall_number::ethdev_destroy:
+            dbgout() << "[user] ethdev_destroy - id = " << regs.rdx << "\n";
+            REQUIRE(regs.rdx == hack_netdev_id);
+            break;
         case syscall_number::ethdev_hw_address:
-            REQUIRE("!ethdev_hw_address");
-        // mac_address hw_address();
-            break;
-// void send_packet(const void* data, uint32_t length);
-// void process_packets(const packet_process_function& ppf);
+            {
+                //dbgout() << "[user] ethdev_hw_address - id = " << regs.rdx << "\n";
+                REQUIRE(regs.rdx == hack_netdev_id);
+                REQUIRE(hack_netdev != nullptr);
+                const auto hw_address = hack_netdev->hw_address();
+                memcpy(reinterpret_cast<void*>(regs.r8), &hw_address, sizeof(hw_address));
+                break;
+            }
+        case syscall_number::ethdev_send:
+            {
+                //dbgout() << "[user] ethdev_send - id = " << regs.rdx << " data " << as_hex(regs.r8) << " len " << as_hex(regs.r9).width(0) << "\n";
+                REQUIRE(regs.rdx == hack_netdev_id);
+                REQUIRE(hack_netdev != nullptr);
+                _enable();
+                hack_netdev->send_packet(reinterpret_cast<const void*>(regs.r8), static_cast<uint32_t>(regs.r9));
+                break;
+            }
+        case syscall_number::ethdev_recv:
+            {
+                //dbgout() << "[user] ethdev_recv - id = " << regs.rdx << " data " << as_hex(regs.r8) << " len " << as_hex(regs.r9) << "\n";
+                REQUIRE(regs.rdx == hack_netdev_id);
+                REQUIRE(hack_netdev != nullptr);
+                int packets = 0;
+                *reinterpret_cast<uint32_t*>(regs.r9) = 0;
+                hack_netdev->process_packets([&packets, &regs] (const uint8_t* data, uint32_t len) {
+                    REQUIRE(packets++ == 0);
+                    memcpy(reinterpret_cast<void*>(regs.r8), data, len);
+                    *reinterpret_cast<uint32_t*>(regs.r9) = len;
+                }, 1);
+                break;
+            }
         default:
+            dbgout() << "Got syscall 0x" << as_hex(regs.rax).width(0) << " from " << as_hex(regs.rcx) << " flags = " << as_hex(regs.r11) << "!\n";
             REQUIRE(!"Unimplemented syscall");
     }
+    _disable(); // Disable interrupts again
 }
 
 void alloc_and_copy_section(memory_manager& mm, virtual_address virt, uint32_t virt_size, memory_type t, const void* source, uint32_t src_size)
@@ -473,8 +534,8 @@ void alloc_and_map_user_exe(memory_manager& mm, const pe::IMAGE_DOS_HEADER& imag
     }
 
     // Map stack
-    const uint64_t stack_size = 0x1000;
-    REQUIRE(nth.OptionalHeader.SizeOfStackCommit == stack_size);
+    const uint64_t stack_size = 0x1000 * 8;
+    REQUIRE(nth.OptionalHeader.SizeOfStackCommit <= stack_size);
     alloc_and_copy_section(mm, image_base - stack_size, stack_size, memory_type_rw | memory_type::user, nullptr, 0);
 
     hack_set_user_image(*(pe::IMAGE_DOS_HEADER*)(uint64_t)image_base);
@@ -511,6 +572,10 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
     __writecr3(old_cr3); // restore CR3
     __writemsr(msr_efer, old_efer); // Disable SYSCALL
     dbgout() << "Bach from magic!\n";
+    if (hack_process_exit_code) {
+        dbgout() << "Process exit code " << as_hex(hack_process_exit_code) << " - press any key.\n";
+        read_key();
+    }
 }
 
 struct arguments {
