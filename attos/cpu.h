@@ -29,25 +29,6 @@ constexpr auto round_up(T val, U align)
     return val % align ? val + align - (val % align) : val;
 }
 
-static constexpr uint16_t kernel_cs = 0x08;
-static constexpr uint16_t kernel_ds = 0x10;
-static constexpr uint16_t user_cs   = 0x23;
-static constexpr uint16_t user_ds   = 0x1b;
-
-class __declspec(novtable) cpu_manager {
-public:
-    virtual ~cpu_manager() {}
-
-    void switch_to_context(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags) {
-        do_switch_to_context(cs, rip, ss, rsp, flags);
-    }
-
-private:
-    virtual void do_switch_to_context(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags) = 0;
-};
-
-owned_ptr<cpu_manager, destruct_deleter> cpu_init();
-
 enum rflag_bits {
     rflag_bit_cf   = 0,  // carry
     rflag_bit_res1 = 1,  // reserved (always 1)
@@ -157,8 +138,6 @@ enum class descriptor_privilege_level : uint8_t {
     kernel = 0,
     user   = 3
 };
-
-void restore_original_context();
 
 }  // namespace attos
 

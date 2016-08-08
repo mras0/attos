@@ -2,7 +2,7 @@
 #define ATTOS_NET_I825X_H
 
 #include <attos/net/net.h>
-#include <attos/pci.h>
+#include "pci.h"
 #include "mm.h"
 
 namespace attos { namespace net { namespace i825x {

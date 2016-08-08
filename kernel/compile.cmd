@@ -2,7 +2,7 @@
 @setlocal
 @call ..\setflags.cmd
 nasm %ATTOS_ASFLAGS% isr_common.asm -o isr_common.obj || (popd & exit /b 1)
-cl %ATTOS_CXXFLAGS% /FAs kernel.cpp mm.cpp isr.cpp i825x.cpp text_screen.cpp isr_common.obj ..\attos\attos.lib  /link%ATTOS_LDFLAGS% /nodefaultlib /entry:stage3_entry /subsystem:NATIVE /FILEALIGN:4096 /BASE:0xFFFFFFFFFF000000 /merge:.pdata=.rdata /merge:.xdata:=.rdata /merge:.CRT=.bss /map || (popd & exit /b 1)
+cl %ATTOS_CXXFLAGS% /FAs kernel.cpp cpu_manager.cpp mm.cpp isr.cpp pci.cpp ata.cpp i825x.cpp text_screen.cpp isr_common.obj ..\attos\attos.lib  /link%ATTOS_LDFLAGS% /nodefaultlib /entry:stage3_entry /subsystem:NATIVE /FILEALIGN:4096 /BASE:0xFFFFFFFFFF000000 /merge:.pdata=.rdata /merge:.xdata:=.rdata /merge:.CRT=.bss /map || (popd & exit /b 1)
 call parse_map.cmd kernel.map > kernel.map.bin || (popd & exit /b 1)
 echo>kernel_bin.asm incbin "kernel.exe"|| (popd & exit /b 1)
 echo>>kernel_bin.asm incbin "kernel.map.bin"|| (popd & exit /b 1)

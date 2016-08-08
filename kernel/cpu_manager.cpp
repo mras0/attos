@@ -1,4 +1,4 @@
-#include "cpu.h"
+#include "cpu_manager.h"
 #include <attos/out_stream.h>
 
 namespace attos {

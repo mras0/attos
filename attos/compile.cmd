@@ -1,7 +1,7 @@
 @pushd %~dp0
 @setlocal
 @call ..\setflags.cmd
-@set cpp=rt.cpp cpu.cpp mem.cpp pci.cpp ata.cpp pe.cpp out_stream.cpp
+@set cpp=rt.cpp mem.cpp pe.cpp out_stream.cpp
 @set extracpp=net\net.cpp net\tftp.cpp
 @set hostcpp=host_stubs.cpp
 @set obj=%cpp:.cpp=.obj% net.obj tftp.obj

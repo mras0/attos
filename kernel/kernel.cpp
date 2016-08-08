@@ -3,13 +3,13 @@
 #include <type_traits>
 #include <atomic>
 
-#include <attos/cpu.h>
 #include <attos/mem.h>
-#include "mm.h"
 #include <attos/pe.h>
+#include "mm.h"
+#include "cpu_manager.h"
 #include "isr.h"
-#include <attos/pci.h>
-#include <attos/ata.h>
+#include "pci.h"
+#include "ata.h"
 #include "text_screen.h"
 #include "i825x.h"
 #include <attos/net/tftp.h>

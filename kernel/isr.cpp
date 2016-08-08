@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <array>
 #include <algorithm>
-#include <attos/cpu.h>
+#include "cpu_manager.h"
 #include <attos/out_stream.h>
 #include <attos/pe.h>
 #include "mm.h"
