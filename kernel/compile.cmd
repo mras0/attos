@@ -1,0 +1,18 @@
+@pushd %~dp0
+@setlocal
+@call ..\setflags.cmd
+cl %ATTOS_CXXFLAGS% /FAs kernel.cpp ..\attos\attos.lib  /link%ATTOS_LDFLAGS% /nodefaultlib /entry:stage3_entry /subsystem:NATIVE /FILEALIGN:4096 /BASE:0xFFFFFFFFFF000000 /merge:.pdata=.rdata /merge:.xdata:=.rdata /merge:.CRT=.bss /map || (popd & exit /b 1)
+call parse_map.cmd kernel.map > kernel.map.bin || (popd & exit /b 1)
+echo>kernel_bin.asm incbin "kernel.exe"|| (popd & exit /b 1)
+echo>>kernel_bin.asm incbin "kernel.map.bin"|| (popd & exit /b 1)
+rem Ensure zero byte at the end of the map file data
+echo>>kernel_bin.asm db 0||(popd & exit/b 1)
+echo>>kernel_bin.asm incbin "..\exp\userexe\userexe.exe"|| (popd & exit /b 1)
+echo>>kernel_bin.asm %%if $-$$ ^> (0x141 * 512)
+echo>>kernel_bin.asm %%error too large
+echo>>kernel_bin.asm %%endif
+rem Pad disk image to fill at least one cylinder
+echo>>kernel_bin.asm times (16*63*512)-($-$$) db 0|| (popd & exit /b 1)
+nasm -f bin -o kernel.bin kernel_bin.asm || (popd & exit /b 1)
+@endlocal
+@popd

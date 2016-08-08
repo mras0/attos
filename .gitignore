@@ -5,7 +5,7 @@
 *.ilk
 *.map
 attos/*.lib
-stage3/*.asm
+kernel/*.asm
 test-vm/*.log
 test-vm/*.nvram
 test-vm/*.vmsd
