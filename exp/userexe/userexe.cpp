@@ -42,5 +42,5 @@ int main()
 {
     my_ethernet_device ethdev;
     dbgout() << "HW address: " << ethdev.hw_address() << "\n";
-    nettest(ethdev, [] { return false; });
+    nettest(ethdev, [] { return syscall0(syscall_number::esc_pressed) != 0; });
 }

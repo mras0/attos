@@ -439,7 +439,9 @@ uint64_t hack_process_exit_code;
 extern "C" void syscall_service_routine(registers& regs)
 {
     // TODO: Check user addresses...
-    switch (static_cast<syscall_number>(regs.rax)) {
+    const auto n = static_cast<syscall_number>(regs.rax);
+    regs.rax = 0; // Default return value
+    switch (n) {
         case syscall_number::exit:
             dbgout() << "[user] Exiting with error code " << as_hex(regs.rdx) << "\n";
             hack_process_exit_code = regs.rdx;
@@ -452,6 +454,12 @@ extern "C" void syscall_service_routine(registers& regs)
             _enable();
             yield();
             break;
+        case syscall_number::esc_pressed:
+            {
+                auto& ps2c = ps2::controller::instance();
+                regs.rax = ps2c.key_available() && ps2c.read_key() == '\x1b';
+                break;
+            }
         case syscall_number::ethdev_create:
             dbgout() << "[user] ethdev_create - id = " << hack_netdev_id << "\n";
             *reinterpret_cast<uint64_t*>(regs.rdx) = hack_netdev_id;
