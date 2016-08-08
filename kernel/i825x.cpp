@@ -535,14 +535,14 @@ private:
     }
 };
 
-ethernet_device_ptr probe(const pci::device_info& dev_info)
+kowned_ptr<ethernet_device> probe(const pci::device_info& dev_info)
 {
     if (dev_info.config.vendor_id == pci::vendor::intel &&
             (dev_info.config.device_id == i825x0em_a || dev_info.config.device_id == i825x5em_a || dev_info.config.device_id == i82567_lm)) {
-        return ethernet_device_ptr{knew<i825x_ethernet_device>(dev_info).release()};
+        return kowned_ptr<ethernet_device>{knew<i825x_ethernet_device>(dev_info).release()};
     }
 
-    return ethernet_device_ptr{};
+    return kowned_ptr<ethernet_device>{};
 }
 
 } } } // namespace attos::net::i825x

@@ -1,6 +1,8 @@
 #ifndef ATTOS_FUNCTION_H
 #define ATTOS_FUNCTION_H
 
+#include <cstddef>
+
 namespace attos {
 
 template<typename>
@@ -9,7 +11,7 @@ class function;
 template<typename R, typename... Args>
 class function<R(Args...)> {
 public:
-    function(nullptr_t = nullptr) {
+    function(std::nullptr_t = nullptr) {
         reset();
     }
 
@@ -67,9 +69,9 @@ private:
     };
 
     static constexpr size_t impl_max_size = 32;
-    alignas(16) uint8_t impl_buffer_[impl_max_size];
+    alignas(16) char impl_buffer_[impl_max_size];
 
-    impl& f() const { return *reinterpret_cast<impl*>(const_cast<uint8_t*>(impl_buffer_)); }
+    impl& f() const { return *reinterpret_cast<impl*>(const_cast<char*>(impl_buffer_)); }
     void reset() {
         memset(impl_buffer_, 0, sizeof(impl_max_size));
     }

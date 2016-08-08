@@ -1,7 +1,7 @@
 #ifndef ATTOS_NET_NET_H
 #define ATTOS_NET_NET_H
 
-#include <attos/mm.h>
+//#include <attos/mm.h>
 #include <attos/function.h>
 #include <array>
 #include <type_traits>
@@ -137,8 +137,6 @@ private:
     virtual void do_send_packet(const void* data, uint32_t length) = 0;
     virtual void do_process_packets(const packet_process_function& ppf, int max_packets) = 0;
 };
-
-using ethernet_device_ptr = kowned_ptr<ethernet_device>;
 
 enum class ethertype : uint16_t {
     ipv4 = 0x0800,

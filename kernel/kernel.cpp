@@ -10,8 +10,8 @@
 #include <attos/isr.h>
 #include <attos/pci.h>
 #include <attos/ata.h>
-#include <attos/vga/text_screen.h>
-#include <attos/net/i825x.h>
+#include "text_screen.h"
+#include "i825x.h"
 #include <attos/net/tftp.h>
 #include <attos/string.h>
 #include <attos/syscall.h>
@@ -640,7 +640,7 @@ void stage3_entry(const arguments& args)
     //ata::test();
 
     // Networking
-    net::ethernet_device_ptr netdev{};
+    kowned_ptr<net::ethernet_device> netdev{};
 
     for (const auto& d : pci->devices()) {
         if (!!(netdev = net::i825x::probe(d))) {

@@ -2,6 +2,8 @@
 #include <attos/cpu.h>
 #include <attos/out_stream.h>
 
+#include <attos/mm.h>
+
 #include <attos/net/tftp.h> // TODO: remove
 #include <attos/string.h>
 
