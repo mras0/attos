@@ -1,5 +1,5 @@
 #include <attos/out_stream.h>
-#include <attos/net/net.h>
+#include <attos/net/tftp.h>
 #include <attos/cpu.h>
 #include <attos/syscall.h>
 
@@ -42,5 +42,5 @@ int main()
 {
     my_ethernet_device ethdev;
     dbgout() << "HW address: " << ethdev.hw_address() << "\n";
-    nettest(ethdev, [] { return syscall0(syscall_number::esc_pressed) != 0; });
+    tftp::nettest(ethdev, [] { return syscall0(syscall_number::esc_pressed) != 0; }, "test.txt");
 }

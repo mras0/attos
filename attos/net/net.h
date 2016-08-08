@@ -276,10 +276,6 @@ enum class dhcp_message_type : uint8_t {
 #pragma pack(pop)
 
 uint16_t inet_csum(const void * src, uint16_t length, uint16_t init = 0);
-
-using should_quit_function_type = bool (*)(void);
-void nettest(ethernet_device& dev, should_quit_function_type should_quit);
-
 } } // namespace attos::net
 
 #endif

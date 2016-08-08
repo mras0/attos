@@ -117,6 +117,15 @@ public:
         ++end_;
     }
 
+    void insert(T* where, const T* insert_begin, const T* insert_end) {
+        if (where != end()) __debugbreak(); // Lazy implementation
+        const auto insert_count = insert_end - insert_begin;
+        ensure_room(size() + insert_count);
+        static_assert(std::is_trivially_copyable_v<T>, "Implementation is too lazy");
+        memcpy(end_, insert_begin, insert_count * sizeof(T));
+        end_ += insert_count;
+    }
+
 private:
     T* begin_    = nullptr;
     T* end_      = nullptr;

@@ -655,10 +655,11 @@ void stage3_entry(const arguments& args)
     hack_netdev = nullptr;
 
     if (netdev) {
-        nettest(*netdev, []() {
+        auto data = net::tftp::nettest(*netdev, []() {
                 auto& ps2c = ps2::controller::instance();
                 return ps2c.key_available() && ps2c.read_key() == '\x1b';
-            });
+            }, "test.txt");
+        hexdump(dbgout(), data.begin(), data.size());
     }
 
     interactive_mode(ps2c);
