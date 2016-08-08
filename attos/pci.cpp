@@ -1,7 +1,7 @@
 #include "pci.h"
 #include <attos/out_stream.h>
 #include <attos/cpu.h>
-#include <attos/mm.h>
+#include <attos/containers.h>
 
 namespace attos { namespace pci {
 

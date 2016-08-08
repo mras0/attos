@@ -1,7 +1,6 @@
 #ifndef ATTOS_NET_NET_H
 #define ATTOS_NET_NET_H
 
-//#include <attos/mm.h>
 #include <attos/function.h>
 #include <array>
 #include <type_traits>

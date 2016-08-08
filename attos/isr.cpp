@@ -3,9 +3,9 @@
 #include <array>
 #include <algorithm>
 #include <attos/cpu.h>
-#include <attos/mm.h>
 #include <attos/out_stream.h>
 #include <attos/pe.h>
+#include <attos/mm.h>
 
 namespace attos {
 
