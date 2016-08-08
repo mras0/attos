@@ -5,9 +5,9 @@
 
 #include <attos/cpu.h>
 #include <attos/mem.h>
-#include <attos/mm.h>
+#include "mm.h"
 #include <attos/pe.h>
-#include <attos/isr.h>
+#include "isr.h"
 #include <attos/pci.h>
 #include <attos/ata.h>
 #include "text_screen.h"

@@ -3,7 +3,7 @@
 
 #include <attos/net/net.h>
 #include <attos/pci.h>
-#include <attos/mm.h>
+#include "mm.h"
 
 namespace attos { namespace net { namespace i825x {
 

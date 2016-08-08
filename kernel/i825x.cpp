@@ -1,7 +1,7 @@
 #include "i825x.h"
 #include <attos/cpu.h>
 #include <attos/out_stream.h>
-#include <attos/isr.h>
+#include "isr.h"
 
 namespace attos { namespace net { namespace i825x {
 

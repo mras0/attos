@@ -1,9 +1,9 @@
 #include "mm.h"
-#include "cpu.h"
-#include "out_stream.h"
+#include <attos/cpu.h>
+#include <attos/out_stream.h>
 
 #define assert(expr)
-#include "tree.h"
+#include <attos/tree.h>
 #undef assert
 
 namespace attos {

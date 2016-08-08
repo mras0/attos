@@ -5,7 +5,7 @@
 #include <attos/cpu.h>
 #include <attos/out_stream.h>
 #include <attos/pe.h>
-#include <attos/mm.h>
+#include "mm.h"
 
 namespace attos {
 
