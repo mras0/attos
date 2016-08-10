@@ -605,11 +605,37 @@ private:
     physical_address smap_entries_;
 };
 
+class kernel_debug_out : public out_stream {
+public:
+    explicit kernel_debug_out() : bochs_debug_out_(bochs_debug_out_available()) {
+        set_dbgout(*this);
+    }
+
+private:
+    static constexpr uint8_t bochs_debug_out_port = 0xe9;
+    const bool bochs_debug_out_;
+    vga::text_screen ts_;
+
+    static bool bochs_debug_out_available() {
+        // Detect bochs debug output facility
+        return __inbyte(bochs_debug_out_port) == bochs_debug_out_port;
+    }
+
+    virtual void write(const void* data, size_t length) override {
+        ts_.write(data, length);
+        if (bochs_debug_out_) {
+            auto d = reinterpret_cast<const uint8_t*>(data);
+            while (length--) {
+                __outbyte(bochs_debug_out_port, *d++);
+            }
+        }
+    }
+};
+
 void stage3_entry(const arguments& args)
 {
     // First make sure we can output debug information
-    vga::text_screen ts;
-    set_dbgout(ts);
+    kernel_debug_out kdbgout{};
 
     // Initialize GDT
     auto cpu = cpu_init();
