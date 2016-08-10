@@ -34,6 +34,8 @@ enum class memory_type : uint32_t {
     ps_2mb        = 0x1000,
     ps_1gb        = 0x2000,
 };
+class out_stream;
+out_stream& operator<<(out_stream& os, memory_type type);
 
 ENUM_BIT_OPS(memory_type, uint32_t)
 constexpr auto memory_type_rw = memory_type::read | memory_type::write;

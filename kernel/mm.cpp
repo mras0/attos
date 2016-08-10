@@ -85,14 +85,14 @@ auto find_mapping(memory_mapping::tree_type& t, virtual_address addr, uint64_t l
 
 physical_address alloc_physical_page() { return alloc_physical(memory_manager::page_size); }
 
-constexpr uint64_t kernel_map_start    = 0xFFFFFFFF'FF000000;
+constexpr virtual_address kernel_map_start{0xFFFFFFFF'FF000000};
 
 class memory_manager_base : public memory_manager {
 public:
     explicit memory_manager_base()
         : memory_mappings_{alloc_physical_page(), page_size}
         , pml4_{static_cast<uint64_t*>(alloc_physical_page())}
-        , free_virt_base_{kernel_map_start-(1<<30)} { // HACK: ISR needs virtual memory within 2GB of the kernel code...
+        , free_virt_base_{kernel_map_start-(1ULL<<30)} { // HACK: ISR needs virtual memory within 2GB of the kernel code...
     }
 
     ~memory_manager_base() {
@@ -132,7 +132,7 @@ private:
         return physical_address::from_identity_mapped_ptr(pml4_);
     }
 
-    virtual virtual_address do_virtual_alloc(uint64_t length) override {
+    virtual_address virtual_alloc(uint64_t length) {
         // TODO: Improve this...
         REQUIRE((length & (page_size-1)) == 0);
         const auto addr = free_virt_base_;
@@ -142,28 +142,31 @@ private:
         return addr;
     }
 
-    virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
-        dbgout() << "[mem] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << ' ';
-        if (static_cast<uint32_t>(type & memory_type::read))          dbgout() << "R";
-        if (static_cast<uint32_t>(type & memory_type::write))         dbgout() << "W";
-        if (static_cast<uint32_t>(type & memory_type::execute))       dbgout() << "X";
-        if (static_cast<uint32_t>(type & memory_type::user))          dbgout() << "U";
-        if (static_cast<uint32_t>(type & memory_type::cache_disable)) dbgout() << "C";
-        if (static_cast<uint32_t>(type & memory_type::ps_2mb))        dbgout() << "2";
-        if (static_cast<uint32_t>(type & memory_type::ps_1gb))        dbgout() << "1";
-        dbgout() << "\n";
+    virtual virtual_address do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
+        dbgout() << "[mem] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << ' ' << type << "\n";
 
         const uint64_t map_page_size = static_cast<uint32_t>(type & memory_type::ps_1gb) ? (1<<30) : static_cast<uint32_t>(type & memory_type::ps_2mb) ? (2<<20) : (1<<12);
 
-        // Check address alignment
-        REQUIRE((virt & (map_page_size - 1)) == 0);
+        // Check length
+        REQUIRE(length > 0);
+        REQUIRE((length & (map_page_size - 1)) == 0);
+
+        // Check physical address alignment
         REQUIRE((phys & (map_page_size - 1)) == 0);
         REQUIRE(phys < 1ULL<<32); // Probably more work required before we support > 4GB addresses
 
-        // Check length
-        REQUIRE(length > 0);
+        // Alloc virtual address (if needed)
+        if (virt == memory_manager::map_alloc_virt) {
+            virt = virtual_alloc(length);
+        } else if (virt == memory_manager::map_alloc_virt_close_to_kernel) {
+            virt = virtual_alloc(length);
+        }
+
+        // Check virtual address
+        REQUIRE((virt & (map_page_size - 1)) == 0);
         REQUIRE(virt + length > virt && "No wraparound allowed");
-        REQUIRE((length & (map_page_size - 1)) == 0);
+
+        const auto virt_start = virt;
 
         auto it = find_mapping(memory_map_tree_, virt, length);
         if (it != memory_map_tree_.end()) {
@@ -200,6 +203,8 @@ private:
             }
             //dbgout() << "[mem] " << as_hex(virt) << " " << as_hex(phys) << " " << as_hex(page_flags) << "\n";
         }
+
+        return virt_start;
     }
 
     virtual void* do_alloc(uint64_t size) override {
@@ -339,7 +344,7 @@ public:
     explicit kernel_memory_manager(physical_address base, uint64_t length)
         : saved_cr3_(__readcr3())
         , physical_pages_{base, length}
-        , kernel_heap_{alloc_physical(initial_heap_size), initial_heap_size} {
+        , kernel_heap_{static_cast<uint8_t*>(alloc_physical(initial_heap_size)), initial_heap_size} {
         dbgout() << "[mem] Starting. Base 0x" << as_hex(base) << " Length " << (length>>20) << " MB\n";
         mm_ = mm_buffer_.construct();
     }
@@ -370,11 +375,7 @@ private:
         return mm_->pml4();
     }
 
-    virtual virtual_address do_virtual_alloc(uint64_t length) override {
-        return mm_->virtual_alloc(length);
-    }
-
-    virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
+    virtual virtual_address do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
         return mm_->map_memory(virt, length, type, phys);
     }
 
@@ -471,8 +472,7 @@ memory_manager& kmemory_manager()
 volatile void* iomem_map(physical_address base, uint64_t length)
 {
     REQUIRE((base & (memory_manager::page_size-1)) == 0);
-    auto virt = kernel_memory_manager::instance().virtual_alloc(length);
-    kernel_memory_manager::instance().map_memory(virt, length, memory_type_rw | memory_type::cache_disable, base);
+    const auto virt = kernel_memory_manager::instance().map_memory(memory_manager::map_alloc_virt, length, memory_type_rw | memory_type::cache_disable, base);
     return reinterpret_cast<volatile void*>(static_cast<uint64_t>(virt));
 }
 

@@ -16,12 +16,11 @@ public:
         return do_pml4();
     }
 
-    virtual_address virtual_alloc(uint64_t length) {
-        return do_virtual_alloc(length);
-    }
+    static constexpr virtual_address map_alloc_virt{static_cast<uint64_t>(-1)};
+    static constexpr virtual_address map_alloc_virt_close_to_kernel{static_cast<uint64_t>(-2)};
 
-    void map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) {
-        do_map_memory(virt, length, type, phys);
+    virtual_address map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) {
+        return do_map_memory(virt, length, type, phys);
     }
 
     void* alloc(uint64_t length) {
@@ -34,8 +33,7 @@ public:
 
 private:
     virtual physical_address do_pml4() const = 0;
-    virtual virtual_address do_virtual_alloc(uint64_t length) = 0;
-    virtual void do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) = 0;
+    virtual virtual_address do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) = 0;
     virtual void* do_alloc(uint64_t length) = 0;
     virtual void do_free(void* ptr) = 0;
 };

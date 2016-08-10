@@ -350,9 +350,8 @@ public:
         const auto isr_code_page      = old_isr_code_virt & ~page_mask;
         const auto isr_code_end_page  = (old_isr_code_virt + sizeof(isr_code_)) & ~page_mask;
         const auto isr_code_virt_size = (isr_code_end_page + memory_manager::page_size) - isr_code_page;
-        const auto isr_code_virt = kmemory_manager().virtual_alloc(isr_code_virt_size);
-        dbgout() << "old " << as_hex(isr_code_page) << " size " << as_hex((uint32_t)isr_code_virt_size) << " new " << as_hex((uint64_t)isr_code_virt) << "\n";
-        kmemory_manager().map_memory(isr_code_virt, isr_code_virt_size, memory_type_rx, virt_to_phys(&isr_code_) & ~page_mask);
+
+        const auto isr_code_virt = kmemory_manager().map_memory(memory_manager::map_alloc_virt_close_to_kernel, isr_code_virt_size, memory_type_rx, virt_to_phys(&isr_code_) & ~page_mask);
 
         auto isr_code = reinterpret_cast<uint8_t*>(static_cast<uint64_t>(isr_code_virt + (old_isr_code_virt & page_mask)));
 
