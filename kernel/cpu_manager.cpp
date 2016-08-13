@@ -89,9 +89,10 @@ const auto iretq = make_fun<void (uint64_t)>(
     C_IRETQ
 );
 
-// crt.asm - yeah doesn't belong there...
+// cpu_manager_util.asm
 extern "C" void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags, uint64_t& saved_rsp);
 extern "C" void switch_to_restore(uint64_t& saved_rsp);
+extern "C" void syscall_handler(void);
 
 class cpu_manager_impl : public cpu_manager, public singleton<cpu_manager_impl> {
 public:
@@ -178,8 +179,6 @@ owned_ptr<cpu_manager, destruct_deleter> cpu_init() {
 void restore_original_context() {
     cpu_manager_impl::instance().restore_original_context();
 }
-
-extern "C" void syscall_handler(void);
 
 syscall_handler_t syscall_handler_;
 

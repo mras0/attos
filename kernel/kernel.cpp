@@ -497,7 +497,7 @@ void syscall_handler(registers& regs)
 
 class user_process {
 public:
-    explicit user_process() : mm_(create_default_memory_manager()) {
+    explicit user_process() : mm_(create_default_memory_manager()), context_() {
     }
 
     user_process(user_process&&) = default;
@@ -521,13 +521,17 @@ public:
         mm_->map_memory(virt, phys_size, t, phys.address());
     }
 
-    void switch_to() {
+    registers& context() { return context_; }
+
+    void switch_to(cpu_manager& cpum) {
         mm_->switch_to();
+        cpum.switch_to_context(context_.cs, context_.rip, context_.ss, context_.rsp, context_.eflags);
     }
 
 private:
     kowned_ptr<memory_manager>   mm_;
     kvector<physical_allocation> allocations_;
+    registers                    context_;
 };
 
 user_process alloc_and_map_user_exe(const pe::IMAGE_DOS_HEADER& image)
@@ -555,6 +559,12 @@ user_process alloc_and_map_user_exe(const pe::IMAGE_DOS_HEADER& image)
 
     hack_set_user_image(*(pe::IMAGE_DOS_HEADER*)(uint64_t)image_base);
 
+    auto& context = proc.context();
+    context.cs  = user_cs;
+    context.rip = image_base + image.nt_headers().OptionalHeader.AddressOfEntryPoint;
+    context.ss  = user_ds;
+    context.rsp = static_cast<uint64_t>(image_base) - 0x28;
+    context.eflags = rflag_mask_res1;
     return proc;
 }
 
@@ -569,12 +579,9 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
 
     user_process proc = alloc_and_map_user_exe(image);
     const uint64_t image_base = image.nt_headers().OptionalHeader.ImageBase;
-    const uint64_t user_rsp = image_base - 0x28;
-    const uint64_t user_rip = image_base + image.nt_headers().OptionalHeader.AddressOfEntryPoint;
 
-    proc.switch_to();
     dbgout() << "Doing magic!\n";
-    cpum.switch_to_context(user_cs, user_rip, user_ds, user_rsp, rflag_mask_res1);
+    proc.switch_to(cpum);
     dbgout() << "Bach from magic!\n";
     if (hack_process_exit_code) {
         dbgout() << "Process exit code " << as_hex(hack_process_exit_code) << " - press any key.\n";
