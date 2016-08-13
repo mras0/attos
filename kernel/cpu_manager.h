@@ -15,12 +15,12 @@ class __declspec(novtable) cpu_manager {
 public:
     virtual ~cpu_manager() {}
 
-    void switch_to_context(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags) {
-        do_switch_to_context(cs, rip, ss, rsp, flags);
+    void switch_to_context(registers& regs) {
+        do_switch_to_context(regs);
     }
 
 private:
-    virtual void do_switch_to_context(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags) = 0;
+    virtual void do_switch_to_context(registers& regs) = 0;
 };
 
 owned_ptr<cpu_manager, destruct_deleter> cpu_init();

@@ -1,10 +1,10 @@
     bits 64
     default rel
 
+    section .text
+
 %include "attos/pe.inc"
 %include "kernel.inc"
-
-    section .text
 
     global switch_to
     global switch_to_restore
@@ -12,21 +12,15 @@
 
     extern syscall_service_routine   ; void syscall_service_routine(registers&)
 
-
-; void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags, uint64_t& saved_rsp)
+; void switch_to(registers& regs, uint64_t& saved_rsp)
 switch_to:
 ; On entry:
 ;
-; rsp + 0x30  saved_rsp
-; rsp + 0x28  flags
 ; rsp + 0x20  shadow space
 ; rsp + 0x18  shadow space
 ; rsp + 0x10  shadow space
 ; rsp + 0x08  shadow space
 ; rsp + 0x00  return address
-
-    mov rax, [rsp+0x28] ; rax <- flags (parameter)
-    mov r10, [rsp+0x30] ; r10 <- saved_rsp
 
     ; Save nonvolatile reigsters
     pushfq
@@ -39,21 +33,26 @@ switch_to:
     push rbx
     push rbp
     ; TODO: Save XMM6-XMM15
-    mov [r10], rsp
+    mov [rdx], rsp
 
     ; Make room for IRETQ frame
-    sub rsp, 0x28
+    sub rsp, 0x30
 
     ; rsp+0x00 <- rip
-    mov [rsp+0x00], rdx ; rip
+    mov rax, [rcx + registers.rip]
+    mov [rsp+0x00], rax
     ; rsp+0x08 <- cs
-    mov [rsp+0x08], rcx ; cs
+    mov rax, [rcx+registers.cs]
+    mov [rsp+0x08], rax
     ; rsp+0x10 <- flags
-    mov [rsp+0x10], rax ; flags
+    mov rax, [rcx+registers.rflags]
+    mov [rsp+0x10], rax
     ; rsp+0x18 <- rsp
-    mov [rsp+0x18], r9  ; rsp
+    mov rax, [rcx+registers.rsp]
+    mov [rsp+0x18], rax
     ; rsp+0x20 <- ss
-    mov [rsp+0x20], r8  ; ss
+    mov rax, [rcx+registers.ss]
+    mov [rsp+0x20], rax
 
 ; Before IRETQ
 ;

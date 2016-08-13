@@ -16,7 +16,7 @@ struc registers
     .r15             resq 1
     .fx_state        resb 512
     .reserved2       resq 1 ; For alignment of fx state
-registers_saved_size: ; only the above are saved by code
+.saved_size: ; only the above are saved by code
     .interrupt_no    resq 1 ; pushed by isr
     .error_code      resq 1 ; pushed by system (or isr)
     .rip             resq 1 ; system stack

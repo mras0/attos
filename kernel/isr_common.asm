@@ -21,7 +21,7 @@ struc interrupt_gate
 endstruc
 
 %define isr_local_size (32+8) ; 32 bytes for the shadow space and 8 bytes to ensure alignment
-%define isr_common_stack_alloc registers_saved_size + isr_local_size
+%define isr_common_stack_alloc registers.saved_size + isr_local_size
 %define isr_registers_offset isr_local_size
 
 %define isr_common_reg_offset(REG)  isr_registers_offset + registers.%+REG

@@ -525,7 +525,7 @@ public:
 
     void switch_to(cpu_manager& cpum) {
         mm_->switch_to();
-        cpum.switch_to_context(context_.cs, context_.rip, context_.ss, context_.rsp, context_.eflags);
+        cpum.switch_to_context(context_);
     }
 
 private:
@@ -572,7 +572,13 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
 {
     // Stress switch_to_context in kernel mode only
     for (int i = 0; i < 10; ++i) {
-        cpum.switch_to_context(kernel_cs, (uint64_t)&restore_original_context, kernel_ds, (uint64_t)physical_address{6<<20}, __readeflags());
+        registers context{};
+        context.cs  = kernel_cs;
+        context.rip = (uint64_t)&restore_original_context;
+        context.ss  = kernel_ds;
+        context.rsp = (uint64_t)physical_address{6<<20};
+        context.eflags = static_cast<uint32_t>(__readeflags());
+        cpum.switch_to_context(context);
     }
 
     syscall_enabler syscall_enabler_{&syscall_handler};

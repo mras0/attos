@@ -90,7 +90,7 @@ const auto iretq = make_fun<void (uint64_t)>(
 );
 
 // cpu_manager_util.asm
-extern "C" void switch_to(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags, uint64_t& saved_rsp);
+extern "C" void switch_to(registers& regs, uint64_t& saved_rsp);
 extern "C" void switch_to_restore(uint64_t& saved_rsp);
 extern "C" void syscall_handler(void);
 
@@ -160,11 +160,11 @@ private:
 
     uint64_t gdt[gdt_entries_count];
 
-    void do_switch_to_context(uint64_t cs, uint64_t rip, uint64_t ss, uint64_t rsp, uint64_t flags) {
+    void do_switch_to_context(registers& regs) {
         REQUIRE(tss_.rsp0 == 0);
         REQUIRE(tss_.rsp1 == 0);
         REQUIRE(tss_.rsp2 == 0);
-        switch_to(cs, rip, ss, rsp, flags, tss_.rsp0);
+        switch_to(regs, tss_.rsp0);
         tss_.rsp0 = 0;
     }
 
