@@ -12,20 +12,20 @@ public:
 
     static constexpr uint64_t page_size = 4096;
 
-    physical_address pml4() const {
-        return do_pml4();
-    }
-
     static constexpr virtual_address map_alloc_virt{static_cast<uint64_t>(-1)};
     static constexpr virtual_address map_alloc_virt_close_to_kernel{static_cast<uint64_t>(-2)};
+
+    void switch_to() {
+        do_switch_to();
+    }
 
     virtual_address map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) {
         return do_map_memory(virt, length, type, phys);
     }
 
 private:
-    virtual physical_address do_pml4() const = 0;
     virtual virtual_address do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) = 0;
+    virtual void do_switch_to() = 0;
 };
 
 using memory_manager_ptr = owned_ptr<memory_manager, destruct_deleter>;

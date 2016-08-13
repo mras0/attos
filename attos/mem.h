@@ -12,13 +12,6 @@ constexpr uint64_t identity_map_length = 1<<30;
 template<class T, uint64_t base>
 constexpr T* fixed_physical_address = reinterpret_cast<T*>(base + identity_map_start);
 
-constexpr static uint32_t pml4_shift = 39;
-constexpr static uint32_t pdp_shift  = 30;
-constexpr static uint32_t pd_shift   = 21;
-constexpr static uint32_t pt_shift   = 12;
-
-constexpr static uint64_t table_mask = 0x1FF;
-
 #define ENUM_BIT_OP(type, op, inttype) \
 constexpr inline type operator op(type l, type r) { return static_cast<type>(static_cast<inttype>(l) op static_cast<inttype>(r)); }
 #define ENUM_BIT_OPS(type, inttype) \
@@ -89,6 +82,12 @@ public:
         return virtual_address{reinterpret_cast<uint64_t>(ptr)};
     }
 
+    constexpr static uint64_t table_mask = 0x1FF;
+    constexpr static uint32_t pml4_shift = 39;
+    constexpr static uint32_t pdp_shift  = 30;
+    constexpr static uint32_t pd_shift   = 21;
+    constexpr static uint32_t pt_shift   = 12;
+
     constexpr uint32_t pml4e() const { return (addr_ >> pml4_shift) & table_mask; }
     constexpr uint32_t pdpe()  const { return (addr_ >> pdp_shift)  & table_mask; }
     constexpr uint32_t pde()   const { return (addr_ >> pd_shift)   & table_mask; }
@@ -117,15 +116,15 @@ constexpr bool memory_areas_overlap(uint64_t start1, uint64_t len1, uint64_t sta
     return static_cast<int64_t>(std::min(start1 + len1, start2 + len2) - std::max(start1, start2)) > 0;
 }
 
-//  +------------------------------+--------+--------+------+
-//  | Name                         |  Entry | Maps   | Bits |
-//  +------------------------------+--------+--------+------+
-//  | Page Map Level 4             |  PML4E | 256 TB |    9 |
-//  | Page Directory Pointer Table |  PDPE  | 512 GB |    9 |
-//  | Page Directory Table         |  PDE   |   1 GB |    9 |
-//  | Page Table                   |  PTE   |   2 MB |    9 |
-//  | Each Page Table Entry        |        |   4 KB |   12 |
-//  +------------------------------+--------+--------+------+
+//  +------------------------------+--------+--------+------+-------+
+//  | Name                         |  Entry | Maps   | Bits | Total |
+//  +------------------------------+--------+--------+------+-------+
+//  | Page Map Level 4             |  PML4E | 256 TB |    9 |    48 |
+//  | Page Directory Pointer Table |  PDPE  | 512 GB |    9 |    39 |
+//  | Page Directory Table         |  PDE   |   1 GB |    9 |    30 |
+//  | Page Table                   |  PTE   |   2 MB |    9 |    21 |
+//  | Each Page Table Entry        |        |   4 KB |   12 |    12 |
+//  +------------------------------+--------+--------+------+-------+
 
 #define PAGEF_PRESENT   0x0001    // P    Present
 #define PAGEF_WRITE     0x0002    // R/W  Writeable

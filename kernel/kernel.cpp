@@ -340,7 +340,7 @@ owned_ptr<memory_manager, destruct_deleter> construct_mm(const smap_entry* smap,
     }
 
     // Switch to the new PML4
-    __writecr3(mm->pml4());
+    mm->switch_to();
     return mm;
 }
 
@@ -525,7 +525,9 @@ public:
         mm_->map_memory(virt, phys_size, t, phys.address());
     }
 
-    auto pml4() const { return mm_->pml4(); }
+    void switch_to() {
+        mm_->switch_to();
+    }
 
 private:
     kowned_ptr<memory_manager>   mm_;
@@ -586,7 +588,7 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
     const uint64_t user_rsp = image_base - 0x28;
     const uint64_t user_rip = image_base + image.nt_headers().OptionalHeader.AddressOfEntryPoint;
 
-    __writecr3(proc.pml4()); // set user process PML4
+    proc.switch_to();
     dbgout() << "Doing magic!\n";
     cpum.switch_to_context(user_cs, user_rip, user_ds, user_rsp, __readeflags());
     __writecr3(old_cr3); // restore CR3

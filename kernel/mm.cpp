@@ -83,30 +83,65 @@ auto find_mapping(memory_mapping::tree_type& t, virtual_address addr, uint64_t l
     return std::find_if(t.begin(), t.end(), [addr, length](const auto& m) { return memory_areas_overlap(addr, length, m.address(), m.length()); });
 }
 
+void free_physical_page(physical_address addr);
+
 constexpr virtual_address kernel_map_start{0xFFFFFFFF'FF000000};
+constexpr uint32_t        kernel_pml4 = 0x1ff;
 
 class memory_manager_base : public memory_manager {
 public:
     explicit memory_manager_base()
-        : memory_mappings_{alloc_physical_page(), page_size}
-        , pml4_{static_cast<uint64_t*>(alloc_physical_page())}
+        : memory_mappings_phys_{alloc_physical(page_size)}
+        , memory_mappings_{memory_mappings_phys_.address(), memory_mappings_phys_.length()}
+        , pml4_{alloc_table()}
         , free_virt_base_{kernel_map_start-(1ULL<<30)} { // HACK: ISR needs virtual memory within 2GB of the kernel code...
     }
 
     ~memory_manager_base() {
-        // TODO: Free stuff...
+        for (uint32_t l4 = 0; l4 < table_size; ++l4) {
+            if (!(pml4_[l4] & PAGEF_PRESENT)) continue;
+            auto pdpt = table_entry(pml4_[l4]);
+            for (uint32_t l3 = 0; l3 < table_size; ++l3) {
+                if (!(pdpt[l3] & PAGEF_PRESENT)) continue;
+                if (pdpt[l3] & PAGEF_PAGESIZE) continue;
+                auto pdt = table_entry(pdpt[l3]);
+                for (uint32_t l2 = 0; l2 < table_size; ++l2) {
+                    if (!(pdt[l2] & PAGEF_PRESENT)) continue;
+                    if ((pdt[l2] & PAGEF_PAGESIZE)) continue;
+                    auto pt = table_entry(pdt[l2]);
+                    free_table(pt);
+                }
+                free_table(pdt);
+            }
+            free_table(pdpt);
+        }
+        //REQUIRE(std::find_if(pml4_, pml4_ + table_size, [](uint64_t e) { return e != 0; }) == pml4_ + table_size);
+        free_table(pml4_);
     }
 
     memory_manager_base(const memory_manager_base&) = delete;
     memory_manager_base& operator=(const memory_manager_base&) = delete;
 
+    static constexpr uint32_t table_size = 512;
+
+    physical_address pml4() const {
+        return physical_address::from_identity_mapped_ptr(pml4_);
+    }
+
 private:
+    physical_allocation                    memory_mappings_phys_;
     fixed_size_object_heap<memory_mapping> memory_mappings_;
     memory_mapping::tree_type              memory_map_tree_;
     uint64_t*                              pml4_;
     virtual_address                        free_virt_base_;
 
-    static physical_address alloc_physical_page() { return alloc_physical(memory_manager::page_size).release(); }
+    static uint64_t* alloc_table() {
+        return static_cast<uint64_t*>(alloc_physical(memory_manager::page_size).release());
+    }
+
+    static void free_table(uint64_t* table) {
+        free_physical_page(physical_address::from_identity_mapped_ptr(table));
+    }
 
     uint64_t* alloc_if_not_present(uint64_t& parent, uint64_t flags) {
         if (parent & PAGEF_PRESENT) {
@@ -122,14 +157,14 @@ private:
     }
 
     uint64_t* alloc_table_entry(uint64_t& parent, uint64_t flags) {
-        auto table = static_cast<uint64_t*>(alloc_physical_page());
+        auto table = static_cast<uint64_t*>(alloc_table());
         parent = physical_address::from_identity_mapped_ptr(table) | flags;
         //dbgout() << "[mem] Allocated page table. parent " << as_hex((uint64_t)&parent) << " <- " << as_hex(parent) << "\n";
         return table;
     }
 
-    virtual physical_address do_pml4() const override {
-        return physical_address::from_identity_mapped_ptr(pml4_);
+    virtual void do_switch_to() override {
+        __writecr3(pml4());
     }
 
     virtual_address virtual_alloc(uint64_t length) {
@@ -142,6 +177,7 @@ private:
         return addr;
     }
 
+protected:
     virtual virtual_address do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
         dbgout() << "[mem] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << ' ' << type << "\n";
 
@@ -218,6 +254,7 @@ public:
     }
 
     ~simple_heap() {
+        REQUIRE(!has_allocations());
     }
 
     simple_heap(const simple_heap&) = delete;
@@ -335,10 +372,6 @@ public:
 
     ~kernel_memory_manager() {
         dbgout() << "[mem] Shutting down. Restoring CR3 to " << as_hex(saved_cr3_) << "\n";
-        REQUIRE(!kernel_heap_.has_allocations());
-        if (physical_pages_.has_allocations()) {
-            dbgout() << "[mem] Warning not all physical pages have been freed\n";
-        }
         __writecr3(saved_cr3_);
     }
 
@@ -354,6 +387,10 @@ public:
 
     void free_physical(physical_address addr, uint64_t length) {
         physical_pages_.free(addr, length);
+    }
+
+    physical_address pml4() const {
+        return mm_->pml4();
     }
 
     static constexpr uint64_t kalloc_align = 16;
@@ -379,11 +416,12 @@ private:
     object_buffer<memory_manager_base>               mm_buffer_;
     owned_ptr<memory_manager_base, destruct_deleter> mm_;
 
-    virtual physical_address do_pml4() const override {
-        return mm_->pml4();
+    virtual void do_switch_to() override {
+        return mm_->switch_to();
     }
 
     virtual virtual_address do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
+        REQUIRE(virt.pml4e() == kernel_pml4);
         return mm_->map_memory(virt, length, type, phys);
     }
 };
@@ -419,21 +457,21 @@ void print_page_tables(physical_address pml4_address)
 {
     dbgout() << "pml4 = " << as_hex(pml4_address) << "\n";
     auto pml4 = table_entry(pml4_address);
-    for (int i = 0; i < 512; ++i ) {
+    for (int i = 0; i < memory_manager_base::table_size; ++i ) {
         if (pml4[i] & PAGEF_PRESENT) {
             dbgout() << as_hex(i) << " " << as_hex(pml4[i]) << "\n";
             auto pdpt = table_entry(pml4[i]);
-            for (int j = 0; j < 512; ++j) {
+            for (int j = 0; j < memory_manager_base::table_size; ++j) {
                 if (pdpt[j] & PAGEF_PRESENT) {
                     dbgout() << " " << as_hex(j) << " " << as_hex(pdpt[j]) << "\n";
                     if (!(pdpt[j] & PAGEF_PAGESIZE)) {
                         auto pdt = table_entry(pdpt[j]);
-                        for (int k = 0; k < 512; ++k) {
+                        for (int k = 0; k < memory_manager_base::table_size; ++k) {
                             if (pdt[k] & PAGEF_PRESENT) {
                                 dbgout() << "  " << as_hex(k) << " " << as_hex(pdt[k]) << "\n";
                                 if (!(pdt[k] & PAGEF_PAGESIZE)) {
                                     auto pt = table_entry(pdt[k]);
-                                    for (int l = 0; l < 512; ++l) {
+                                    for (int l = 0; l < memory_manager_base::table_size; ++l) {
                                         if (pt[l] & PAGEF_PRESENT) {
                                             dbgout() << "   " << as_hex(l) << " " << as_hex(pt[l]) << "\n";
                                         }
@@ -505,11 +543,33 @@ physical_allocation alloc_physical(uint64_t bytes) {
     return kernel_memory_manager::instance().alloc_physical(bytes);
 }
 
+void free_physical_page(physical_address addr) { // Internal use only
+    REQUIRE(!(addr & (memory_manager::page_size-1)));
+    return kernel_memory_manager::instance().free_physical(addr, memory_manager::page_size);
+}
+
+class default_memory_manager : public memory_manager_base {
+public:
+    explicit default_memory_manager() {
+        // The mm is born with the current high mem (kernel) mapping
+        static_cast<uint64_t*>(pml4())[kernel_pml4] = static_cast<const uint64_t*>(kernel_memory_manager::instance().pml4())[kernel_pml4];
+    }
+
+    ~default_memory_manager() {
+        REQUIRE(static_cast<uint64_t*>(pml4())[kernel_pml4] == static_cast<const uint64_t*>(kernel_memory_manager::instance().pml4())[kernel_pml4]);
+        static_cast<uint64_t*>(pml4())[kernel_pml4] = 0;
+    }
+
+private:
+    virtual virtual_address do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
+        REQUIRE(virt.pml4e() != kernel_pml4); // Make sure we don't clobber the kernel pml4
+        REQUIRE(virt.pml4e() < 0x100); // For now don't allow mappings in "high mem" (0x0xffff0000`00000000-0xffffffff`ffffffff)
+        return memory_manager_base::do_map_memory(virt, length, type, phys);
+    }
+};
+
 kowned_ptr<memory_manager> create_default_memory_manager() {
-    auto mmb = knew<memory_manager_base>();
-    // The mm is born with the current high mem (kernel) mapping
-    move_memory(static_cast<uint64_t*>(mmb->pml4()) + 256, static_cast<const uint64_t*>(kernel_memory_manager::instance().pml4()) + 256, 256 * sizeof(uint64_t));
-    return kowned_ptr<memory_manager>{mmb.release()};
+    return kowned_ptr<memory_manager>{knew<default_memory_manager>().release()};
 }
 
 void* kalloc(uint64_t size) {
