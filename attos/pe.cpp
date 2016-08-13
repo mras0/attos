@@ -81,22 +81,27 @@ unwind_context unwind_once(const unwind_context& context, const IMAGE_DOS_HEADER
         REQUIRE(ui.FrameOffset == 0);
     }
 
-    if (offset_in_function <= ui.SizeOfProlog) {
-        // We don't handle unwinds inside the prolog
-        REQUIRE(false);
-    }
     // TODO: detect if we're inside the epilog...
 
     auto new_context = context;
     for (int i = 0; i < ui.CountOfCodes; ++i) {
         const auto& uc = ui.unwind_codes()[i];
+        bool ignore = false;
+        if (uc.CodeOffset >= offset_in_function) {
+#if SHOW_OPS_VERBOSE >= 1
+            dbgout() << "Ignoring uc.CodeOffset = " << as_hex(uc.CodeOffset) << " (offset_in_function " << as_hex(offset_in_function).width(2) << "\n";
+#endif
+            ignore = true;
+        }
         switch (uc.UnwindOp) {
             case UWOP_PUSH_NONVOL:
                 // Push a nonvolatile integer register, decrementing RSP by 8
 #if SHOW_OPS_VERBOSE >= 1
                 dbgout() << "    pop " << unwind_reg_names[uc.OpInfo] << "\n";
 #endif
-                new_context.rsp += 8; // Pop
+                if (!ignore) {
+                    new_context.rsp += 8; // Pop
+                }
                 break;
             case UWOP_ALLOC_LARGE:
             {
@@ -105,7 +110,9 @@ unwind_context unwind_once(const unwind_context& context, const IMAGE_DOS_HEADER
 #if SHOW_OPS_VERBOSE >= 1
                 dbgout() << "    add rsp, 0x" << as_hex(bytes).width(0) << "\n";
 #endif
-                new_context.rsp += bytes;
+                if (!ignore) {
+                    new_context.rsp += bytes;
+                }
                 break;
             }
             case UWOP_ALLOC_SMALL:
@@ -114,7 +121,9 @@ unwind_context unwind_once(const unwind_context& context, const IMAGE_DOS_HEADER
 #if SHOW_OPS_VERBOSE >= 1
                 dbgout() << "    add rsp, 0x" << as_hex(bytes).width(0) << "\n";
 #endif
-                new_context.rsp += bytes;
+                if (!ignore) {
+                    new_context.rsp += bytes;
+                }
                 break;
             }
             case UWOP_SET_FPREG:
@@ -150,7 +159,9 @@ unwind_context unwind_once(const unwind_context& context, const IMAGE_DOS_HEADER
 #if SHOW_OPS_VERBOSE >= 1
                 dbgout() << "    iretq ; !!!!\n";
 #endif
-                return new_context.iret();
+                if (!ignore) {
+                    return new_context.iret();
+                }
             }
         }
     }

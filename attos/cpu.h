@@ -75,19 +75,20 @@ struct registers {
     uint64_t r13;
     uint64_t r14;
     uint64_t r15;
-    uint8_t  fx_state[512];
     uint64_t reserved0;
+    alignas(16) uint8_t  fx_state[512];
+    uint64_t reserved1;
     interrupt_number interrupt_no;
-    uint8_t  reserved1[7];
+    uint8_t  reserved2[7];
     uint64_t error_code;
     uint64_t rip;
     uint16_t cs;
-    uint8_t  reserved2[6];
+    uint8_t  reserved3[6];
     uint32_t eflags;
-    uint8_t  reserved3[4];
+    uint8_t  reserved4[4];
     uint64_t rsp;
     uint16_t ss;
-    uint8_t  reserved4[6];
+    uint8_t  reserved5[6];
 };
 
 constexpr uint8_t pf_error_code_mask_p = 0x01; // Page fault was caused by a page-protection violation

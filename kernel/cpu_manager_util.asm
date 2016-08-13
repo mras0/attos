@@ -12,8 +12,29 @@
 
     extern syscall_service_routine   ; void syscall_service_routine(registers&)
 
+%macro restore_registers_rcx_last 1
+    mov rax, [%1 + registers.rax]
+    mov rbx, [%1 + registers.rbx]  ; volatile
+    mov rdx, [%1 + registers.rdx]
+    mov rbp, [%1 + registers.rbp]  ; volatile
+    mov rsi, [%1 + registers.rsi]  ; volatile
+    mov rdi, [%1 + registers.rdi]  ; volatile
+    mov r8,  [%1 + registers.r8]
+    mov r9,  [%1 + registers.r9]
+    mov r10, [%1 + registers.r10]
+    mov r11, [%1 + registers.r11]
+    mov r12, [%1 + registers.r12]  ; volatile
+    mov r13, [%1 + registers.r13]  ; volatile
+    mov r14, [%1 + registers.r14]  ; volatile
+    mov r15, [%1 + registers.r15]  ; volatile
+    fxrstor [%1 + registers.fx_state] ; xmm6-xmm15 volatile
+    mov rcx, [%1 + registers.rcx]
+%endmacro
+
+switch_to_stack_adjust equ registers_size + 8
+
 ; void switch_to(registers& regs, uint64_t& saved_rsp)
-switch_to:
+win64_proc switch_to
 ; On entry:
 ;
 ; rsp + 0x20  shadow space
@@ -23,20 +44,37 @@ switch_to:
 ; rsp + 0x00  return address
 
     ; Save nonvolatile reigsters
+    win64_prologue_alloc switch_to_stack_adjust
+
+    mov [rsp + registers.rax], rax
+    mov [rsp + registers.rbx], rbx ; volatile
+    mov [rsp + registers.rcx], rcx
+    mov [rsp + registers.rdx], rdx
+    mov [rsp + registers.rbp], rbp ; volatile
+    mov [rsp + registers.rsi], rsi ; volatile
+    mov [rsp + registers.rdi], rdi ; volatile
+    mov [rsp + registers.r8],  r8
+    mov [rsp + registers.r9],  r9
+    mov [rsp + registers.r10], r10
+    mov [rsp + registers.r11], r11
+    mov [rsp + registers.r12], r12 ; volatile
+    mov [rsp + registers.r13], r13 ; volatile
+    mov [rsp + registers.r14], r14 ; volatile
+    mov [rsp + registers.r15], r15 ; volatile
+    ;TODO:.rip
+    mov [rsp + registers.cs], cs
     pushfq
-    push r12
-    push r13
-    push r14
-    push r15
-    push rdi
-    push rsi
-    push rbx
-    push rbp
-    ; TODO: Save XMM6-XMM15
+    pop qword [rsp + registers.rflags]
+    mov [rsp + registers.rsp], rsp
+    mov [rsp + registers.cs], ss
+
+    fxsave [rsp + registers.fx_state] ; xmm6-xmm15 volatile
+
     mov [rdx], rsp
 
     ; Make room for IRETQ frame
-    sub rsp, 0x30
+    win64_prologue_alloc 0x28
+    win64_prologue_end
 
     ; rsp+0x00 <- rip
     mov rax, [rcx + registers.rip]
@@ -54,31 +92,32 @@ switch_to:
     mov rax, [rcx+registers.ss]
     mov [rsp+0x20], rax
 
-; Before IRETQ
-;
-; rsp + 0x20  ss
-; rsp + 0x18  rsp
-; rsp + 0x10  flags
-; rsp + 0x08  cs
-; rsp + 0x00  rip
+    restore_registers_rcx_last rcx
+
+    ; Before IRETQ
+    ;
+    ; rsp + 0x20  ss
+    ; rsp + 0x18  rsp
+    ; rsp + 0x10  flags
+    ; rsp + 0x08  cs
+    ; rsp + 0x00  rip
 
     iretq
+win64_proc_end
 
 ; void switch_to_restore(uint64_t& saved_rsp)
-switch_to_restore:
+win64_proc switch_to_restore
+    win64_prologue_alloc_unwind switch_to_stack_adjust
+    win64_prologue_end
     mov rsp, [rcx]
-    pop rbp
-    pop rbx
-    pop rsi
-    pop rdi
-    pop r15
-    pop r14
-    pop r13
-    pop r12
+    restore_registers_rcx_last rsp
+    push qword [rsp + registers.rflags]
     popfq
+    add rsp, switch_to_stack_adjust
     ret
+win64_proc_end
 
-%define syscall_local_size (32+8) ; 32 bytes for the shadow space + 8 for alignment
+%define syscall_local_size (32) ; 32 bytes for the shadow space
 %define syscall_common_stack_alloc registers_size + syscall_local_size
 %define syscall_registers_offset syscall_local_size
 %define syscall_common_reg_offset(REG)  syscall_registers_offset + registers.%+REG

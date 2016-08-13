@@ -3,7 +3,7 @@
 @call ..\setflags.cmd
 nasm %ATTOS_ASFLAGS% isr_common.asm -o isr_common.obj || (popd & exit /b 1)
 nasm %ATTOS_ASFLAGS% cpu_manager_util.asm -o cpu_manager_util.obj || (popd & exit /b 1)
-cl %ATTOS_CXXFLAGS% /FAs kernel.cpp cpu_manager.cpp mm.cpp isr.cpp pci.cpp ata.cpp i825x.cpp text_screen.cpp isr_common.obj cpu_manager_util.obj ..\attos\attos.lib  /link%ATTOS_LDFLAGS% /nodefaultlib /entry:stage3_entry /subsystem:NATIVE /FILEALIGN:4096 /BASE:0xFFFFFFFFFF000000 /merge:.pdata=.rdata /merge:.xdata:=.rdata /merge:.CRT=.bss /map || (popd & exit /b 1)
+cl %ATTOS_CXXFLAGS% /FAs kernel.cpp cpu_manager.cpp mm.cpp isr.cpp pci.cpp ata.cpp i825x.cpp text_screen.cpp isr_common.obj cpu_manager_util.obj ..\attos\attos.lib  /link%ATTOS_LDFLAGS% /nodefaultlib /entry:stage3_entry /subsystem:NATIVE /FILEALIGN:4096 /BASE:0xFFFFFFFFFF000000 /merge:.pdata=.rdata /merge:.xdata:=.rdata /merge:.CRT=.rdata /map || (popd & exit /b 1)
 call parse_map.cmd kernel.map > kernel.map.bin || (popd & exit /b 1)
 echo>kernel_bin.asm incbin "kernel.exe"|| (popd & exit /b 1)
 echo>>kernel_bin.asm incbin "kernel.map.bin"|| (popd & exit /b 1)
