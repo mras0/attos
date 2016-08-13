@@ -35,6 +35,10 @@ constexpr auto memory_type_rw = memory_type::read | memory_type::write;
 constexpr auto memory_type_rx = memory_type::read | memory_type::execute;
 constexpr auto memory_type_rwx = memory_type::read | memory_type::write | memory_type::execute;
 
+constexpr uint64_t memory_type_page_size(memory_type type) {
+    return static_cast<uint32_t>(type & memory_type::ps_1gb) ? (1<<30) : static_cast<uint32_t>(type & memory_type::ps_2mb) ? (2<<20) : (1<<12);
+}
+
 template<typename T>
 class address_base {
 public:

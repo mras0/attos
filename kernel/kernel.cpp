@@ -589,6 +589,7 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
     const uint64_t user_rip = image_base + image.nt_headers().OptionalHeader.AddressOfEntryPoint;
 
     proc.switch_to();
+    print_page_tables(physical_address{__readcr3()});
     dbgout() << "Doing magic!\n";
     cpum.switch_to_context(user_cs, user_rip, user_ds, user_rsp, __readeflags());
     __writecr3(old_cr3); // restore CR3

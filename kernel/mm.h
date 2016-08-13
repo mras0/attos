@@ -23,8 +23,13 @@ public:
         return do_map_memory(virt, length, type, phys);
     }
 
+    void unmap_memory(virtual_address virt, uint64_t length) {
+        do_unmap_memory(virt, length);
+    }
+
 private:
     virtual virtual_address do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) = 0;
+    virtual void do_unmap_memory(virtual_address virt, uint64_t length) = 0;
     virtual void do_switch_to() = 0;
 };
 

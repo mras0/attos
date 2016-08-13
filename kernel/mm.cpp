@@ -12,6 +12,11 @@ inline uint64_t* table_entry(uint64_t table_value) {
     return static_cast<uint64_t*>(physical_address{table_value & ~(PAGEF_NX | (memory_manager::page_size - 1))});
 }
 
+inline uint64_t* present_table_entry(uint64_t table_value) {
+    REQUIRE(table_value & PAGEF_PRESENT);
+    return table_entry(table_value);
+}
+
 template<uint64_t Alignment>
 class no_free_heap {
 public:
@@ -181,7 +186,7 @@ protected:
     virtual virtual_address do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
         dbgout() << "[mem] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << ' ' << type << "\n";
 
-        const uint64_t map_page_size = static_cast<uint32_t>(type & memory_type::ps_1gb) ? (1<<30) : static_cast<uint32_t>(type & memory_type::ps_2mb) ? (2<<20) : (1<<12);
+        const uint64_t map_page_size = memory_type_page_size(type);
 
         // Check length
         REQUIRE(length > 0);
@@ -242,6 +247,35 @@ protected:
 
         return virt_start;
     }
+
+    virtual void do_unmap_memory(virtual_address virt, uint64_t length) override {
+        auto it = find_mapping(memory_map_tree_, virt, length);
+        REQUIRE(it != memory_map_tree_.end());
+        const auto type = it->type();
+        const uint64_t map_page_size = memory_type_page_size(it->type());
+        REQUIRE(it->length() == length);
+
+        memory_map_tree_.remove(*it);
+        for (; length; length -= map_page_size, virt += map_page_size) {
+            auto* pdp = present_table_entry(pml4_[virt.pml4e()]);
+
+            if (static_cast<uint32_t>(type & memory_type::ps_1gb)) {
+                pdp[virt.pdpe()] = 0;
+            } else {
+                auto* pd = present_table_entry(pdp[virt.pdpe()]);
+                if (static_cast<uint32_t>(type & memory_type::ps_2mb)) {
+                    pd[virt.pde()] = 0;
+                } else {
+                    auto* pt = present_table_entry(pd[virt.pde()]);
+                    pt[virt.pte()] = 0;
+                }
+            }
+        }
+        // TODO: Free empty tables
+        memory_map_tree_.remove(*it);
+        // TODO: The memory_mapping in *it can now be reused
+    }
+
 };
 
 // Simple heap. The free blocks are kept in list sorted according to memory address. Memory blocks are coalesced on free().
@@ -424,6 +458,10 @@ private:
         REQUIRE(virt.pml4e() == kernel_pml4);
         return mm_->map_memory(virt, length, type, phys);
     }
+
+    void do_unmap_memory(virtual_address virt, uint64_t length) {
+        mm_->unmap_memory(virt, length);
+    }
 };
 object_buffer<kernel_memory_manager> mm_buffer;
 
@@ -455,8 +493,41 @@ memory_manager_ptr mm_init(physical_address base, uint64_t length)
 
 void print_page_tables(physical_address pml4_address)
 {
-    dbgout() << "pml4 = " << as_hex(pml4_address) << "\n";
+    dbgout() << "PML4 " << as_hex(pml4_address) << "\n";
+
+    constexpr auto table_size = memory_manager_base::table_size;
     auto pml4 = table_entry(pml4_address);
+    for (uint32_t l4 = 0; l4 < table_size; ++l4) {
+        const auto l4v = static_cast<uint64_t>(l4)<<virtual_address::pml4_shift;
+        if (!(pml4[l4] & PAGEF_PRESENT)) continue;
+        dbgout() << as_hex(l4) << " " << as_hex(pml4[l4]) << " " << as_hex(l4v) << "\n";
+        auto pdpt = table_entry(pml4[l4]);
+        for (uint32_t l3 = 0; l3 < table_size; ++l3) {
+            const auto l3v = static_cast<uint64_t>(l3)<<virtual_address::pdp_shift;
+            if (!(pdpt[l3] & PAGEF_PRESENT)) continue;
+            dbgout() << " " << as_hex(l3) << " " << as_hex(pdpt[l3]) << " " << as_hex(l4v|l3v) << "\n";
+            if (pdpt[l3] & PAGEF_PAGESIZE) continue;
+            auto pdt = table_entry(pdpt[l3]);
+            if ((pdt[0]&~(PAGEF_ACCESSED|PAGEF_DIRTY)) == (PAGEF_NX|PAGEF_PRESENT|PAGEF_PAGESIZE|PAGEF_WRITE)) {
+                dbgout() << "  Identity mapping\n";
+                continue;
+            }
+            for (uint32_t l2 = 0; l2 < table_size; ++l2) {
+                const auto l2v = static_cast<uint64_t>(l2)<<virtual_address::pd_shift;
+                if (!(pdt[l2] & PAGEF_PRESENT)) continue;
+                dbgout() << "  " << as_hex(l2) << " " << as_hex(pdt[l2]) << " " << as_hex(l4v|l3v|l2v) << "\n";
+                if ((pdt[l2] & PAGEF_PAGESIZE)) continue;
+                auto pt = table_entry(pdt[l2]);
+                for (uint32_t l1 = 0; l1 < memory_manager_base::table_size; ++l1) {
+                    const auto l1v = static_cast<uint64_t>(l1)<<virtual_address::pt_shift;
+                    if (!(pt[l1] & PAGEF_PRESENT)) continue;
+                    dbgout() << "   " << as_hex(l1) << " " << as_hex(pt[l1]) << " " << as_hex(l4v|l3v|l2v|l1v) << "\n";
+                }
+            }
+        }
+    }
+
+#if 0
     for (int i = 0; i < memory_manager_base::table_size; ++i ) {
         if (pml4[i] & PAGEF_PRESENT) {
             dbgout() << as_hex(i) << " " << as_hex(pml4[i]) << "\n";
@@ -484,6 +555,7 @@ void print_page_tables(physical_address pml4_address)
             }
         }
     }
+#endif
 }
 
 physical_address virt_to_phys(physical_address pml4, virtual_address virt)
@@ -536,7 +608,7 @@ volatile void* iomem_map(physical_address base, uint64_t length)
 
 void iomem_unmap(volatile void* virt, uint64_t length)
 {
-    dbgout() << "[mem] Ignoring I/O mem unmap request virt = " << as_hex((uint64_t)virt) << " length = " << as_hex(length) << "\n";
+    kernel_memory_manager::instance().unmap_memory(virtual_address::in_current_address_space(const_cast<void*>(virt)), length);
 }
 
 physical_allocation alloc_physical(uint64_t bytes) {
