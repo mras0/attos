@@ -21,14 +21,6 @@
 
 namespace attos {
 
-void* kalloc(uint64_t size) {
-    return kmemory_manager().alloc(size);
-}
-
-void kfree(void* ptr) {
-    kmemory_manager().free(ptr);
-}
-
 void yield() {
     __halt();
 }

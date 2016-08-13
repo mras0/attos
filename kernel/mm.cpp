@@ -206,17 +206,6 @@ private:
 
         return virt_start;
     }
-
-    virtual void* do_alloc(uint64_t size) override {
-        (void)size;
-        REQUIRE(!"Not implemented");
-        return nullptr;
-    }
-
-    virtual void do_free(void* ptr) override {
-        (void)ptr;
-        REQUIRE(!"Not implemented");
-    }
 };
 
 // Simple heap. The free blocks are kept in list sorted according to memory address. Memory blocks are coalesced on free().
@@ -364,6 +353,13 @@ public:
         return physical_address::from_identity_mapped_ptr(ptr);
     }
 
+    void* alloc(uint64_t size) {
+        return kernel_heap_.alloc(size);
+    }
+
+    void free(void* ptr) {
+        kernel_heap_.free(reinterpret_cast<uint8_t*>(ptr));
+    }
 private:
     physical_address                                 saved_cr3_;
     no_free_heap<page_size>                          physical_pages_;
@@ -377,14 +373,6 @@ private:
 
     virtual virtual_address do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
         return mm_->map_memory(virt, length, type, phys);
-    }
-
-    virtual void* do_alloc(uint64_t size) override {
-        return kernel_heap_.alloc(size);
-    }
-
-    virtual void do_free(void* ptr) override {
-        kernel_heap_.free(reinterpret_cast<uint8_t*>(ptr));
     }
 };
 object_buffer<kernel_memory_manager> mm_buffer;
@@ -490,6 +478,14 @@ kowned_ptr<memory_manager> create_default_memory_manager() {
     // The mm is born with the current high mem (kernel) mapping
     move_memory(static_cast<uint64_t*>(mmb->pml4()) + 256, static_cast<const uint64_t*>(kernel_memory_manager::instance().pml4()) + 256, 256 * sizeof(uint64_t));
     return kowned_ptr<memory_manager>{mmb.release()};
+}
+
+void* kalloc(uint64_t size) {
+    return kernel_memory_manager::instance().alloc(size);
+}
+
+void kfree(void* ptr) {
+    kernel_memory_manager::instance().free(ptr);
 }
 
 } // namespace attos
