@@ -179,4 +179,36 @@ void restore_original_context() {
     cpu_manager_impl::instance().restore_original_context();
 }
 
+extern "C" void syscall_handler(void);
+
+syscall_handler_t syscall_handler_;
+
+extern "C" void syscall_service_routine(registers& regs)
+{
+    REQUIRE(syscall_handler_);
+    syscall_handler_(regs);
+    REQUIRE(!regs.cs);
+}
+
+syscall_enabler::syscall_enabler(syscall_handler_t handler) {
+    REQUIRE(!(__readmsr(msr_efer) & efer_mask_sce));
+
+    REQUIRE(!syscall_handler_);
+    syscall_handler_ = handler;
+
+    // Enable SYSCALL
+    static_assert(kernel_cs + 8 == kernel_ds, "");
+    static_assert(user_ds + 8 == user_cs, "");
+    __writemsr(msr_star, (static_cast<uint64_t>(kernel_cs) << 32) | ((static_cast<uint64_t>(user_ds - 8)) << 48));
+    __writemsr(msr_lstar, reinterpret_cast<uint64_t>(&syscall_handler));
+    __writemsr(msr_fmask, rflag_mask_tf | rflag_mask_if | rflag_mask_df | rflag_mask_iopl | rflag_mask_ac);
+    __writemsr(msr_efer, __readmsr(msr_efer) | efer_mask_sce);
+}
+
+syscall_enabler::~syscall_enabler() {
+    REQUIRE(__readmsr(msr_efer) & efer_mask_sce);
+    __writemsr(msr_efer, __readmsr(msr_efer) & ~efer_mask_sce);
+    syscall_handler_ = syscall_handler_t{};
+}
+
 } // namespace attos

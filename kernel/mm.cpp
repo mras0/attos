@@ -526,36 +526,6 @@ void print_page_tables(physical_address pml4_address)
             }
         }
     }
-
-#if 0
-    for (int i = 0; i < memory_manager_base::table_size; ++i ) {
-        if (pml4[i] & PAGEF_PRESENT) {
-            dbgout() << as_hex(i) << " " << as_hex(pml4[i]) << "\n";
-            auto pdpt = table_entry(pml4[i]);
-            for (int j = 0; j < memory_manager_base::table_size; ++j) {
-                if (pdpt[j] & PAGEF_PRESENT) {
-                    dbgout() << " " << as_hex(j) << " " << as_hex(pdpt[j]) << "\n";
-                    if (!(pdpt[j] & PAGEF_PAGESIZE)) {
-                        auto pdt = table_entry(pdpt[j]);
-                        for (int k = 0; k < memory_manager_base::table_size; ++k) {
-                            if (pdt[k] & PAGEF_PRESENT) {
-                                dbgout() << "  " << as_hex(k) << " " << as_hex(pdt[k]) << "\n";
-                                if (!(pdt[k] & PAGEF_PAGESIZE)) {
-                                    auto pt = table_entry(pdt[k]);
-                                    for (int l = 0; l < memory_manager_base::table_size; ++l) {
-                                        if (pt[l] & PAGEF_PRESENT) {
-                                            dbgout() << "   " << as_hex(l) << " " << as_hex(pt[l]) << "\n";
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-#endif
 }
 
 physical_address virt_to_phys(physical_address pml4, virtual_address virt)

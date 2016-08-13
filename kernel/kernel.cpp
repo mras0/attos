@@ -332,10 +332,7 @@ owned_ptr<memory_manager, destruct_deleter> construct_mm(const smap_entry* smap,
     mm->map_memory(virtual_address{nth.OptionalHeader.ImageBase}, round_up(nth.OptionalHeader.SizeOfHeaders, memory_manager::page_size), memory_type::read, image_phys);
     for (const auto& s : nth.sections()) {
         //dbgout() << format_str((char*)s.Name).width(8) << " " << as_hex(s.Characteristics) << " " << as_hex(s.VirtualAddress) << " " << as_hex(s.Misc.VirtualSize) << "\n";
-        memory_type t{};
-        if (s.Characteristics & pe::IMAGE_SCN_MEM_EXECUTE) t = t | memory_type::execute;
-        if (s.Characteristics & pe::IMAGE_SCN_MEM_READ)    t = t | memory_type::read;
-        if (s.Characteristics & pe::IMAGE_SCN_MEM_WRITE)   t = t | memory_type::write;
+        const memory_type t = pe::section_memory_type(s.Characteristics);
         mm->map_memory(virtual_address{nth.OptionalHeader.ImageBase + s.VirtualAddress}, round_up(s.Misc.VirtualSize, memory_manager::page_size), t, image_phys + s.PointerToRawData);
     }
 
@@ -422,13 +419,11 @@ void interactive_mode(ps2::controller& ps2c)
     }
 }
 
-extern "C" void syscall_handler(void);
-
 net::ethernet_device* hack_netdev;
 const uint64_t hack_netdev_id = 42;
 uint64_t hack_process_exit_code;
 
-extern "C" void syscall_service_routine(registers& regs)
+void syscall_handler(registers& regs)
 {
     // TODO: Check user addresses...
     const auto n = static_cast<syscall_number>(regs.rax);
@@ -437,6 +432,7 @@ extern "C" void syscall_service_routine(registers& regs)
         case syscall_number::exit:
             dbgout() << "[user] Exiting with error code " << as_hex(regs.rdx) << "\n";
             hack_process_exit_code = regs.rdx;
+            kmemory_manager().switch_to(); // Switch back to pure kernel memory manager before restoring the original context
             restore_original_context();
             REQUIRE(false);
         case syscall_number::debug_print:
@@ -548,10 +544,7 @@ user_process alloc_and_map_user_exe(const pe::IMAGE_DOS_HEADER& image)
 
     // Map sections
     for (const auto& s : nth.sections()) {
-        memory_type t = memory_type::user;
-        if (s.Characteristics & pe::IMAGE_SCN_MEM_EXECUTE) t = t | memory_type::execute;
-        if (s.Characteristics & pe::IMAGE_SCN_MEM_READ)    t = t | memory_type::read;
-        if (s.Characteristics & pe::IMAGE_SCN_MEM_WRITE)   t = t | memory_type::write;
+        const memory_type t = pe::section_memory_type(s.Characteristics) | memory_type::user;
         proc.alloc_and_copy_section(image_base + s.VirtualAddress, s.Misc.VirtualSize, t, reinterpret_cast<const uint8_t*>(&image) + s.PointerToRawData, s.SizeOfRawData);
     }
 
@@ -572,16 +565,7 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
         cpum.switch_to_context(kernel_cs, (uint64_t)&restore_original_context, kernel_ds, (uint64_t)physical_address{6<<20}, __readeflags());
     }
 
-    const auto old_efer = __readmsr(msr_efer);
-    const auto old_cr3 = __readcr3();
-
-    // Enable SYSCALL
-    static_assert(kernel_cs + 8 == kernel_ds, "");
-    static_assert(user_ds + 8 == user_cs, "");
-    __writemsr(msr_star, (static_cast<uint64_t>(kernel_cs) << 32) | ((static_cast<uint64_t>(user_ds - 8)) << 48));
-    __writemsr(msr_lstar, reinterpret_cast<uint64_t>(&syscall_handler));
-    __writemsr(msr_fmask, rflag_mask_tf | rflag_mask_if | rflag_mask_df | rflag_mask_iopl | rflag_mask_ac);
-    __writemsr(msr_efer, old_efer | efer_mask_sce);
+    syscall_enabler syscall_enabler_{&syscall_handler};
 
     user_process proc = alloc_and_map_user_exe(image);
     const uint64_t image_base = image.nt_headers().OptionalHeader.ImageBase;
@@ -589,11 +573,8 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
     const uint64_t user_rip = image_base + image.nt_headers().OptionalHeader.AddressOfEntryPoint;
 
     proc.switch_to();
-    print_page_tables(physical_address{__readcr3()});
     dbgout() << "Doing magic!\n";
-    cpum.switch_to_context(user_cs, user_rip, user_ds, user_rsp, __readeflags());
-    __writecr3(old_cr3); // restore CR3
-    __writemsr(msr_efer, old_efer); // Disable SYSCALL
+    cpum.switch_to_context(user_cs, user_rip, user_ds, user_rsp, rflag_mask_res1);
     dbgout() << "Bach from magic!\n";
     if (hack_process_exit_code) {
         dbgout() << "Process exit code " << as_hex(hack_process_exit_code) << " - press any key.\n";

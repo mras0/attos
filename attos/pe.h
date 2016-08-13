@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <attos/array_view.h>
+#include <attos/mem.h>
 
 namespace attos {
 
@@ -286,6 +287,14 @@ inline constexpr bool is_64bit_exe(const pe::IMAGE_DOS_HEADER& h) {
         && h.nt_headers().Signature == IMAGE_NT_SIGNATURE
         && h.nt_headers().FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64
         && h.nt_headers().OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+}
+
+constexpr inline memory_type section_memory_type(uint32_t Characteristics)
+{
+    return memory_type{}
+        | (Characteristics & pe::IMAGE_SCN_MEM_EXECUTE ? memory_type::execute : memory_type{})
+        | (Characteristics & pe::IMAGE_SCN_MEM_READ ? memory_type::read :memory_type{})
+        | (Characteristics & pe::IMAGE_SCN_MEM_WRITE ? memory_type::write :memory_type{});
 }
 
 uint32_t file_size_from_header(const IMAGE_DOS_HEADER& image);

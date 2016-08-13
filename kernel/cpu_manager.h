@@ -2,6 +2,7 @@
 #define ATTOS_CPU_MANAGER_H
 
 #include <attos/cpu.h>
+#include <attos/function.h>
 
 namespace attos {
 
@@ -25,6 +26,13 @@ private:
 owned_ptr<cpu_manager, destruct_deleter> cpu_init();
 
 void restore_original_context();
+
+using syscall_handler_t = function<void (registers&)>;
+class syscall_enabler {
+public:
+    explicit syscall_enabler(syscall_handler_t handler);
+    ~syscall_enabler();
+};
 
 }  // namespace attos
 
