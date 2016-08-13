@@ -83,8 +83,6 @@ auto find_mapping(memory_mapping::tree_type& t, virtual_address addr, uint64_t l
     return std::find_if(t.begin(), t.end(), [addr, length](const auto& m) { return memory_areas_overlap(addr, length, m.address(), m.length()); });
 }
 
-physical_address alloc_physical_page() { return alloc_physical(memory_manager::page_size); }
-
 constexpr virtual_address kernel_map_start{0xFFFFFFFF'FF000000};
 
 class memory_manager_base : public memory_manager {
@@ -107,6 +105,8 @@ private:
     memory_mapping::tree_type              memory_map_tree_;
     uint64_t*                              pml4_;
     virtual_address                        free_virt_base_;
+
+    static physical_address alloc_physical_page() { return alloc_physical(memory_manager::page_size).release(); }
 
     uint64_t* alloc_if_not_present(uint64_t& parent, uint64_t flags) {
         if (parent & PAGEF_PRESENT) {
@@ -211,26 +211,24 @@ private:
 // Simple heap. The free blocks are kept in list sorted according to memory address. Memory blocks are coalesced on free().
 class simple_heap {
 public:
-    static constexpr uint64_t alignment = 16;
-
     explicit simple_heap(uint8_t* base, uint64_t length) : base_(base), end_(base + length), free_(end_of_list) {
-        REQUIRE(!((uint64_t)base & (alignment-1)));
-        REQUIRE(length >= alignment);
+        REQUIRE(length >= sizeof(free_node));
+        REQUIRE(length % sizeof(free_node) == 0);
         insert_free(base, length);
     }
 
     ~simple_heap() {
-        REQUIRE(free_ == reinterpret_cast<free_node*>(base_));
-        REQUIRE(free_->size == static_cast<uint64_t>(end_ - base_));
     }
 
     simple_heap(const simple_heap&) = delete;
     simple_heap& operator=(const simple_heap&) = delete;
 
+    bool has_allocations() const {
+        return free_ != reinterpret_cast<free_node*>(base_) || free_->size != static_cast<uint64_t>(end_ - base_);
+    }
+
     uint8_t* alloc(uint64_t size) {
         //dbgout() << "simple_heap::alloc(" << as_hex(size) << ")\n";
-        size = round_up(size + alignment, alignment);
-
         free_node** fp = &free_;
         while ((*fp) != end_of_list && (*fp)->size < size) {
             fp = &(*fp)->next;
@@ -249,16 +247,13 @@ public:
             //dbgout() << "simple_heap took complete block " << **fp << "\n";
             *fp = (*fp)->next;
         }
-        *reinterpret_cast<uint64_t*>(res) = size;
-        //dbgout() << "simple_heap::alloc() returning " << as_hex((uint64_t)(res + alignment)) << "\n";
-        return res + alignment;
+        //dbgout() << "simple_heap::alloc() returning " << as_hex((uint64_t)(res)) << "\n";
+        return res;
     }
 
-    void free(uint8_t* ptr) {
-        REQUIRE((uint64_t)ptr >= (uint64_t)base_ && (uint64_t)ptr + alignment <= (uint64_t)end_);
-        ptr -= alignment;
-        const uint64_t size = *reinterpret_cast<uint64_t*>(ptr);
+    void free(uint8_t* ptr, uint64_t size) {
         //dbgout() << "simple_heap::free(" << as_hex((uint64_t)ptr) << ") size = "  << as_hex(size) << "\n";
+        REQUIRE((uint64_t)ptr >= (uint64_t)base_ && (uint64_t)ptr + size <= (uint64_t)end_);
         insert_free(ptr, size);
     }
 
@@ -305,7 +300,6 @@ private:
             return os << as_hex((uint64_t)&n) << "{" << as_hex(n.size).width(6) << ", " << as_hex((uint64_t)n.next) << "}";
         }
     };
-    static_assert(sizeof(free_node) == alignment, "");
     static constexpr free_node* end_of_list = reinterpret_cast<free_node*>(~0ULL);
     free_node* free_;
 
@@ -331,38 +325,56 @@ constexpr uint64_t initial_heap_size = 1<<20;
 class kernel_memory_manager : public memory_manager, public singleton<kernel_memory_manager> {
 public:
     explicit kernel_memory_manager(physical_address base, uint64_t length)
-        : saved_cr3_(__readcr3())
+        : saved_cr3_{__readcr3()}
         , physical_pages_{base, length}
-        , kernel_heap_{static_cast<uint8_t*>(alloc_physical(initial_heap_size)), initial_heap_size} {
+        , kernel_heap_phys_{alloc_physical(initial_heap_size)}
+        , kernel_heap_{static_cast<uint8_t*>(kernel_heap_phys_.address()), kernel_heap_phys_.length()} {
         dbgout() << "[mem] Starting. Base 0x" << as_hex(base) << " Length " << (length>>20) << " MB\n";
         mm_ = mm_buffer_.construct();
     }
 
     ~kernel_memory_manager() {
         dbgout() << "[mem] Shutting down. Restoring CR3 to " << as_hex(saved_cr3_) << "\n";
+        REQUIRE(!kernel_heap_.has_allocations());
+        if (physical_pages_.has_allocations()) {
+            dbgout() << "[mem] Warning not all physical pages have been freed\n";
+        }
         __writecr3(saved_cr3_);
     }
 
     kernel_memory_manager(const kernel_memory_manager&) = delete;
     kernel_memory_manager& operator=(const kernel_memory_manager&) = delete;
 
-    physical_address alloc_physical(uint64_t size) {
+    physical_allocation alloc_physical(uint64_t size) {
         size = round_up(size, page_size);
         auto ptr = physical_pages_.alloc(size);
         __stosq(reinterpret_cast<uint64_t*>(ptr), 0, size / 8);
-        return physical_address::from_identity_mapped_ptr(ptr);
+        return { physical_address::from_identity_mapped_ptr(ptr), size };
     }
 
+    void free_physical(physical_address addr, uint64_t length) {
+        physical_pages_.free(addr, length);
+    }
+
+    static constexpr uint64_t kalloc_align = 16;
+
     void* alloc(uint64_t size) {
-        return kernel_heap_.alloc(size);
+        static_assert(kalloc_align >= sizeof(uint64_t), "");
+        size = round_up(size + kalloc_align, kalloc_align);
+        auto ptr = kernel_heap_.alloc(size);
+        *reinterpret_cast<uint64_t*>(ptr) = size;
+        return ptr + kalloc_align;
     }
 
     void free(void* ptr) {
-        kernel_heap_.free(reinterpret_cast<uint8_t*>(ptr));
+        auto p = static_cast<uint8_t*>(ptr) - kalloc_align;
+        auto size = *reinterpret_cast<const uint64_t*>(p);
+        kernel_heap_.free(p, size);
     }
 private:
     physical_address                                 saved_cr3_;
-    no_free_heap<page_size>                          physical_pages_;
+    simple_heap                                      physical_pages_;
+    physical_allocation                              kernel_heap_phys_;
     simple_heap                                      kernel_heap_;
     object_buffer<memory_manager_base>               mm_buffer_;
     owned_ptr<memory_manager_base, destruct_deleter> mm_;
@@ -376,6 +388,26 @@ private:
     }
 };
 object_buffer<kernel_memory_manager> mm_buffer;
+
+physical_allocation::~physical_allocation() {
+    if (length_) {
+        kernel_memory_manager::instance().free_physical(addr_, length_);
+    }
+}
+
+physical_allocation& physical_allocation::operator=(physical_allocation&& other) {
+    REQUIRE(length_ == 0);
+    addr_ = other.addr_;
+    length_ = other.length_;
+    other.length_ = 0;
+    return *this;
+}
+
+physical_address physical_allocation::release() {
+    REQUIRE(length_ == memory_manager::page_size);
+    length_ = 0;
+    return addr_;
+}
 
 memory_manager_ptr mm_init(physical_address base, uint64_t length)
 {
@@ -469,7 +501,7 @@ void iomem_unmap(volatile void* virt, uint64_t length)
     dbgout() << "[mem] Ignoring I/O mem unmap request virt = " << as_hex((uint64_t)virt) << " length = " << as_hex(length) << "\n";
 }
 
-physical_address alloc_physical(uint64_t bytes) {
+physical_allocation alloc_physical(uint64_t bytes) {
     return kernel_memory_manager::instance().alloc_physical(bytes);
 }
 

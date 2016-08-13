@@ -499,30 +499,50 @@ extern "C" void syscall_service_routine(registers& regs)
     _disable(); // Disable interrupts again
 }
 
-void alloc_and_copy_section(memory_manager& mm, virtual_address virt, uint32_t virt_size, memory_type t, const void* source, uint32_t src_size)
-{
-    constexpr auto page_mask = memory_manager::page_size-1;
-    REQUIRE((virt & page_mask) == 0);
-
-    const auto phys_size = round_up(virt_size, memory_manager::page_size);
-    auto phys = alloc_physical(phys_size);
-
-    if (src_size) {
-        const auto to_copy = std::min(virt_size, src_size);
-        memcpy(static_cast<void*>(phys), source, to_copy);
+class user_process {
+public:
+    explicit user_process() : mm_(create_default_memory_manager()) {
     }
-    mm.map_memory(virt, phys_size, t, phys);
-}
 
-void alloc_and_map_user_exe(memory_manager& mm, const pe::IMAGE_DOS_HEADER& image)
+    user_process(user_process&&) = default;
+    user_process& operator=(user_process&&) = default;
+
+    ~user_process() {
+    }
+
+    void alloc_and_copy_section(virtual_address virt, uint32_t virt_size, memory_type t, const void* source, uint32_t src_size) {
+        constexpr auto page_mask = memory_manager::page_size-1;
+        REQUIRE((virt & page_mask) == 0);
+
+        const auto phys_size = round_up(virt_size, memory_manager::page_size);
+        allocations_.push_back(alloc_physical(phys_size));
+        auto& phys = allocations_.back();
+
+        if (src_size) {
+            const auto to_copy = std::min(virt_size, src_size);
+            memcpy(static_cast<void*>(phys.address()), source, to_copy);
+        }
+        mm_->map_memory(virt, phys_size, t, phys.address());
+    }
+
+    auto pml4() const { return mm_->pml4(); }
+
+private:
+    kowned_ptr<memory_manager>   mm_;
+    kvector<physical_allocation> allocations_;
+};
+
+user_process alloc_and_map_user_exe(const pe::IMAGE_DOS_HEADER& image)
 {
     REQUIRE(is_64bit_exe(image));
     const auto& nth = image.nt_headers();
 
+    user_process proc;
+
     const auto image_base = virtual_address{nth.OptionalHeader.ImageBase};
 
     // Map headers
-    alloc_and_copy_section(mm, image_base, nth.OptionalHeader.SizeOfHeaders, memory_type::read | memory_type::user, &image, nth.OptionalHeader.SizeOfHeaders);
+    proc.alloc_and_copy_section(image_base, nth.OptionalHeader.SizeOfHeaders, memory_type::read | memory_type::user, &image, nth.OptionalHeader.SizeOfHeaders);
 
     // Map sections
     for (const auto& s : nth.sections()) {
@@ -530,15 +550,17 @@ void alloc_and_map_user_exe(memory_manager& mm, const pe::IMAGE_DOS_HEADER& imag
         if (s.Characteristics & pe::IMAGE_SCN_MEM_EXECUTE) t = t | memory_type::execute;
         if (s.Characteristics & pe::IMAGE_SCN_MEM_READ)    t = t | memory_type::read;
         if (s.Characteristics & pe::IMAGE_SCN_MEM_WRITE)   t = t | memory_type::write;
-        alloc_and_copy_section(mm, image_base + s.VirtualAddress, s.Misc.VirtualSize, t, reinterpret_cast<const uint8_t*>(&image) + s.PointerToRawData, s.SizeOfRawData);
+        proc.alloc_and_copy_section(image_base + s.VirtualAddress, s.Misc.VirtualSize, t, reinterpret_cast<const uint8_t*>(&image) + s.PointerToRawData, s.SizeOfRawData);
     }
 
     // Map stack
     const uint64_t stack_size = 0x1000 * 8;
     REQUIRE(nth.OptionalHeader.SizeOfStackCommit <= stack_size);
-    alloc_and_copy_section(mm, image_base - stack_size, stack_size, memory_type_rw | memory_type::user, nullptr, 0);
+    proc.alloc_and_copy_section(image_base - stack_size, stack_size, memory_type_rw | memory_type::user, nullptr, 0);
 
     hack_set_user_image(*(pe::IMAGE_DOS_HEADER*)(uint64_t)image_base);
+
+    return proc;
 }
 
 void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
@@ -547,8 +569,6 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
     for (int i = 0; i < 10; ++i) {
         cpum.switch_to_context(kernel_cs, (uint64_t)&restore_original_context, kernel_ds, (uint64_t)physical_address{6<<20}, __readeflags());
     }
-
-    auto mm = create_default_memory_manager();
 
     const auto old_efer = __readmsr(msr_efer);
     const auto old_cr3 = __readcr3();
@@ -561,12 +581,12 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
     __writemsr(msr_fmask, rflag_mask_tf | rflag_mask_if | rflag_mask_df | rflag_mask_iopl | rflag_mask_ac);
     __writemsr(msr_efer, old_efer | efer_mask_sce);
 
-    alloc_and_map_user_exe(*mm, image);
+    user_process proc = alloc_and_map_user_exe(image);
     const uint64_t image_base = image.nt_headers().OptionalHeader.ImageBase;
     const uint64_t user_rsp = image_base - 0x28;
     const uint64_t user_rip = image_base + image.nt_headers().OptionalHeader.AddressOfEntryPoint;
 
-    __writecr3(mm->pml4()); // set user process PML4
+    __writecr3(proc.pml4()); // set user process PML4
     dbgout() << "Doing magic!\n";
     cpum.switch_to_context(user_cs, user_rip, user_ds, user_rsp, __readeflags());
     __writecr3(old_cr3); // restore CR3

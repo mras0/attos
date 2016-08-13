@@ -41,7 +41,35 @@ void iomem_unmap(volatile void* virt, uint64_t length);
 
 memory_manager& kmemory_manager();
 
-physical_address alloc_physical(uint64_t bytes);
+class kernel_memory_manager;
+class memory_manager_base;
+
+class physical_allocation {
+public:
+    physical_allocation(const physical_allocation&) = delete;
+    physical_allocation& operator=(const physical_allocation&) = delete;
+    physical_allocation(physical_allocation&& other) : addr_(other.addr_), length_(other.length_) {
+        other.length_ = 0;
+    }
+    physical_allocation& operator=(physical_allocation&& other);
+    ~physical_allocation();
+
+    constexpr physical_address address() const { return addr_; }
+    constexpr uint64_t length() const { return length_; }
+
+private:
+    constexpr physical_allocation(physical_address addr, uint64_t length) : addr_(addr), length_(length) {
+    }
+
+    physical_address release();
+
+    friend kernel_memory_manager;
+    friend memory_manager_base;
+    physical_address addr_;
+    uint64_t         length_;
+};
+
+physical_allocation alloc_physical(uint64_t bytes);
 
 kowned_ptr<memory_manager> create_default_memory_manager();
 
