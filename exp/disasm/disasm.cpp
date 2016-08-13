@@ -496,6 +496,7 @@ decoded_instruction do_disasm(const uint8_t* code)
         instructions[0x89] = instruction_info{"mov",  Ev, Gv};     // MOV r/m16/32/64, r16/32/64
         instructions[0x8a] = instruction_info{"mov",  Gb, Eb};     // MOV r8, r/m8
         instructions[0x8b] = instruction_info{"mov",  Gv, Ev};     // MOV r16/32/64, r/m16/32/64
+        instructions[0x8c] = instruction_info{"mov",  Ev, Sw};     // MOV r16/32/64, Sreg
         instructions[0x8d] = instruction_info{"lea",  Gv, M};      // LEA r16/32/64, m
         instructions[0x8e] = instruction_info{"mov",  Sw, Ew};     // MOV Sreg, r/m16
         instructions[0x8f] = instruction_info{"pop",  /*d64*/f64, Ev};    // POP r/m64/16

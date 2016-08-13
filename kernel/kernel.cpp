@@ -419,9 +419,69 @@ void interactive_mode(ps2::controller& ps2c)
     }
 }
 
+class user_process {
+public:
+    explicit user_process() : mm_(create_default_memory_manager()), context_() {
+    }
+
+    user_process(user_process&&) = default;
+    user_process& operator=(user_process&&) = default;
+
+    ~user_process() {
+        REQUIRE(state_ == states::exited);
+    }
+
+    uint64_t exit_code() const {
+        REQUIRE(state_ == states::exited);
+        return exit_code_;
+    }
+
+    registers& context() {
+        REQUIRE(state_ == states::created);
+        return context_;
+    }
+
+    void alloc_and_copy_section(virtual_address virt, uint32_t virt_size, memory_type t, const void* source, uint32_t src_size) {
+        REQUIRE(state_ == states::created);
+        constexpr auto page_mask = memory_manager::page_size-1;
+        REQUIRE((virt & page_mask) == 0);
+
+        const auto phys_size = round_up(virt_size, memory_manager::page_size);
+        allocations_.push_back(alloc_physical(phys_size));
+        auto& phys = allocations_.back();
+
+        if (src_size) {
+            const auto to_copy = std::min(virt_size, src_size);
+            memcpy(static_cast<void*>(phys.address()), source, to_copy);
+        }
+        mm_->map_memory(virt, phys_size, t, phys.address());
+    }
+
+    void switch_to(cpu_manager& cpum) {
+        REQUIRE(state_ == states::created);
+        state_ = states::running;
+        mm_->switch_to();
+        cpum.switch_to_context(context_);
+    }
+
+    void exit(uint64_t exit_code) {
+        REQUIRE(state_ == states::running);
+        exit_code_ = exit_code;
+        state_ = states::exited;
+    }
+
+private:
+    enum class states { created, running, exited } state_ = states::created;
+    kowned_ptr<memory_manager>   mm_;
+    kvector<physical_allocation> allocations_;
+    registers                    context_;
+    uint64_t                     exit_code_ = 0;
+};
+
+
 net::ethernet_device* hack_netdev;
 const uint64_t hack_netdev_id = 42;
-uint64_t hack_process_exit_code;
+user_process* hack_current_process_;
 
 void syscall_handler(registers& regs)
 {
@@ -431,7 +491,7 @@ void syscall_handler(registers& regs)
     switch (n) {
         case syscall_number::exit:
             dbgout() << "[user] Exiting with error code " << as_hex(regs.rdx) << "\n";
-            hack_process_exit_code = regs.rdx;
+            hack_current_process_->exit(regs.rdx);
             kmemory_manager().switch_to(); // Switch back to pure kernel memory manager before restoring the original context
             restore_original_context();
             REQUIRE(false);
@@ -495,45 +555,6 @@ void syscall_handler(registers& regs)
     _disable(); // Disable interrupts again
 }
 
-class user_process {
-public:
-    explicit user_process() : mm_(create_default_memory_manager()), context_() {
-    }
-
-    user_process(user_process&&) = default;
-    user_process& operator=(user_process&&) = default;
-
-    ~user_process() {
-    }
-
-    void alloc_and_copy_section(virtual_address virt, uint32_t virt_size, memory_type t, const void* source, uint32_t src_size) {
-        constexpr auto page_mask = memory_manager::page_size-1;
-        REQUIRE((virt & page_mask) == 0);
-
-        const auto phys_size = round_up(virt_size, memory_manager::page_size);
-        allocations_.push_back(alloc_physical(phys_size));
-        auto& phys = allocations_.back();
-
-        if (src_size) {
-            const auto to_copy = std::min(virt_size, src_size);
-            memcpy(static_cast<void*>(phys.address()), source, to_copy);
-        }
-        mm_->map_memory(virt, phys_size, t, phys.address());
-    }
-
-    registers& context() { return context_; }
-
-    void switch_to(cpu_manager& cpum) {
-        mm_->switch_to();
-        cpum.switch_to_context(context_);
-    }
-
-private:
-    kowned_ptr<memory_manager>   mm_;
-    kvector<physical_allocation> allocations_;
-    registers                    context_;
-};
-
 user_process alloc_and_map_user_exe(const pe::IMAGE_DOS_HEADER& image)
 {
     REQUIRE(is_64bit_exe(image));
@@ -584,13 +605,12 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
     syscall_enabler syscall_enabler_{&syscall_handler};
 
     user_process proc = alloc_and_map_user_exe(image);
-    const uint64_t image_base = image.nt_headers().OptionalHeader.ImageBase;
-
     dbgout() << "Doing magic!\n";
+    hack_current_process_ = &proc;
     proc.switch_to(cpum);
     dbgout() << "Bach from magic!\n";
-    if (hack_process_exit_code) {
-        dbgout() << "Process exit code " << as_hex(hack_process_exit_code) << " - press any key.\n";
+    if (proc.exit_code()) {
+        dbgout() << "Process exit code " << as_hex(proc.exit_code()) << " - press any key.\n";
         read_key();
     }
 }
