@@ -13,7 +13,7 @@ static constexpr uint16_t user_ds   = 0x1b;
 
 class __declspec(novtable) cpu_manager {
 public:
-    virtual ~cpu_manager() {}
+    virtual ~cpu_manager() = 0 {}
 
     void switch_to_context(registers& regs) {
         do_switch_to_context(regs);

@@ -9,12 +9,12 @@ using namespace attos::net;
 class my_ethernet_device : public ethernet_device {
 public:
     explicit my_ethernet_device() {
-        syscall1(syscall_number::ethdev_create, (uint64_t)&id_);
+        id_ = syscall1(syscall_number::create, (uint64_t)"ethdev");
         dbgout() << "[my_ethernet_device] constructed id " << as_hex(id_) << "\n";
     }
     virtual ~my_ethernet_device() override {
         dbgout() << "[my_ethernet_device] destructing id " << as_hex(id_) << "\n";
-        syscall1(syscall_number::ethdev_destroy, id_);
+        syscall1(syscall_number::destroy, id_);
     }
 private:
     uint64_t id_;

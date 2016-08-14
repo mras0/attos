@@ -8,7 +8,7 @@ namespace attos {
 
 class __declspec(novtable) memory_manager {
 public:
-    virtual ~memory_manager() {}
+    virtual ~memory_manager() = 0 {}
 
     static constexpr uint64_t page_size = 4096;
 

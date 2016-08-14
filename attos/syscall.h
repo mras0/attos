@@ -8,10 +8,10 @@ enum class syscall_number : uint64_t {
     debug_print,
     yield,
 
+    create,
+    destroy,
 
     // HACK/TEST
-    ethdev_create = 0x1000,
-    ethdev_destroy,
     ethdev_hw_address,
     ethdev_send,
     ethdev_recv,

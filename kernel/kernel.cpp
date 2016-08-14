@@ -419,7 +419,13 @@ void interactive_mode(ps2::controller& ps2c)
     }
 }
 
-class user_process {
+class __declspec(novtable) kernel_object {
+public:
+    virtual ~kernel_object() = 0 {}
+private:
+};
+
+class user_process : public kernel_object {
 public:
     explicit user_process() : mm_(create_default_memory_manager()), context_() {
     }
@@ -429,6 +435,9 @@ public:
 
     ~user_process() {
         REQUIRE(state_ == states::exited);
+        for (const auto& o : objects_) {
+            REQUIRE(!o);
+        }
     }
 
     uint64_t exit_code() const {
@@ -466,21 +475,68 @@ public:
 
     void exit(uint64_t exit_code) {
         REQUIRE(state_ == states::running);
+        for (const auto& o : objects_) {
+            REQUIRE(!o);
+        }
         exit_code_ = exit_code;
         state_ = states::exited;
     }
 
+    // Handle = Index + 1
+
+    uint64_t object_open(kowned_ptr<kernel_object>&& obj) {
+        for (int i = 0; i < max_objects; ++i) {
+            if (!objects_[i]) {
+                objects_[i] = std::move(obj);
+                return i + 1;
+            }
+        }
+        REQUIRE(false);
+        return 0;
+    }
+
+    bool handle_valid(uint64_t handle) {
+        return handle >= 1 && handle <= max_objects && objects_[handle - 1];
+    }
+
+    void object_close(uint64_t handle) {
+        REQUIRE(handle_valid(handle));
+        objects_[handle - 1].reset();
+    }
+
+    kernel_object& object_get(uint64_t handle) {
+        REQUIRE(handle_valid(handle));
+        return *objects_[handle - 1];
+    }
+
 private:
+    static constexpr int max_objects = 1;
     enum class states { created, running, exited } state_ = states::created;
-    kowned_ptr<memory_manager>   mm_;
-    kvector<physical_allocation> allocations_;
-    registers                    context_;
-    uint64_t                     exit_code_ = 0;
+    kowned_ptr<memory_manager>         mm_;
+    kvector<physical_allocation>       allocations_;
+    registers                          context_;
+    uint64_t                           exit_code_ = 0;
+    kowned_ptr<kernel_object>          objects_[max_objects];
+};
+
+class ko_ethdev : public kernel_object {
+public:
+    explicit ko_ethdev(net::ethernet_device* dev) : dev_(*dev) {
+        dbgout() << "ko_ethdev::ko_ethdev MAC " << dev_.hw_address() << "\n";
+    }
+
+    virtual ~ko_ethdev() override {
+        dbgout() << "ko_ethdev::~ko_ethdev\n";
+    }
+
+    auto& dev() { return dev_; }
+
+private:
+    net::ethernet_device& dev_;
 };
 
 
 net::ethernet_device* hack_netdev;
-const uint64_t hack_netdev_id = 42;
 user_process* hack_current_process_;
 
 void syscall_handler(registers& regs)
@@ -508,40 +564,37 @@ void syscall_handler(registers& regs)
                 regs.rax = ps2c.key_available() && ps2c.read_key() == '\x1b';
                 break;
             }
-        case syscall_number::ethdev_create:
-            dbgout() << "[user] ethdev_create - id = " << hack_netdev_id << "\n";
-            *reinterpret_cast<uint64_t*>(regs.rdx) = hack_netdev_id;
+        case syscall_number::create:
+            {
+                const char* name = reinterpret_cast<const char*>(regs.rdx);
+                dbgout() << "[user] create '" << name << "'\n";
+                REQUIRE(string_equal(name, "ethdev"));
+                regs.rax = hack_current_process_->object_open(kowned_ptr<kernel_object>{knew<ko_ethdev>(hack_netdev).release()});
+            }
             break;
-        case syscall_number::ethdev_destroy:
-            dbgout() << "[user] ethdev_destroy - id = " << regs.rdx << "\n";
-            REQUIRE(regs.rdx == hack_netdev_id);
+        case syscall_number::destroy:
+            hack_current_process_->object_close(regs.rdx);
             break;
         case syscall_number::ethdev_hw_address:
             {
-                //dbgout() << "[user] ethdev_hw_address - id = " << regs.rdx << "\n";
-                REQUIRE(regs.rdx == hack_netdev_id);
-                REQUIRE(hack_netdev != nullptr);
-                const auto hw_address = hack_netdev->hw_address();
+                auto& dev = static_cast<ko_ethdev&>(hack_current_process_->object_get(regs.rdx)).dev();
+                const auto hw_address = dev.hw_address();
                 memcpy(reinterpret_cast<void*>(regs.r8), &hw_address, sizeof(hw_address));
                 break;
             }
         case syscall_number::ethdev_send:
             {
-                //dbgout() << "[user] ethdev_send - id = " << regs.rdx << " data " << as_hex(regs.r8) << " len " << as_hex(regs.r9).width(0) << "\n";
-                REQUIRE(regs.rdx == hack_netdev_id);
-                REQUIRE(hack_netdev != nullptr);
+                auto& dev = static_cast<ko_ethdev&>(hack_current_process_->object_get(regs.rdx)).dev();
                 _enable();
-                hack_netdev->send_packet(reinterpret_cast<const void*>(regs.r8), static_cast<uint32_t>(regs.r9));
+                dev.send_packet(reinterpret_cast<const void*>(regs.r8), static_cast<uint32_t>(regs.r9));
                 break;
             }
         case syscall_number::ethdev_recv:
             {
-                //dbgout() << "[user] ethdev_recv - id = " << regs.rdx << " data " << as_hex(regs.r8) << " len " << as_hex(regs.r9) << "\n";
-                REQUIRE(regs.rdx == hack_netdev_id);
-                REQUIRE(hack_netdev != nullptr);
+                auto& dev = static_cast<ko_ethdev&>(hack_current_process_->object_get(regs.rdx)).dev();
                 int packets = 0;
                 *reinterpret_cast<uint32_t*>(regs.r9) = 0;
-                hack_netdev->process_packets([&packets, &regs] (const uint8_t* data, uint32_t len) {
+                dev.process_packets([&packets, &regs] (const uint8_t* data, uint32_t len) {
                     REQUIRE(packets++ == 0);
                     memcpy(reinterpret_cast<void*>(regs.r8), data, len);
                     *reinterpret_cast<uint32_t*>(regs.r9) = len;

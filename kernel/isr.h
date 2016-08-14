@@ -8,7 +8,7 @@ namespace attos {
 
 class __declspec(novtable) isr_registration {
 public:
-    virtual ~isr_registration() {}
+    virtual ~isr_registration() = 0 {}
 };
 using isr_registration_ptr = kowned_ptr<isr_registration>;
 
@@ -16,7 +16,7 @@ using irq_handler_t = function<void ()>;
 
 class __declspec(novtable) isr_handler {
 public:
-    virtual ~isr_handler() {}
+    virtual ~isr_handler() = 0 {}
 };
 
 owned_ptr<isr_handler, destruct_deleter> isr_init(const char* debug_info_text);

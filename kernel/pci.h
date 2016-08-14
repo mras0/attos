@@ -132,7 +132,7 @@ struct device_info {
 
 class __declspec(novtable) manager {
 public:
-    virtual ~manager() {}
+    virtual ~manager() = 0 {}
 
     array_view<device_info> devices() const {
         return do_devices();
