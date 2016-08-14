@@ -185,8 +185,18 @@ syscall_handler_t syscall_handler_;
 extern "C" void syscall_service_routine(registers& regs)
 {
     REQUIRE(syscall_handler_);
+    // The lowlevle syscall doesn't fill/use cs/rip/ss/flags, so handle them manually
+    regs.cs     = user_cs;
+    regs.rip    = regs.rcx;
+    regs.ss     = user_ds;
+    regs.eflags = static_cast<uint32_t>(regs.r11);
     syscall_handler_(regs);
-    REQUIRE(!regs.cs);
+    // TODO: Don't allow switching privilege levels
+    REQUIRE(regs.cs == user_cs);
+    REQUIRE(regs.ss == user_ds);
+    // TODO: More checks
+    regs.rcx = regs.rip;
+    regs.r11 = regs.eflags;
 }
 
 syscall_enabler::syscall_enabler(syscall_handler_t handler) {

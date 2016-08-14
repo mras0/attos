@@ -78,13 +78,18 @@ extern "C" extern char __ImageBase;
 
 int main()
 {
+    const char* filename = "test.exe";
     my_keyboard keyboard;
     my_ethernet_device ethdev;
     dbgout() << "HW address: " << ethdev.hw_address() << "\n";
-    auto data = tftp::nettest(ethdev, [&] { return keyboard.esc_pressed(); }, "test.exe");
+    auto data = tftp::nettest(ethdev, [&] { return keyboard.esc_pressed(); }, filename);
     if (!data.empty()) {
         hexdump(dbgout(), data.begin(), data.size());
         sys_handle proc{"process"};
         syscall2(syscall_number::start_exe, proc.id(), (uint64_t)data.begin());
+        dbgout() << filename << " exited with error code " << as_hex(syscall1(syscall_number::process_exit_code, proc.id())) << "!\n";
+        while (!keyboard.esc_pressed()) {
+            yield();
+        }
     }
 }

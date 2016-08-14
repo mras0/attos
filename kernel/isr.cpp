@@ -433,10 +433,9 @@ private:
 
 pe::IMAGE_DOS_HEADER* user_image;
 
-void hack_set_user_image(pe::IMAGE_DOS_HEADER& image)
+void hack_set_user_image(pe::IMAGE_DOS_HEADER* image)
 {
-    REQUIRE(user_image == nullptr);
-    user_image = &image;
+    user_image = image;
 }
 
 bool in_image(pe::IMAGE_DOS_HEADER& image, uint64_t rip)
@@ -467,6 +466,10 @@ void print_address(out_stream& os, const pe::IMAGE_DOS_HEADER& pe, uint64_t addr
     } else {
         os << "<user-exe>+0x" << as_hex(address - pe.nt_headers().OptionalHeader.ImageBase).width(4);
     }
+}
+
+void print_default_stack_trace(out_stream& os, int skip) {
+    print_stack(os, find_image, print_address, skip);
 }
 
 __declspec(noreturn) void unhandled_interrupt(const registers& r)
@@ -507,7 +510,7 @@ __declspec(noreturn) void unhandled_interrupt(const registers& r)
         dbgout() << "\n";
     }
 
-    print_stack(dbgout(), find_image, print_address, 4);
+    print_default_stack_trace(dbgout(), 4);
 
     isr_recurse_flag = false;
 

@@ -150,6 +150,10 @@ win64_proc syscall_handler
     syscall_save_reg r15
     win64_prologue_end
 
+    ; Save user stack pointer in registers struct
+    mov rax, [syscall_stack_ptr]
+    mov [rsp+syscall_common_reg_offset(rsp)], rax
+
     ; save fx state
     fxsave [rsp+syscall_common_reg_offset(fx_state)]
 
@@ -158,6 +162,10 @@ win64_proc syscall_handler
 
     ; restore fx state
     fxrstor [rsp+syscall_common_reg_offset(fx_state)]
+
+    ; Restore user stack pointer from registers structure (in case it was changed)
+    mov rax, [rsp+syscall_common_reg_offset(rsp)]
+    mov [syscall_stack_ptr], rax
 
     ; restore registers
     win64_epilogue

@@ -17,6 +17,7 @@ enum class syscall_number : uint64_t {
     ethdev_hw_address,
 
     start_exe,
+    process_exit_code,
 };
 
 extern "C" uint64_t syscall0(syscall_number n);

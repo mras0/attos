@@ -29,7 +29,8 @@ void yield() {
 
 void fatal_error(const char* file, int line, const char* detail) {
     _disable();
-    dbgout() << file << ':' << line << ": " << detail << ".\nHanging\n";
+    print_default_stack_trace(dbgout(), 1);
+    dbgout() << file << ':' << line << ": " << detail << ". Hanging\n";
     bochs_magic();
     for (;;) {
         __halt();
@@ -246,6 +247,8 @@ private:
 class user_process : public kernel_object_helper<user_process, kernel_object_protocol_number::process> {
 public:
     explicit user_process() : mm_(create_default_memory_manager()), context_() {
+        next_ = first_process_;
+        first_process_ = this;
     }
 
     user_process(user_process&&) = default;
@@ -253,9 +256,24 @@ public:
 
     ~user_process() {
         REQUIRE(state_ == states::created || state_ == states::exited);
+        REQUIRE(current_process_ != this);
         for (const auto& o : objects_) {
             REQUIRE(!o && "Unfreed objects");
         }
+        if (this == first_process_) {
+            first_process_ = next_;
+        } else {
+            auto p = first_process_;
+            while (p->next_ != this) {
+                REQUIRE(p->next_);
+                p = p->next_;
+            }
+            p->next_ = next_;
+        }
+    }
+
+    bool running() const {
+        return state_ == states::running;
     }
 
     uint64_t exit_code() const {
@@ -264,7 +282,7 @@ public:
     }
 
     registers& context() {
-        REQUIRE(state_ == states::created);
+        REQUIRE(state_ != states::exited);
         return context_;
     }
 
@@ -290,13 +308,26 @@ public:
         mm_->map_memory(virt, phys_size, t, phys.address());
     }
 
-    void switch_to(cpu_manager& cpum) {
+    void start() {
         REQUIRE(state_ == states::created);
         state_ = states::running;
-        mm_->switch_to();
-        if (image_base_) {
-            hack_set_user_image(*(pe::IMAGE_DOS_HEADER*)(uint64_t)image_base_);
-        }
+    }
+
+    void switch_from() {
+        REQUIRE(state_ == states::running);
+        REQUIRE(current_process_ == this);
+        current_process_ = nullptr;
+        hack_set_user_image(nullptr);
+    }
+
+    void switch_to(registers& regs) {
+        REQUIRE(state_ == states::running);
+        regs = context();
+        set_as_current();
+    }
+
+    void switch_to(cpu_manager& cpum) {
+        set_as_current();
         cpum.switch_to_context(context_);
     }
 
@@ -336,6 +367,19 @@ public:
         return *objects_[handle - 1];
     }
 
+    static kvector<user_process*> all_processes() {
+        kvector<user_process*> res;
+        for (auto p = first_process_; p; p = p->next_) {
+            res.push_back(p);
+        }
+        return res;
+    }
+
+    static user_process& current() {
+        REQUIRE(current_process_ != nullptr);
+        return *current_process_;
+    }
+
 private:
     static constexpr int max_objects = 16;
     enum class states { created, running, exited } state_ = states::created;
@@ -345,7 +389,22 @@ private:
     uint64_t                           exit_code_ = 0;
     kowned_ptr<kernel_object>          objects_[max_objects];
     virtual_address                    image_base_;
+    user_process*                      next_;
+
+    static user_process*               current_process_;
+    static user_process*               first_process_;
+
+    void set_as_current() {
+        REQUIRE(state_ == states::running);
+        mm_->switch_to();
+        if (image_base_) {
+            hack_set_user_image((pe::IMAGE_DOS_HEADER*)(uint64_t)image_base_);
+        }
+        current_process_ = this;
+    }
 };
+user_process* user_process::current_process_ = nullptr;
+user_process* user_process::first_process_   = nullptr;
 
 class ko_ethdev : public kernel_object_helper<ko_ethdev, kernel_object_protocol_number::read, kernel_object_protocol_number::write>, public in_stream, public out_stream {
 public:
@@ -432,11 +491,10 @@ void alloc_and_map_user_exe(user_process& proc, const pe::IMAGE_DOS_HEADER& imag
 
 
 net::ethernet_device* hack_netdev;
-user_process* hack_current_process_;
 
 template<typename T, typename... Args>
 uint64_t create_object(Args&&... args) {
-    return hack_current_process_->object_open(kowned_ptr<kernel_object>{knew<T>(static_cast<Args&&>(args)...).release()});
+    return user_process::current().object_open(kowned_ptr<kernel_object>{knew<T>(static_cast<Args&&>(args)...).release()});
 }
 
 void syscall_handler(registers& regs)
@@ -446,11 +504,28 @@ void syscall_handler(registers& regs)
     regs.rax = 0; // Default return value
     switch (n) {
         case syscall_number::exit:
-            dbgout() << "[user] Exiting with error code " << as_hex(regs.rdx) << "\n";
-            hack_current_process_->exit(regs.rdx);
-            kmemory_manager().switch_to(); // Switch back to pure kernel memory manager before restoring the original context
-            restore_original_context();
-            REQUIRE(false);
+            {
+                dbgout() << "[user] Exiting with error code " << as_hex(regs.rdx) << "\n";
+                auto& last = user_process::current();
+                last.switch_from();
+                last.exit(regs.rdx);
+
+                user_process* next = nullptr;
+                for (auto p : user_process::all_processes()) {
+                    if (p->running()) {
+                        next = p;
+                        break;
+                    }
+                }
+                if (!next) {
+                    dbgout() << "[user] All processes exited!\n";
+                    kmemory_manager().switch_to(); // Switch back to pure kernel memory manager before restoring the original context
+                    restore_original_context();
+                    REQUIRE(false);
+                }
+                next->switch_to(regs);
+                break;
+            }
         case syscall_number::debug_print:
             dbgout().write(reinterpret_cast<const char*>(regs.rdx), regs.r8);
             break;
@@ -463,7 +538,7 @@ void syscall_handler(registers& regs)
                 const char* name = reinterpret_cast<const char*>(regs.rdx);
                 dbgout() << "[user] create '" << name << "'\n";
                 if (string_equal(name, "ethdev")) {
-                    //regs.rax = hack_current_process_->object_open(kowned_ptr<kernel_object>{knew<ko_ethdev>(hack_netdev).release()});
+                    //regs.rax = user_process::current().object_open(kowned_ptr<kernel_object>{knew<ko_ethdev>(hack_netdev).release()});
                     regs.rax = create_object<ko_ethdev>(hack_netdev);
                 } else if (string_equal(name, "keyboard")) {
                     regs.rax = create_object<ko_keyboard>();
@@ -476,23 +551,23 @@ void syscall_handler(registers& regs)
             }
             break;
         case syscall_number::destroy:
-            hack_current_process_->object_close(regs.rdx);
+            user_process::current().object_close(regs.rdx);
             break;
         case syscall_number::write:
             {
-                auto& os = hack_current_process_->object_get(regs.rdx).get_protocol<kernel_object_protocol_number::write>();
+                auto& os = user_process::current().object_get(regs.rdx).get_protocol<kernel_object_protocol_number::write>();
                 os.write(reinterpret_cast<const void*>(regs.r8), static_cast<uint32_t>(regs.r9));
                 break;
             }
         case syscall_number::read:
             {
-                auto& is = hack_current_process_->object_get(regs.rdx).get_protocol<kernel_object_protocol_number::read>();
+                auto& is = user_process::current().object_get(regs.rdx).get_protocol<kernel_object_protocol_number::read>();
                 regs.rax = is.read(reinterpret_cast<void*>(regs.r8), static_cast<uint32_t>(regs.r9));
                 break;
             }
         case syscall_number::ethdev_hw_address:
             {
-                auto& dev = static_cast<ko_ethdev&>(hack_current_process_->object_get(regs.rdx)).dev();
+                auto& dev = static_cast<ko_ethdev&>(user_process::current().object_get(regs.rdx)).dev();
                 const auto hw_address = dev.hw_address();
                 memcpy(reinterpret_cast<void*>(regs.r8), &hw_address, sizeof(hw_address));
                 break;
@@ -500,10 +575,22 @@ void syscall_handler(registers& regs)
         case syscall_number::start_exe:
             {
                 dbgout() << "[user] Request to start executable @ " << as_hex(regs.r8) << " process handle " << as_hex(regs.rdx).width(2) << "\n";
-                auto& proc = hack_current_process_->object_get(regs.rdx).get_protocol<kernel_object_protocol_number::process>();
+                auto& proc = user_process::current().object_get(regs.rdx).get_protocol<kernel_object_protocol_number::process>();
                 alloc_and_map_user_exe(proc, *reinterpret_cast<pe::IMAGE_DOS_HEADER*>(regs.r8));
+                // Save original context
+                user_process::current().context() = regs;
+                user_process::current().switch_from();
+                // Set new context
+                proc.start();
+                proc.switch_to(regs);
             }
             break;
+        case syscall_number::process_exit_code:
+            {
+                auto& proc = user_process::current().object_get(regs.rdx).get_protocol<kernel_object_protocol_number::process>();
+                regs.rax = proc.exit_code();
+                break;
+            }
         default:
             dbgout() << "Got syscall 0x" << as_hex(regs.rax).width(0) << " from " << as_hex(regs.rcx) << " flags = " << as_hex(regs.r11) << "!\n";
             REQUIRE(!"Unimplemented syscall");
@@ -528,8 +615,8 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
 
     user_process proc;
     alloc_and_map_user_exe(proc, image);
+    proc.start();
     dbgout() << "Doing magic!\n";
-    hack_current_process_ = &proc;
     proc.switch_to(cpum);
     dbgout() << "Bach from magic!\n";
     if (proc.exit_code()) {
