@@ -15,6 +15,7 @@
 #include <attos/net/tftp.h>
 #include <attos/string.h>
 #include <attos/syscall.h>
+#include <attos/in_stream.h>
 
 #define assert REQUIRE // undefined yadayda
 #include <attos/tree.h>
@@ -419,10 +420,30 @@ void interactive_mode(ps2::controller& ps2c)
     }
 }
 
+enum class kernel_object_protocol_number {
+    read,
+    write,
+};
+
+template<kernel_object_protocol_number>
+struct kernel_object_protocol_traits;
+
+template<> struct kernel_object_protocol_traits<kernel_object_protocol_number::read> { using type = in_stream; };
+template<> struct kernel_object_protocol_traits<kernel_object_protocol_number::write> { using type = out_stream; };
+
 class __declspec(novtable) kernel_object {
 public:
     virtual ~kernel_object() = 0 {}
+
+    template<kernel_object_protocol_number protocol>
+    auto& get_protocol() {
+        auto ptr = reinterpret_cast<typename kernel_object_protocol_traits<protocol>::type*>(do_get_protocol(protocol));
+        REQUIRE(ptr);
+        return *ptr;
+    }
+
 private:
+    virtual void* do_get_protocol(kernel_object_protocol_number protocol) = 0;
 };
 
 class user_process : public kernel_object {
@@ -510,16 +531,51 @@ public:
     }
 
 private:
-    static constexpr int max_objects = 1;
+    static constexpr int max_objects = 2;
     enum class states { created, running, exited } state_ = states::created;
     kowned_ptr<memory_manager>         mm_;
     kvector<physical_allocation>       allocations_;
     registers                          context_;
     uint64_t                           exit_code_ = 0;
     kowned_ptr<kernel_object>          objects_[max_objects];
+
+    virtual void* do_get_protocol(kernel_object_protocol_number protocol) {
+        dbgout() << "protocol " << int(protocol) << " not supported\n";
+        REQUIRE(false);
+        return nullptr;
+    }
 };
 
-class ko_ethdev : public kernel_object {
+template<kernel_object_protocol_number... protocols>
+class __declspec(novtable) kernel_object_helper : public kernel_object, public kernel_object_protocol_traits<protocols>::type... {
+private:
+    template<kernel_object_protocol_number... ns>
+    struct get_protocol_impl;
+
+    template<>
+    struct get_protocol_impl<> {
+        static void* get(kernel_object_helper*, kernel_object_protocol_number protocol) {
+            dbgout() << "protocol " << int(protocol) << " not supported\n";
+            REQUIRE(false);
+        }
+    };
+
+    template<kernel_object_protocol_number n0, kernel_object_protocol_number... ns>
+    struct get_protocol_impl<n0, ns...> {
+        static void* get(kernel_object_helper* self, kernel_object_protocol_number protocol) {
+            if (protocol == n0) {
+                return static_cast<typename kernel_object_protocol_traits<n0>::type*>(self);
+            }
+            return get_protocol_impl<ns...>::get(self, protocol);
+        }
+    };
+
+    virtual void* do_get_protocol(kernel_object_protocol_number protocol) {
+        return get_protocol_impl<protocols...>::get(this, protocol);
+    }
+};
+
+class ko_ethdev : public kernel_object_helper<kernel_object_protocol_number::read, kernel_object_protocol_number::write> { //: public kernel_object, public in_stream, public out_stream {
 public:
     explicit ko_ethdev(net::ethernet_device* dev) : dev_(*dev) {
         dbgout() << "ko_ethdev::ko_ethdev MAC " << dev_.hw_address() << "\n";
@@ -531,13 +587,55 @@ public:
 
     auto& dev() { return dev_; }
 
+    virtual void write(const void* data, size_t n) override {
+        interrupt_enabler ie{};
+        dev_.send_packet(data, static_cast<uint32_t>(n));
+    }
+
+    virtual uint32_t read(void* out, uint32_t max) override {
+        uint32_t count = 0;
+        dev_.process_packets([&] (const uint8_t* data, uint32_t len) {
+                REQUIRE(count == 0);
+                REQUIRE(len <= max);
+                memcpy(out, data, len);
+                count = len;
+            }, 1);
+        return count;
+    }
+
 private:
     net::ethernet_device& dev_;
+};
+
+class ko_keyboard : public kernel_object_helper<kernel_object_protocol_number::read> {
+public:
+    explicit ko_keyboard() {
+        dbgout() << "ko_keyboard::ko_keyboard\n";
+    }
+
+    virtual ~ko_keyboard() override {
+        dbgout() << "ko_keyboard::~ko_keyboard\n";
+    }
+
+    virtual uint32_t read(void* out, uint32_t max) override {
+        auto& ps2c = ps2::controller::instance();
+        uint32_t n = 0;
+        while (n < max && ps2c.key_available()) {
+            reinterpret_cast<uint8_t*>(out)[n++] = ps2c.read_key();
+        }
+        return n;
+    }
+private:
 };
 
 
 net::ethernet_device* hack_netdev;
 user_process* hack_current_process_;
+
+template<typename T, typename... Args>
+uint64_t create_object(Args&&... args) {
+    return hack_current_process_->object_open(kowned_ptr<kernel_object>{knew<T>(static_cast<Args&&>(args)...).release()});
+}
 
 void syscall_handler(registers& regs)
 {
@@ -558,47 +656,40 @@ void syscall_handler(registers& regs)
             _enable();
             yield();
             break;
-        case syscall_number::esc_pressed:
-            {
-                auto& ps2c = ps2::controller::instance();
-                regs.rax = ps2c.key_available() && ps2c.read_key() == '\x1b';
-                break;
-            }
         case syscall_number::create:
             {
                 const char* name = reinterpret_cast<const char*>(regs.rdx);
                 dbgout() << "[user] create '" << name << "'\n";
-                REQUIRE(string_equal(name, "ethdev"));
-                regs.rax = hack_current_process_->object_open(kowned_ptr<kernel_object>{knew<ko_ethdev>(hack_netdev).release()});
+                if (string_equal(name, "ethdev")) {
+                    //regs.rax = hack_current_process_->object_open(kowned_ptr<kernel_object>{knew<ko_ethdev>(hack_netdev).release()});
+                    regs.rax = create_object<ko_ethdev>(hack_netdev);
+                } else if (string_equal(name, "keyboard")) {
+                    regs.rax = create_object<ko_keyboard>();
+                } else {
+                    REQUIRE(!"Unknown device");
+                }
             }
             break;
         case syscall_number::destroy:
             hack_current_process_->object_close(regs.rdx);
             break;
+        case syscall_number::write:
+            {
+                auto& os = hack_current_process_->object_get(regs.rdx).get_protocol<kernel_object_protocol_number::write>();
+                os.write(reinterpret_cast<const void*>(regs.r8), static_cast<uint32_t>(regs.r9));
+                break;
+            }
+        case syscall_number::read:
+            {
+                auto& is = hack_current_process_->object_get(regs.rdx).get_protocol<kernel_object_protocol_number::read>();
+                regs.rax = is.read(reinterpret_cast<void*>(regs.r8), static_cast<uint32_t>(regs.r9));
+                break;
+            }
         case syscall_number::ethdev_hw_address:
             {
                 auto& dev = static_cast<ko_ethdev&>(hack_current_process_->object_get(regs.rdx)).dev();
                 const auto hw_address = dev.hw_address();
                 memcpy(reinterpret_cast<void*>(regs.r8), &hw_address, sizeof(hw_address));
-                break;
-            }
-        case syscall_number::ethdev_send:
-            {
-                auto& dev = static_cast<ko_ethdev&>(hack_current_process_->object_get(regs.rdx)).dev();
-                _enable();
-                dev.send_packet(reinterpret_cast<const void*>(regs.r8), static_cast<uint32_t>(regs.r9));
-                break;
-            }
-        case syscall_number::ethdev_recv:
-            {
-                auto& dev = static_cast<ko_ethdev&>(hack_current_process_->object_get(regs.rdx)).dev();
-                int packets = 0;
-                *reinterpret_cast<uint32_t*>(regs.r9) = 0;
-                dev.process_packets([&packets, &regs] (const uint8_t* data, uint32_t len) {
-                    REQUIRE(packets++ == 0);
-                    memcpy(reinterpret_cast<void*>(regs.r8), data, len);
-                    *reinterpret_cast<uint32_t*>(regs.r9) = len;
-                }, 1);
                 break;
             }
         default:

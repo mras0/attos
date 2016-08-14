@@ -3,6 +3,7 @@
 
 #include <attos/net/net.h>
 #include <attos/containers.h>
+#include <attos/function.h>
 
 namespace attos { namespace net { namespace tftp {
 
@@ -45,7 +46,7 @@ uint16_t get_u16(const uint8_t*& data, uint32_t& length);
 opcode get_opcode(const uint8_t*& data, uint32_t& length);
 const char* get_string(const uint8_t*& data, uint32_t& length);
 
-using should_quit_function_type = bool (*)(void);
+using should_quit_function_type = function<bool ()>;
 kvector<uint8_t> nettest(ethernet_device& dev, tftp::should_quit_function_type should_quit, const char* filename);
 
 } } } // namespace attos::net::tftp

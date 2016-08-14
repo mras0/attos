@@ -119,21 +119,33 @@ constexpr uint32_t efer_mask_lmsle = 1U<<13; // Long Mode Segment Limit Enabled
 constexpr uint32_t efer_mask_ffxsr = 1U<<14; // Fast fxsave/fxrstor
 constexpr uint32_t efer_mask_tce   = 1U<<15; // Translation Cache Extension
 
-class interrupt_disabler {
+#pragma warning(push)
+#pragma warning(disable: 4127) // conditional expression is constant
+template<bool Enable>
+class interrupt_toggler {
 public:
-    interrupt_disabler() : were_interrupts_enabled_((__readeflags() & rflag_mask_if) != 0) {
-        _disable();
+    interrupt_toggler() : were_interrupts_enabled_((__readeflags() & rflag_mask_if) != 0) {
+        if (Enable && !were_interrupts_enabled_) {
+            _enable();
+        } else if (!Enable && were_interrupts_enabled_) {
+            _disable();
+        }
     }
-    ~interrupt_disabler() {
-        if (were_interrupts_enabled_) {
+    ~interrupt_toggler() {
+        if (Enable && !were_interrupts_enabled_) {
+            _disable();
+        } else if (!Enable && were_interrupts_enabled_) {
             _enable();
         }
     }
-    interrupt_disabler(const interrupt_disabler&) = delete;
-    interrupt_disabler& operator=(const interrupt_disabler&) = delete;
+    interrupt_toggler(const interrupt_toggler&) = delete;
+    interrupt_toggler& operator=(const interrupt_toggler&) = delete;
 private:
     bool were_interrupts_enabled_;
 };
+#pragma warning(pop)
+using interrupt_disabler = interrupt_toggler<false>;
+using interrupt_enabler  = interrupt_toggler<true>;
 
 enum class descriptor_privilege_level : uint8_t {
     kernel = 0,

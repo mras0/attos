@@ -10,13 +10,11 @@ enum class syscall_number : uint64_t {
 
     create,
     destroy,
+    read,
+    write,
 
     // HACK/TEST
     ethdev_hw_address,
-    ethdev_send,
-    ethdev_recv,
-
-    esc_pressed,
 };
 
 extern "C" uint64_t syscall0(syscall_number n);
