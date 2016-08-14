@@ -188,6 +188,7 @@ void interactive_mode()
 enum class kernel_object_protocol_number {
     read,
     write,
+    process,
 };
 
 template<kernel_object_protocol_number>
@@ -195,6 +196,8 @@ struct kernel_object_protocol_traits;
 
 template<> struct kernel_object_protocol_traits<kernel_object_protocol_number::read> { using type = in_stream; };
 template<> struct kernel_object_protocol_traits<kernel_object_protocol_number::write> { using type = out_stream; };
+class user_process;
+template<> struct kernel_object_protocol_traits<kernel_object_protocol_number::process> { using type = user_process; };
 
 class __declspec(novtable) kernel_object {
 public:
@@ -211,7 +214,36 @@ private:
     virtual void* do_get_protocol(kernel_object_protocol_number protocol) = 0;
 };
 
-class user_process : public kernel_object {
+template<typename Derived, kernel_object_protocol_number... protocols>
+class __declspec(novtable) kernel_object_helper : public kernel_object {
+private:
+    template<kernel_object_protocol_number... ns>
+    struct get_protocol_impl;
+
+    template<>
+    struct get_protocol_impl<> {
+        static void* get(Derived*, kernel_object_protocol_number protocol) {
+            dbgout() << "protocol " << int(protocol) << " not supported\n";
+            REQUIRE(false);
+        }
+    };
+
+    template<kernel_object_protocol_number n0, kernel_object_protocol_number... ns>
+    struct get_protocol_impl<n0, ns...> {
+        static void* get(Derived* self, kernel_object_protocol_number protocol) {
+            if (protocol == n0) {
+                return static_cast<typename kernel_object_protocol_traits<n0>::type*>(self);
+            }
+            return get_protocol_impl<ns...>::get(self, protocol);
+        }
+    };
+
+    virtual void* do_get_protocol(kernel_object_protocol_number protocol) {
+        return get_protocol_impl<protocols...>::get(static_cast<Derived*>(this), protocol);
+    }
+};
+
+class user_process : public kernel_object_helper<user_process, kernel_object_protocol_number::process> {
 public:
     explicit user_process() : mm_(create_default_memory_manager()), context_() {
     }
@@ -220,9 +252,9 @@ public:
     user_process& operator=(user_process&&) = default;
 
     ~user_process() {
-        REQUIRE(state_ == states::exited);
+        REQUIRE(state_ == states::created || state_ == states::exited);
         for (const auto& o : objects_) {
-            REQUIRE(!o);
+            REQUIRE(!o && "Unfreed objects");
         }
     }
 
@@ -234,6 +266,12 @@ public:
     registers& context() {
         REQUIRE(state_ == states::created);
         return context_;
+    }
+
+    void image_base(virtual_address image_base) {
+        REQUIRE(state_ == states::created);
+        REQUIRE(!image_base_);
+        image_base_ = image_base;
     }
 
     void alloc_and_copy_section(virtual_address virt, uint32_t virt_size, memory_type t, const void* source, uint32_t src_size) {
@@ -256,6 +294,9 @@ public:
         REQUIRE(state_ == states::created);
         state_ = states::running;
         mm_->switch_to();
+        if (image_base_) {
+            hack_set_user_image(*(pe::IMAGE_DOS_HEADER*)(uint64_t)image_base_);
+        }
         cpum.switch_to_context(context_);
     }
 
@@ -277,7 +318,7 @@ public:
                 return i + 1;
             }
         }
-        REQUIRE(false);
+        REQUIRE(!"Out of handles!");
         return 0;
     }
 
@@ -296,51 +337,17 @@ public:
     }
 
 private:
-    static constexpr int max_objects = 2;
+    static constexpr int max_objects = 16;
     enum class states { created, running, exited } state_ = states::created;
     kowned_ptr<memory_manager>         mm_;
     kvector<physical_allocation>       allocations_;
     registers                          context_;
     uint64_t                           exit_code_ = 0;
     kowned_ptr<kernel_object>          objects_[max_objects];
-
-    virtual void* do_get_protocol(kernel_object_protocol_number protocol) {
-        dbgout() << "protocol " << int(protocol) << " not supported\n";
-        REQUIRE(false);
-        return nullptr;
-    }
+    virtual_address                    image_base_;
 };
 
-template<kernel_object_protocol_number... protocols>
-class __declspec(novtable) kernel_object_helper : public kernel_object, public kernel_object_protocol_traits<protocols>::type... {
-private:
-    template<kernel_object_protocol_number... ns>
-    struct get_protocol_impl;
-
-    template<>
-    struct get_protocol_impl<> {
-        static void* get(kernel_object_helper*, kernel_object_protocol_number protocol) {
-            dbgout() << "protocol " << int(protocol) << " not supported\n";
-            REQUIRE(false);
-        }
-    };
-
-    template<kernel_object_protocol_number n0, kernel_object_protocol_number... ns>
-    struct get_protocol_impl<n0, ns...> {
-        static void* get(kernel_object_helper* self, kernel_object_protocol_number protocol) {
-            if (protocol == n0) {
-                return static_cast<typename kernel_object_protocol_traits<n0>::type*>(self);
-            }
-            return get_protocol_impl<ns...>::get(self, protocol);
-        }
-    };
-
-    virtual void* do_get_protocol(kernel_object_protocol_number protocol) {
-        return get_protocol_impl<protocols...>::get(this, protocol);
-    }
-};
-
-class ko_ethdev : public kernel_object_helper<kernel_object_protocol_number::read, kernel_object_protocol_number::write> { //: public kernel_object, public in_stream, public out_stream {
+class ko_ethdev : public kernel_object_helper<ko_ethdev, kernel_object_protocol_number::read, kernel_object_protocol_number::write>, public in_stream, public out_stream {
 public:
     explicit ko_ethdev(net::ethernet_device* dev) : dev_(*dev) {
         dbgout() << "ko_ethdev::ko_ethdev MAC " << dev_.hw_address() << "\n";
@@ -372,7 +379,7 @@ private:
     net::ethernet_device& dev_;
 };
 
-class ko_keyboard : public kernel_object_helper<kernel_object_protocol_number::read> {
+class ko_keyboard : public kernel_object_helper<ko_keyboard, kernel_object_protocol_number::read>, public in_stream {
 public:
     explicit ko_keyboard() {
         dbgout() << "ko_keyboard::ko_keyboard\n";
@@ -391,6 +398,37 @@ public:
     }
 private:
 };
+
+void alloc_and_map_user_exe(user_process& proc, const pe::IMAGE_DOS_HEADER& image)
+{
+    REQUIRE(is_64bit_exe(image));
+    const auto& nth = image.nt_headers();
+
+    const auto image_base = virtual_address{nth.OptionalHeader.ImageBase};
+
+    // Map headers
+    proc.alloc_and_copy_section(image_base, nth.OptionalHeader.SizeOfHeaders, memory_type::read | memory_type::user, &image, nth.OptionalHeader.SizeOfHeaders);
+
+    // Map sections
+    for (const auto& s : nth.sections()) {
+        const memory_type t = pe::section_memory_type(s.Characteristics) | memory_type::user;
+        proc.alloc_and_copy_section(image_base + s.VirtualAddress, s.Misc.VirtualSize, t, reinterpret_cast<const uint8_t*>(&image) + s.PointerToRawData, s.SizeOfRawData);
+    }
+
+    // Map stack
+    const uint64_t stack_size = 0x1000 * 8;
+    REQUIRE(nth.OptionalHeader.SizeOfStackCommit <= stack_size);
+    proc.alloc_and_copy_section(image_base - stack_size, stack_size, memory_type_rw | memory_type::user, nullptr, 0);
+
+    proc.image_base(image_base);
+
+    auto& context = proc.context();
+    context.cs  = user_cs;
+    context.rip = image_base + image.nt_headers().OptionalHeader.AddressOfEntryPoint;
+    context.ss  = user_ds;
+    context.rsp = static_cast<uint64_t>(image_base) - 0x28;
+    context.eflags = rflag_mask_res1;
+}
 
 
 net::ethernet_device* hack_netdev;
@@ -429,9 +467,12 @@ void syscall_handler(registers& regs)
                     regs.rax = create_object<ko_ethdev>(hack_netdev);
                 } else if (string_equal(name, "keyboard")) {
                     regs.rax = create_object<ko_keyboard>();
+                } else if(string_equal(name, "process")) {
+                    regs.rax = create_object<user_process>();
                 } else {
                     REQUIRE(!"Unknown device");
                 }
+                dbgout() << "[user] handle = " << as_hex(regs.rax) << "\n";
             }
             break;
         case syscall_number::destroy:
@@ -456,45 +497,18 @@ void syscall_handler(registers& regs)
                 memcpy(reinterpret_cast<void*>(regs.r8), &hw_address, sizeof(hw_address));
                 break;
             }
+        case syscall_number::start_exe:
+            {
+                dbgout() << "[user] Request to start executable @ " << as_hex(regs.r8) << " process handle " << as_hex(regs.rdx).width(2) << "\n";
+                auto& proc = hack_current_process_->object_get(regs.rdx).get_protocol<kernel_object_protocol_number::process>();
+                alloc_and_map_user_exe(proc, *reinterpret_cast<pe::IMAGE_DOS_HEADER*>(regs.r8));
+            }
+            break;
         default:
             dbgout() << "Got syscall 0x" << as_hex(regs.rax).width(0) << " from " << as_hex(regs.rcx) << " flags = " << as_hex(regs.r11) << "!\n";
             REQUIRE(!"Unimplemented syscall");
     }
     _disable(); // Disable interrupts again
-}
-
-user_process alloc_and_map_user_exe(const pe::IMAGE_DOS_HEADER& image)
-{
-    REQUIRE(is_64bit_exe(image));
-    const auto& nth = image.nt_headers();
-
-    user_process proc;
-
-    const auto image_base = virtual_address{nth.OptionalHeader.ImageBase};
-
-    // Map headers
-    proc.alloc_and_copy_section(image_base, nth.OptionalHeader.SizeOfHeaders, memory_type::read | memory_type::user, &image, nth.OptionalHeader.SizeOfHeaders);
-
-    // Map sections
-    for (const auto& s : nth.sections()) {
-        const memory_type t = pe::section_memory_type(s.Characteristics) | memory_type::user;
-        proc.alloc_and_copy_section(image_base + s.VirtualAddress, s.Misc.VirtualSize, t, reinterpret_cast<const uint8_t*>(&image) + s.PointerToRawData, s.SizeOfRawData);
-    }
-
-    // Map stack
-    const uint64_t stack_size = 0x1000 * 8;
-    REQUIRE(nth.OptionalHeader.SizeOfStackCommit <= stack_size);
-    proc.alloc_and_copy_section(image_base - stack_size, stack_size, memory_type_rw | memory_type::user, nullptr, 0);
-
-    hack_set_user_image(*(pe::IMAGE_DOS_HEADER*)(uint64_t)image_base);
-
-    auto& context = proc.context();
-    context.cs  = user_cs;
-    context.rip = image_base + image.nt_headers().OptionalHeader.AddressOfEntryPoint;
-    context.ss  = user_ds;
-    context.rsp = static_cast<uint64_t>(image_base) - 0x28;
-    context.eflags = rflag_mask_res1;
-    return proc;
 }
 
 void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
@@ -512,7 +526,8 @@ void usermode_test(cpu_manager& cpum, const pe::IMAGE_DOS_HEADER& image)
 
     syscall_enabler syscall_enabler_{&syscall_handler};
 
-    user_process proc = alloc_and_map_user_exe(image);
+    user_process proc;
+    alloc_and_map_user_exe(proc, image);
     dbgout() << "Doing magic!\n";
     hack_current_process_ = &proc;
     proc.switch_to(cpum);

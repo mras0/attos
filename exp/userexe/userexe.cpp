@@ -74,10 +74,17 @@ private:
     sys_handle handle_;
 };
 
+extern "C" extern char __ImageBase;
+
 int main()
 {
     my_keyboard keyboard;
     my_ethernet_device ethdev;
     dbgout() << "HW address: " << ethdev.hw_address() << "\n";
-    tftp::nettest(ethdev, [&] { return keyboard.esc_pressed(); }, "test.txt");
+    auto data = tftp::nettest(ethdev, [&] { return keyboard.esc_pressed(); }, "test.exe");
+    if (!data.empty()) {
+        hexdump(dbgout(), data.begin(), data.size());
+        sys_handle proc{"process"};
+        syscall2(syscall_number::start_exe, proc.id(), (uint64_t)data.begin());
+    }
 }

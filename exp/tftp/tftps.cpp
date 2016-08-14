@@ -9,7 +9,7 @@ using namespace attos::net;
 
 class tftp_server_session {
 public:
-    explicit tftp_server_session(ipv4_address remote_addr, uint16_t remote_port) : remote_addr_(remote_addr), remote_port_(remote_port) {
+    explicit tftp_server_session(ipv4_address remote_addr, uint16_t remote_port, kvector<uint8_t>&& data) : remote_addr_(remote_addr), remote_port_(remote_port), data_(std::move(data)) {
     }
 
     tftp_server_session(const tftp_server_session&) = delete;
@@ -18,17 +18,80 @@ public:
     ipv4_address remote_addr() const { return remote_addr_; }
     uint16_t     remote_port() const { return remote_port_; }
 
+    uint16_t block_count() {
+        return static_cast<uint16_t>((data_.size() + 512) / tftp::block_size);
+    }
+
+    uint8_t* put_block(uint8_t* b, uint16_t block) {
+        REQUIRE(block >= 1 && block <= block_count());
+        b = tftp::put(b, tftp::opcode::data);
+        b = tftp::put(b, block);
+
+        const auto offset = (block - 1) * tftp::block_size;
+        const auto count  = std::min(tftp::block_size, static_cast<uint32_t>(data_.size() - offset));
+        memcpy(b, data_.begin() + offset, count);
+        b += count;
+        dbgout() << "[tftp] DATA " << remote_addr_ << ":" << remote_port_ << " Block #" << block << " Size " << count << "\n";
+        return b;
+    }
+
 private:
-    const ipv4_address remote_addr_;
-    const uint16_t     remote_port_;
+    const ipv4_address       remote_addr_;
+    const uint16_t           remote_port_;
+    const kvector<uint8_t>   data_;
 };
 
 #include <winsock2.h>
 #include <memory>
 #include <vector>
+#include <string>
+#include <fstream>
+
+std::string exe_dir()
+{
+    char buffer[MAX_PATH];
+    REQUIRE(GetModuleFileNameA(nullptr, buffer, _countof(buffer)));
+    for (int i = static_cast<int>(string_length(buffer)); i >= 0; --i) {
+        if (buffer[i] == '\\' || buffer[i] == '/') {
+            buffer[i] = '\0';
+            return buffer;
+        }
+    }
+    REQUIRE(false);
+    return "";
+}
+
+bool valid_filename(const char* filename)
+{
+    for (int pos = 0; filename[pos]; ++pos) {
+        const char c = filename[pos];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || (pos && c == '.')) {
+            continue;
+        }
+        dbgout() << "Illegal char '" << c << "' (0x" << as_hex((unsigned char)c) << ")\n";
+        return false;
+    }
+    return true;
+}
+
+bool read_file(const char* filename, kvector<uint8_t>& data)
+{
+    std::ifstream in((exe_dir() + "\\" + filename).c_str(), std::ifstream::binary);
+    if (!in.is_open()) {
+        return false;
+    }
+    in.seekg(0, std::ios::end);
+    std::vector<char> buf(in.tellg());
+    in.seekg(0, std::ios::beg);
+    in.read(&buf[0], buf.size());
+    data = kvector<uint8_t>(buf.data(), buf.data() + buf.size());
+    return true;
+}
 
 int main()
 {
+    dbgout() << "exe_dir = '" << exe_dir().c_str() << "'\n";
+
     WSADATA wsa_data;
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data)) {
         dbgout() << "Error initializing winsock\n";
@@ -83,26 +146,43 @@ int main()
                 auto filename = tftp::get_string(in, in_len);
                 auto mode = tftp::get_string(in, in_len);
                 dbgout() << "[tftp] RRQ from " << remote_addr << ":" << remote_port << " file '" << filename << " mode '" << mode << "'\n";
-                if (!string_equal(mode, "octet")) {
-                    b = tftp::put_error_reply(b, tftp::error_code::illegal_operation, "Unsupported RRQ mode");
-                    break;
-                }
                 if (it != sessions_.end()) {
                     dbgout() << "[tftp] Closing previous sessions for " << (*it)->remote_addr() << ":" << (*it)->remote_port() << "\n";
                     sessions_.erase(it);
                 }
-                sessions_.push_back(std::make_unique<tftp_server_session>(remote_addr, remote_port));
-
-                b = tftp::put(b, tftp::opcode::data);
-                b = tftp::put(b, uint16_t{1});
-                b = tftp::put(b, "Hello world!\n");
-
+                if (!string_equal(mode, "octet")) {
+                    dbgout() << "[tftp] Unsupported mode\n";
+                    b = tftp::put_error_reply(b, tftp::error_code::illegal_operation, "Unsupported RRQ mode");
+                    break;
+                }
+                if (!valid_filename(filename)) {
+                    dbgout() << "[tftp] Invalid filename\n";
+                    b = tftp::put_error_reply(b, tftp::error_code::file_not_found, "Invalid filename");
+                    break;
+                }
+                kvector<uint8_t> data;
+                if (!read_file(filename, data)) {
+                    dbgout() << "[tftp] File not found\n";
+                    b = tftp::put_error_reply(b, tftp::error_code::file_not_found, "File not found");
+                    break;
+                }
+                sessions_.push_back(std::make_unique<tftp_server_session>(remote_addr, remote_port, std::move(data)));
+                b = sessions_.back()->put_block(b, 1);
                 break;
             }
         case tftp::opcode::ack:
             {
                 const auto block_number = tftp::get_u16(in, in_len);
                 dbgout() << "[tftp] ACK from " << remote_addr << ":" << remote_port << " Block #" << block_number << "\n";
+                REQUIRE(it != sessions_.end());
+                auto& session = **it;
+                REQUIRE(block_number >= 1 && block_number <= session.block_count());
+                if (block_number == session.block_count()) {
+                    sessions_.erase(it);
+                    dbgout() << "[tftp] Transfer done.\n";
+                } else {
+                    b = session.put_block(b, block_number + 1);
+                }
             }
             break;
         default:

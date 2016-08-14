@@ -30,6 +30,11 @@ public:
     explicit kvector() {
     }
 
+    template<typename It>
+    explicit kvector(It first, It last) {
+        insert(end(), first, last);
+    }
+
     kvector(kvector&& other) : begin_(other.begin_), end_(other.end_), real_end_(other.real_end_) {
         other.begin_    = nullptr;
         other.end_      = nullptr;
@@ -117,12 +122,15 @@ public:
         ++end_;
     }
 
-    void insert(T* where, const T* insert_begin, const T* insert_end) {
+    template<typename It>
+    void insert(T* where, It first, It last) {
         if (where != end()) __debugbreak(); // Lazy implementation
-        const auto insert_count = insert_end - insert_begin;
+        const auto insert_count = last - first;
         ensure_room(size() + insert_count);
+        static_assert(sizeof(*first) == sizeof(T), "Implementation is too lazy");
+        static_assert(std::is_trivially_copyable_v<std::decay_t<decltype(*first)>>, "Implementation is too lazy");
         static_assert(std::is_trivially_copyable_v<T>, "Implementation is too lazy");
-        memcpy(end_, insert_begin, insert_count * sizeof(T));
+        memcpy(end_, first, insert_count * sizeof(T));
         end_ += insert_count;
     }
 

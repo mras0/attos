@@ -9,6 +9,8 @@ namespace attos { namespace net { namespace tftp {
 
 constexpr uint16_t dst_port = 69;
 
+constexpr uint32_t block_size = 512;
+
 enum class opcode : uint16_t {
     rrq   = 1, // Read request (RRQ)
     wrq   = 2, // Write request (WRQ)

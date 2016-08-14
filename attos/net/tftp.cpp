@@ -715,7 +715,7 @@ private:
     }
 
     void tftp_in(const uint8_t* data, uint32_t length) {
-        REQUIRE(length <= 4 + 512);
+        REQUIRE(length <= 4 + tftp::block_size);
         const auto opcode = tftp::get_opcode(data, length);
         switch (opcode) {
         case tftp::opcode::data:
@@ -726,7 +726,7 @@ private:
                 data_.insert(data_.end(), data, data + length);
                 last_block_ = block_number;
                 send_ack(block_number);
-                if (length != 512) {
+                if (length != tftp::block_size) {
                     dbgout() << "[tftp] Done!\n";
                     done_ = true;
                 }

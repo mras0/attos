@@ -8,7 +8,7 @@ extern "C" int main();
 
 namespace attos {
 
-alignas(16) uint8_t stupid_heap[4096];
+alignas(16) uint8_t stupid_heap[4096*4];
 uint64_t heap_index = 0;
 
 void* kalloc(uint64_t size) {

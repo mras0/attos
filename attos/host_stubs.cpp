@@ -3,16 +3,15 @@
 #include <attos/net/net.h>
 #include <attos/net/tftp.h>
 #include <attos/cpu.h>
+#include <stdlib.h>
 
 namespace attos {
 void* kalloc(uint64_t size) {
-    dbgout() << "Ignoring alloc of " << as_hex(size) << "\n";
-    abort();
+    return calloc(size, 1);
 }
 
 void kfree(void* ptr) {
-    dbgout() << "Ignoring free of " << as_hex((uint64_t)ptr) << "\n";
-    abort();
+    free(ptr);
 }
 
 void yield() {
