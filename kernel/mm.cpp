@@ -278,119 +278,6 @@ protected:
 
 };
 
-// Simple heap. The free blocks are kept in list sorted according to memory address. Memory blocks are coalesced on free().
-class simple_heap {
-public:
-    explicit simple_heap(uint8_t* base, uint64_t length) : base_(base), end_(base + length), free_(end_of_list) {
-        REQUIRE(length >= sizeof(free_node));
-        REQUIRE(length % sizeof(free_node) == 0);
-        insert_free(base, length);
-    }
-
-    ~simple_heap() {
-        REQUIRE(!has_allocations());
-    }
-
-    simple_heap(const simple_heap&) = delete;
-    simple_heap& operator=(const simple_heap&) = delete;
-
-    bool has_allocations() const {
-        return free_ != reinterpret_cast<free_node*>(base_) || free_->size != static_cast<uint64_t>(end_ - base_);
-    }
-
-    uint8_t* alloc(uint64_t size) {
-        //dbgout() << "simple_heap::alloc(" << as_hex(size) << ")\n";
-        free_node** fp = &free_;
-        while ((*fp) != end_of_list && (*fp)->size < size) {
-            fp = &(*fp)->next;
-        }
-        REQUIRE(*fp != end_of_list && "Could not satisfy allocation request");
-
-        uint8_t* res = reinterpret_cast<uint8_t*>(*fp);
-        free_node* next_free     = *fp + size / sizeof(free_node);
-        const uint64_t free_size = (*fp)->size - size;
-        if (free_size) {
-            next_free->size = free_size;
-            next_free->next = (*fp)->next;
-            //dbgout() << "simple_heap took from block " << **fp << " - new block " << *next_free << "\n";
-            *fp = next_free;
-        } else {
-            //dbgout() << "simple_heap took complete block " << **fp << "\n";
-            *fp = (*fp)->next;
-        }
-        //dbgout() << "simple_heap::alloc() returning " << as_hex((uint64_t)(res)) << "\n";
-        return res;
-    }
-
-    void free(uint8_t* ptr, uint64_t size) {
-        //dbgout() << "simple_heap::free(" << as_hex((uint64_t)ptr) << ") size = "  << as_hex(size) << "\n";
-        REQUIRE((uint64_t)ptr >= (uint64_t)base_ && (uint64_t)ptr + size <= (uint64_t)end_);
-        insert_free(ptr, size);
-    }
-
-private:
-    uint8_t* const base_;
-    uint8_t* const end_;
-
-    void insert_free(void* ptr, uint64_t size) {
-        auto new_free = reinterpret_cast<free_node*>(ptr);
-        new_free->size = size;
-        new_free->next = end_of_list;
-
-        // If the free list is empty or we're the new head
-        if (free_ == end_of_list || free_ > new_free) {
-            //dbgout() << "Inserting " << *new_free << " as new list head\n";
-            new_free->next = free_;
-            free_ = new_free;
-            coalesce_from(free_);
-            return;
-        }
-
-        // Find the node just before our insertion point
-        free_node* prev = free_;
-        for (; prev->next != end_of_list && prev->next < new_free; prev = prev->next)
-            ;
-
-        //dbgout() << "Inserting " << *new_free << " after " << *prev << " before ";
-        //if (prev->next != end_of_list)
-        //    dbgout() << *prev->next << "\n";
-        //else
-        //    dbgout() << "end_of_list\n";
-        new_free->next = prev->next;
-        prev->next = new_free;
-
-        // Coalescing blocks starting from our insertion point
-        coalesce_from(prev);
-    }
-
-    struct free_node {
-        uint64_t   size;
-        free_node* next;
-
-        friend out_stream& operator<<(out_stream& os, const free_node& n) {
-            return os << as_hex((uint64_t)&n) << "{" << as_hex(n.size).width(6) << ", " << as_hex((uint64_t)n.next) << "}";
-        }
-    };
-    static constexpr free_node* end_of_list = reinterpret_cast<free_node*>(~0ULL);
-    free_node* free_;
-
-    void print_free(out_stream& os) {
-        os << "simple_heap free:\n";
-        for (free_node* f = free_; f != end_of_list; f = f->next) {
-            os << " " << *f << "\n";
-        }
-    }
-
-    static void coalesce_from(free_node* f) {
-        while (f != end_of_list && f->next != end_of_list && reinterpret_cast<uint64_t>(f) + f->size == reinterpret_cast<uint64_t>(f->next)) {
-            //dbgout() << "coalesce " << *f << " with " << *f->next << "\n";
-            f->size += f->next->size;
-            f->next  = f->next->next;
-        }
-    }
-
-};
-
 constexpr uint64_t initial_heap_size = 1<<20;
 
 class kernel_memory_manager : public memory_manager, public singleton<kernel_memory_manager> {
@@ -427,26 +314,18 @@ public:
         return mm_->pml4();
     }
 
-    static constexpr uint64_t kalloc_align = 16;
-
     void* alloc(uint64_t size) {
-        static_assert(kalloc_align >= sizeof(uint64_t), "");
-        size = round_up(size + kalloc_align, kalloc_align);
-        auto ptr = kernel_heap_.alloc(size);
-        *reinterpret_cast<uint64_t*>(ptr) = size;
-        return ptr + kalloc_align;
+        return kernel_heap_.alloc(size);
     }
 
     void free(void* ptr) {
-        auto p = static_cast<uint8_t*>(ptr) - kalloc_align;
-        auto size = *reinterpret_cast<const uint64_t*>(p);
-        kernel_heap_.free(p, size);
+        return kernel_heap_.free(ptr);
     }
 private:
     physical_address                                 saved_cr3_;
     simple_heap                                      physical_pages_;
     physical_allocation                              kernel_heap_phys_;
-    simple_heap                                      kernel_heap_;
+    default_heap                                     kernel_heap_;
     object_buffer<memory_manager_base>               mm_buffer_;
     owned_ptr<memory_manager_base, destruct_deleter> mm_;
 

@@ -8,18 +8,17 @@ extern "C" int main();
 
 namespace attos {
 
+namespace {
 alignas(16) uint8_t stupid_heap[4096*8];
-uint64_t heap_index = 0;
+default_heap* heap_ptr;
+} // unnamed namespace
 
 void* kalloc(uint64_t size) {
-    auto p = &stupid_heap[heap_index];
-    heap_index += round_up(size, 16);
-    REQUIRE(heap_index <= sizeof(stupid_heap));
-    return p;
+    return heap_ptr->alloc(size);
 }
 
 void kfree(void* ptr) {
-    dbgout() << "Ignoring free of " << as_hex((uint64_t)ptr) << "\n";
+    heap_ptr->free(ptr);
 }
 
 void yield()
@@ -54,5 +53,8 @@ public:
 extern "C" void mainCRTStartup()
 {
     debug_out_printer dop{};
+    default_heap heap{stupid_heap, sizeof(stupid_heap)};
+    heap_ptr = &heap;
     attos::exit(main());
+    heap_ptr = nullptr;
 }

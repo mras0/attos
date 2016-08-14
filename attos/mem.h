@@ -239,6 +239,47 @@ private:
 template<typename T>
 T* singleton<T>::instance_;
 
+// Simple heap. The free blocks are kept in list sorted according to memory address. Memory blocks are coalesced on free().
+// No alignment is enformed and the user needs to know the size of allocations (or allocation memory to store them)
+class simple_heap {
+public:
+    explicit simple_heap(uint8_t* base, uint64_t length);
+    ~simple_heap();
+
+    simple_heap(const simple_heap&) = delete;
+    simple_heap& operator=(const simple_heap&) = delete;
+
+    uint8_t* alloc(uint64_t size);
+    void free(uint8_t* ptr, uint64_t size);
+
+private:
+    uint8_t* const base_;
+    uint8_t* const end_;
+
+    struct free_node {
+        uint64_t   size;
+        free_node* next;
+    };
+    static constexpr free_node* end_of_list = reinterpret_cast<free_node*>(~0ULL);
+    free_node* free_;
+
+    void insert_free(void* ptr, uint64_t size);
+    static void coalesce_from(free_node* f);
+};
+
+class default_heap {
+public:
+    static constexpr uint64_t align = 16;
+    static_assert(align >= sizeof(uint64_t), "");
+
+    explicit default_heap(uint8_t* base, uint64_t length) : heap_(base, length) {
+    }
+
+    void* alloc(uint64_t size);
+    void free(void* ptr);
+private:
+    simple_heap heap_;
+};
 
 } // namespace attos
 
