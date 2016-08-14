@@ -1,6 +1,7 @@
 #include <attos/out_stream.h>
 #include <attos/net/tftp.h>
 #include <attos/cpu.h>
+#include <attos/string.h>
 #include <attos/syscall.h>
 
 using namespace attos;
@@ -65,31 +66,114 @@ public:
     ~my_keyboard() {
     }
 
-    bool esc_pressed() {
-        char c;
-        return read(handle_, &c, 1) && c == '\x1b';
+    bool key_available() {
+        poll();
+        return key != no_key;
+    }
+
+    uint8_t read_key() {
+        while (key == no_key) {
+            yield();
+            poll();
+        }
+        const auto c = static_cast<uint8_t>(key);
+        key = no_key;
+        return c;
+    }
+private:
+    sys_handle handle_;
+    static constexpr int no_key = -1;
+    int key = no_key;
+
+    void poll() {
+        if (key == no_key) {
+            uint8_t c;
+            if (read(handle_, &c, 1)) {
+                key = c;
+            }
+        }
+    }
+};
+
+template<typename T>
+struct push_back_stream_adapter : public out_stream {
+    explicit push_back_stream_adapter(T& c) : c_(c) {
+    }
+
+    virtual void write(const void* data, size_t size) override {
+        auto src = reinterpret_cast<const uint8_t*>(data);
+        while (size--) {
+            c_.push_back(*src++);
+        }
     }
 
 private:
-    sys_handle handle_;
+    T& c_;
 };
 
-extern "C" extern char __ImageBase;
+constexpr int cmd_max = 40;
 
-int main()
+void clearline()
 {
-    const char* filename = "test.exe";
-    my_keyboard keyboard;
-    my_ethernet_device ethdev;
-    dbgout() << "HW address: " << ethdev.hw_address() << "\n";
-    auto data = tftp::nettest(ethdev, [&] { return keyboard.esc_pressed(); }, filename);
+    const char buf[] = "\r                                        \r";
+    static_assert(sizeof(buf)==cmd_max+3,"Lazy..");
+    dbgout() << buf;
+}
+
+void tftp_execute(my_keyboard& kbd, ethernet_device& ethdev, const char* filename)
+{
+    auto data = tftp::nettest(ethdev, [&] { return kbd.key_available() && kbd.read_key() == '\x1b'; }, filename);
     if (!data.empty()) {
         hexdump(dbgout(), data.begin(), data.size());
         sys_handle proc{"process"};
         syscall2(syscall_number::start_exe, proc.id(), (uint64_t)data.begin());
         dbgout() << filename << " exited with error code " << as_hex(syscall1(syscall_number::process_exit_code, proc.id())) << "!\n";
-        while (!keyboard.esc_pressed()) {
-            yield();
+    } else {
+        dbgout() << "Failed/aborted\n";
+    }
+}
+
+int main()
+{
+    my_keyboard kbd;
+    my_ethernet_device ethdev;
+    tftp_execute(kbd, ethdev, "test.exe");
+    dbgout() << "Interactive mode. Use escape to quit.\n";
+
+    kvector<char> cmd;
+    push_back_stream_adapter<kvector<char>> cmd_stream(cmd);
+    for (;;) {
+        auto k = kbd.read_key();
+        if (k == '\x1b') { // ESC
+            dbgout() << "\nEscape pressed\n";
+            break;
+        } else if (k == '\x08') { // BS
+            if (!cmd.empty()) {
+                cmd.back() = '\0';
+                cmd.pop_back();
+                clearline();
+                dbgout() << cmd.begin();
+            }
+        } else if (k == '\n') {
+            if (!cmd.empty()) {
+                cmd.push_back('\0');
+                dbgout() << '\n';
+                if (string_equal(cmd.begin(), "EXIT")) {
+                    dbgout() << "Exit\n";
+                    break;
+                } else if (cmd.size() > 3 && cmd[0] == 'X' && cmd[1] == ' ') {
+                    dbgout() << "Execute '" << &cmd[2] << "'\n";
+                    tftp_execute(kbd, ethdev, &cmd[2]);
+                } else {
+                    dbgout() << "COMMAND IGNORED: '" << cmd.begin() << "'\n";
+                }
+                cmd.clear();
+            }
+        } else {
+            if (cmd.size() < cmd_max) {
+                cmd_stream << (char)k;
+                dbgout() << (char)k;
+            }
         }
     }
 }

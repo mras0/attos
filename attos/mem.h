@@ -270,7 +270,6 @@ private:
 class default_heap {
 public:
     static constexpr uint64_t align = 16;
-    static_assert(align >= sizeof(uint64_t), "");
 
     explicit default_heap(uint8_t* base, uint64_t length) : heap_(base, length) {
     }

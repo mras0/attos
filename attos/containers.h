@@ -122,6 +122,10 @@ public:
         ++end_;
     }
 
+    void pop_back() {
+        erase(end_-1);
+    }
+
     template<typename It>
     void insert(T* where, It first, It last) {
         if (where != end()) __debugbreak(); // Lazy implementation

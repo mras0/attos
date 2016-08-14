@@ -133,59 +133,6 @@ private:
     }
 };
 
-template<typename T>
-struct push_back_stream_adapter : public out_stream {
-    explicit push_back_stream_adapter(T& c) : c_(c) {
-    }
-
-    virtual void write(const void* data, size_t size) override {
-        auto src = reinterpret_cast<const uint8_t*>(data);
-        while (size--) {
-            c_.push_back(*src++);
-        }
-    }
-
-private:
-    T& c_;
-};
-
-void interactive_mode()
-{
-    dbgout() << "Interactive mode. Use escape to quit.\n";
-
-    kvector<char> cmd;
-    push_back_stream_adapter<kvector<char>> cmd_stream(cmd);
-    for (;;) {
-        if (ps2::key_available()) {
-            auto k = ps2::read_key();
-            if (k == '\x1b') {
-                dbgout() << "\nEscape pressed\n";
-                return;
-            } else if (k == '\n') {
-                if (!cmd.empty()) {
-                    cmd.push_back('\0');
-                    if (string_equal(cmd.begin(), "EXIT")) {
-                        dbgout() << "\nExit\n";
-                        return;
-                    } else if (string_equal(cmd.begin(), "X")) {
-                        dbgout() << "\nTesting NX\n";
-                        using fp = void(*)(void);
-                        auto f = (fp)(void*)"\xc3";
-                        f();
-                    } else {
-                        dbgout() << "\nCOMMAND IGNORED: '" << cmd.begin() << "'\n";
-                    }
-                    cmd.clear();
-                }
-            } else {
-                cmd_stream << (char)k;
-                dbgout() << (char)k;
-            }
-        }
-        _mm_pause();
-    }
-}
-
 enum class kernel_object_protocol_number {
     read,
     write,
@@ -408,24 +355,19 @@ user_process* user_process::first_process_   = nullptr;
 
 class ko_ethdev : public kernel_object_helper<ko_ethdev, kernel_object_protocol_number::read, kernel_object_protocol_number::write>, public in_stream, public out_stream {
 public:
-    explicit ko_ethdev(net::ethernet_device* dev) : dev_(*dev) {
-        dbgout() << "ko_ethdev::ko_ethdev MAC " << dev_.hw_address() << "\n";
-    }
+    explicit ko_ethdev() {REQUIRE(dev_);}
+    virtual ~ko_ethdev() override {}
 
-    virtual ~ko_ethdev() override {
-        dbgout() << "ko_ethdev::~ko_ethdev\n";
-    }
-
-    auto& dev() { return dev_; }
+    auto& dev() { return *dev_; }
 
     virtual void write(const void* data, size_t n) override {
         interrupt_enabler ie{};
-        dev_.send_packet(data, static_cast<uint32_t>(n));
+        dev_->send_packet(data, static_cast<uint32_t>(n));
     }
 
     virtual uint32_t read(void* out, uint32_t max) override {
         uint32_t count = 0;
-        dev_.process_packets([&] (const uint8_t* data, uint32_t len) {
+        dev_->process_packets([&] (const uint8_t* data, uint32_t len) {
                 REQUIRE(count == 0);
                 REQUIRE(len <= max);
                 memcpy(out, data, len);
@@ -434,9 +376,14 @@ public:
         return count;
     }
 
+    static void set_dev(net::ethernet_device* dev) {
+        dev_ = dev;
+    }
+
 private:
-    net::ethernet_device& dev_;
+    static net::ethernet_device* dev_;
 };
+net::ethernet_device* ko_ethdev::dev_;
 
 class ko_keyboard : public kernel_object_helper<ko_keyboard, kernel_object_protocol_number::read>, public in_stream {
 public:
@@ -489,9 +436,6 @@ void alloc_and_map_user_exe(user_process& proc, const pe::IMAGE_DOS_HEADER& imag
     context.eflags = rflag_mask_res1;
 }
 
-
-net::ethernet_device* hack_netdev;
-
 template<typename T, typename... Args>
 uint64_t create_object(Args&&... args) {
     return user_process::current().object_open(kowned_ptr<kernel_object>{knew<T>(static_cast<Args&&>(args)...).release()});
@@ -538,8 +482,7 @@ void syscall_handler(registers& regs)
                 const char* name = reinterpret_cast<const char*>(regs.rdx);
                 dbgout() << "[user] create '" << name << "'\n";
                 if (string_equal(name, "ethdev")) {
-                    //regs.rax = user_process::current().object_open(kowned_ptr<kernel_object>{knew<ko_ethdev>(hack_netdev).release()});
-                    regs.rax = create_object<ko_ethdev>(hack_netdev);
+                    regs.rax = create_object<ko_ethdev>();
                 } else if (string_equal(name, "keyboard")) {
                     regs.rax = create_object<ko_keyboard>();
                 } else if(string_equal(name, "process")) {
@@ -709,15 +652,11 @@ void stage3_entry(const arguments& args)
 
     for (const auto& d : pci->devices()) {
         if (!!(netdev = net::i825x::probe(d))) {
-            hack_netdev = netdev.get();
+            ko_ethdev::set_dev(netdev.get());
             break;
         }
     }
 
-    // User mode
-    usermode_test(*cpu, user_exe);
-
-    hack_netdev = nullptr;
 
     if (netdev) {
         auto data = net::tftp::nettest(*netdev, []() {
@@ -726,5 +665,7 @@ void stage3_entry(const arguments& args)
         hexdump(dbgout(), data.begin(), data.size());
     }
 
-    interactive_mode();
+    // User mode
+    usermode_test(*cpu, user_exe);
+    ko_ethdev::set_dev(nullptr);
 }
