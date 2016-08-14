@@ -104,17 +104,12 @@ private:
     uint8_t                     send_buffer_[ethernet_max_bytes];
 };
 
-struct ipv4_net_config {
-    ipv4_address addr;
-    ipv4_address netmask;
-    ipv4_address gateway;
-};
-
-constexpr ipv4_net_config ipv4_net_config_none = { inaddr_any, inaddr_any, inaddr_any };
-
-class ipv4_ethernet_device {
+class ipv4_ethernet_device : public ipv4_device {
 public:
     explicit ipv4_ethernet_device(ethernet_device& ethdev) : ethdev_{ethdev} {
+    }
+
+    virtual ~ipv4_ethernet_device() override {
     }
 
     kowned_ptr<udp_socket> udp_open(ipv4_address local_addr, uint16_t local_port, const packet_process_function& recv_func) {
@@ -748,8 +743,13 @@ private:
     }
 };
 
-bool do_dhcp(ipv4_ethernet_device& ipv4dev, tftp::should_quit_function_type should_quit)
+kowned_ptr<ipv4_device> make_ipv4_device(ethernet_device& ethdev) {
+    return kowned_ptr<ipv4_device>{knew<ipv4_ethernet_device>(ethdev).release()};
+}
+
+bool do_dhcp(ipv4_device& ipv4dev_, should_quit_function_type should_quit)
 {
+    auto& ipv4dev = static_cast<ipv4_ethernet_device&>(ipv4dev_);
     net::dhcp_handler dhcp_h{ipv4dev};
     while (!should_quit()) {
         if (dhcp_h.finished()) {
@@ -763,13 +763,10 @@ bool do_dhcp(ipv4_ethernet_device& ipv4dev, tftp::should_quit_function_type shou
     return false;
 }
 
-kvector<uint8_t> tftp::nettest(ethernet_device& dev, tftp::should_quit_function_type should_quit, const char* filename)
+kvector<uint8_t> tftp::nettest(ipv4_device& ipv4dev_, should_quit_function_type should_quit, const char* filename)
 {
+    auto& ipv4dev = static_cast<ipv4_ethernet_device&>(ipv4dev_);
     kvector<uint8_t> res{};
-    ipv4_ethernet_device ipv4dev{dev};
-    if (!do_dhcp(ipv4dev, should_quit)) {
-        return res;
-    }
 
     // HAAAAACK
     const auto tftp_ip = ipv4dev.ipv4_config().addr == ipv4_address{192, 168, 10, 2} ? ipv4_address{192, 168, 10, 1} : ipv4_address{192, 168, 1, 67};

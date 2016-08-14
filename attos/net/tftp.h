@@ -5,6 +5,14 @@
 #include <attos/containers.h>
 #include <attos/function.h>
 
+namespace attos { namespace net {
+
+using should_quit_function_type = function<bool ()>;
+kowned_ptr<ipv4_device> make_ipv4_device(ethernet_device& ethdev);
+bool do_dhcp(ipv4_device& ipv4dev, should_quit_function_type should_quit);
+
+} }
+
 namespace attos { namespace net { namespace tftp {
 
 constexpr uint16_t dst_port = 69;
@@ -48,8 +56,8 @@ uint16_t get_u16(const uint8_t*& data, uint32_t& length);
 opcode get_opcode(const uint8_t*& data, uint32_t& length);
 const char* get_string(const uint8_t*& data, uint32_t& length);
 
-using should_quit_function_type = function<bool ()>;
-kvector<uint8_t> nettest(ethernet_device& dev, tftp::should_quit_function_type should_quit, const char* filename);
+kvector<uint8_t> nettest(ipv4_device& ipv4dev, should_quit_function_type should_quit, const char* filename);
+
 
 } } } // namespace attos::net::tftp
 

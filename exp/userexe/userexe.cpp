@@ -58,7 +58,7 @@ private:
     }
 };
 
-class my_keyboard {
+class my_keyboard : public singleton<my_keyboard> {
 public:
     explicit my_keyboard() : handle_("keyboard") {
     }
@@ -120,9 +120,15 @@ void clearline()
     dbgout() << buf;
 }
 
-void tftp_execute(my_keyboard& kbd, ethernet_device& ethdev, const char* filename)
+bool escape_pressed()
 {
-    auto data = tftp::nettest(ethdev, [&] { return kbd.key_available() && kbd.read_key() == '\x1b'; }, filename);
+    auto& kbd = my_keyboard::instance();
+    return kbd.key_available() && kbd.read_key() == '\x1b';
+}
+
+void tftp_execute(ipv4_device& ipv4dev, const char* filename)
+{
+    auto data = tftp::nettest(ipv4dev, &escape_pressed, filename);
     if (!data.empty()) {
         hexdump(dbgout(), data.begin(), data.size());
         sys_handle proc{"process"};
@@ -137,7 +143,9 @@ int main()
 {
     my_keyboard kbd;
     my_ethernet_device ethdev;
-    tftp_execute(kbd, ethdev, "test.exe");
+    auto ipv4dev = net::make_ipv4_device(ethdev);
+    do_dhcp(*ipv4dev, &escape_pressed);
+    tftp_execute(*ipv4dev, "test.exe");
     dbgout() << "Interactive mode. Use escape to quit.\n";
 
     kvector<char> cmd;
@@ -163,7 +171,7 @@ int main()
                     break;
                 } else if (cmd.size() > 3 && cmd[0] == 'X' && cmd[1] == ' ') {
                     dbgout() << "Execute '" << &cmd[2] << "'\n";
-                    tftp_execute(kbd, ethdev, &cmd[2]);
+                    tftp_execute(*ipv4dev, &cmd[2]);
                 } else {
                     dbgout() << "COMMAND IGNORED: '" << cmd.begin() << "'\n";
                 }

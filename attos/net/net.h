@@ -276,6 +276,20 @@ enum class dhcp_message_type : uint8_t {
 #pragma pack(pop)
 
 uint16_t inet_csum(const void * src, uint16_t length, uint16_t init = 0);
+
+struct ipv4_net_config {
+    ipv4_address addr;
+    ipv4_address netmask;
+    ipv4_address gateway;
+};
+
+constexpr ipv4_net_config ipv4_net_config_none = { inaddr_any, inaddr_any, inaddr_any };
+
+class __declspec(novtable) ipv4_device {
+public:
+    virtual ~ipv4_device() = 0 {}
+};
+
 } } // namespace attos::net
 
 #endif
