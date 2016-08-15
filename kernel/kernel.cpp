@@ -204,8 +204,11 @@ public:
     ~user_process() {
         REQUIRE(state_ == states::created || state_ == states::exited);
         REQUIRE(current_process_ != this);
-        for (const auto& o : objects_) {
-            REQUIRE(!o && "Unfreed objects");
+        for (auto& o : objects_) {
+            if (o) {
+                dbgout() << "[user] Warning: Unfreed object\n";
+                o.reset();
+            }
         }
         if (this == first_process_) {
             first_process_ = next_;
@@ -280,9 +283,6 @@ public:
 
     void exit(uint64_t exit_code) {
         REQUIRE(state_ == states::running);
-        for (const auto& o : objects_) {
-            REQUIRE(!o);
-        }
         exit_code_ = exit_code;
         state_ = states::exited;
     }
@@ -396,6 +396,7 @@ public:
     }
 
     virtual uint32_t read(void* out, uint32_t max) override {
+        interrupt_enabler ie{};
         uint32_t n = 0;
         while (n < max && ps2::key_available()) {
             reinterpret_cast<uint8_t*>(out)[n++] = ps2::read_key();
@@ -656,7 +657,6 @@ void stage3_entry(const arguments& args)
             break;
         }
     }
-
 
     if (netdev) {
         auto should_quit = []() { return ps2::key_available() && ps2::read_key() == '\x1b'; };

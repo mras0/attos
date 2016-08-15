@@ -158,6 +158,7 @@ public:
     }
 
     uint8_t read_key() {
+        REQUIRE(__readeflags() & rflag_mask_if);
         // Very crude translation of scan keys in Scan Code Set 1
         for (;;) {
             auto sk = get_scan_key();
