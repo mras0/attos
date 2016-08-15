@@ -69,4 +69,6 @@ win64_proc isr_common
     ; restore registers
     win64_epilogue
 
+    iretq
+
 win64_proc_end

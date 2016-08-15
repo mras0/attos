@@ -87,9 +87,11 @@ unwind_context unwind_once(const unwind_context& context, const IMAGE_DOS_HEADER
     for (int i = 0; i < ui.CountOfCodes; ++i) {
         const auto& uc = ui.unwind_codes()[i];
         bool ignore = false;
-        if (uc.CodeOffset >= offset_in_function) {
+        if (uc.CodeOffset > offset_in_function) {
+            // Skip unwind codes that didn't have a chance to execute
+            // Note: This fails if the fault happens on an unwinding instruction, but in that case the stack is already messed up
 #if SHOW_OPS_VERBOSE >= 1
-            dbgout() << "Ignoring uc.CodeOffset = " << as_hex(uc.CodeOffset) << " (offset_in_function " << as_hex(offset_in_function).width(2) << "\n";
+            dbgout() << "Ignoring uc.CodeOffset = " << as_hex(uc.CodeOffset) << " (offset_in_function " << as_hex(offset_in_function).width(2) << ")\n";
 #endif
             ignore = true;
         }

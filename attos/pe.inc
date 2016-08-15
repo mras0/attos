@@ -307,7 +307,7 @@ IMAGE_SCN_MEM_WRITE                 equ 0x80000000 ; The section can be written 
             %if (%1)>>4 != 0
                 %error %1 is not implemeneted for UWOP_PUSH_MACHFRAME
             %endif
-            iretq ; !!
+            ;; iretq ; !!
         %else
             %error Unimplmented OP: %1
         %endif

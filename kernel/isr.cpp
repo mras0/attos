@@ -514,7 +514,8 @@ __declspec(noreturn) void unhandled_interrupt(const registers& r)
 
     isr_recurse_flag = false;
 
-    REQUIRE(!"Unhandled interrupt");
+    dbgout() << "Unhandled interrupt. Halting.\n";
+    __halt();
 }
 
 void interrupt_service_routine(registers& r)

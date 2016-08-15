@@ -126,13 +126,18 @@ win64_proc_end
     win64_prologue_save_reg syscall_common_reg_offset(%1), %1
 %endmacro
 
+%define syscall_unwind_hack_stack_adjust 5*8 ; Size of machine frame
+
     align 16
 win64_proc syscall_handler
     ; switch to kernel stack
     xchg [syscall_stack_ptr], rsp
 
+    ; hack up some unwind codes to allow proper stack traces
+    win64_prologue_push_machineframe_unwind
+    win64_prologue_alloc syscall_common_stack_alloc-syscall_unwind_hack_stack_adjust
+    sub rsp, syscall_unwind_hack_stack_adjust
     ; save registers
-    win64_prologue_alloc syscall_common_stack_alloc
     syscall_save_reg rax
     syscall_save_reg rbx
     syscall_save_reg rcx
@@ -169,6 +174,7 @@ win64_proc syscall_handler
 
     ; restore registers
     win64_epilogue
+    add rsp, syscall_unwind_hack_stack_adjust
 
     ; restore user stack
     xchg [syscall_stack_ptr], rsp
