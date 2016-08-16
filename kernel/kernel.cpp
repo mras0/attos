@@ -615,6 +615,172 @@ private:
     }
 };
 
+namespace attos { namespace acpi {
+
+enum class rsdp_revision : uint8_t {
+    v1 = 0,
+    v2 = 2,
+};
+
+#pragma pack(push, 1)
+constexpr char rsdp_signature[8] = { 'R', 'S', 'D' , ' ', 'P', 'T', 'R', ' ' };
+struct root_system_description_pointer { // Root System Description Pointer Structure
+    char          signature[8]; // "RSD PTR "
+    uint8_t       checksum;     // Checksum of the first 20 bytes
+    char          oem_id[6];    // OEM supplied ID
+    rsdp_revision revision;     // 0 = ACPI 1.0, 2 = ACPI 2.0 or later
+    uint32_t      rsdt_address; // Physical address of the RSDT
+};
+static_assert(sizeof(root_system_description_pointer) == 20, "");
+static_assert(sizeof(rsdp_signature) == sizeof(root_system_description_pointer::signature), "");
+
+struct root_system_description_pointer_v2 : root_system_description_pointer {
+    uint32_t length;            // Length of the table
+    uint64_t xsdt_address;      // Physical address of XSDT
+    uint8_t  extended_checksum; // Checksum of entire structure
+    uint8_t  reserved[3];
+};
+static_assert(sizeof(root_system_description_pointer_v2) == 36, "");
+
+struct description {
+    char     signature[4];      // ASCII signature of table
+    uint32_t length;            // Length of table
+    uint8_t  revision;          // Table revision number
+    uint8_t  checksum;          // Checksum of entire table
+    char     oem_id[6];         // OEM supplied ID
+    char     oem_table_id[8];   // OEM supplied table ID
+    uint32_t oem_revision;      // OEM revision number
+    char     vendor_id[4];      // Vendor ID
+    uint32_t vendor_revision;   // Vendor revision number
+};
+static_assert(sizeof(description) == 36, "");
+
+#pragma pack(pop)
+
+out_stream& operator<<(out_stream& os, const description& desc) {
+    os << format_str(desc.signature).width(4) << " " << as_hex(desc.length-sizeof(description)).width(4);
+    os << " OEM " << format_str(desc.oem_id).width(6) << " " << format_str(desc.oem_table_id).width(8);
+    os << " Vendor " << format_str(desc.vendor_id).width(4);
+    return os;
+}
+
+uint8_t checksum(const void* ptr, uint32_t bytes) {
+    auto d = static_cast<const uint8_t*>(ptr);
+    uint8_t sum = 0;
+    while (bytes--) {
+        sum += *d++;
+    }
+    return sum;
+}
+
+const root_system_description_pointer* find_rsdp(physical_address low, physical_address high)
+{
+    REQUIRE(!(static_cast<uint64_t>(low) & 15) && !(static_cast<uint64_t>(high) & 15) && low < high);
+    for (auto addr = low; addr < high; addr += 16) {
+        const auto& rsdp = *static_cast<const root_system_description_pointer*>(addr);
+        if (!std::equal(rsdp.signature, rsdp.signature+sizeof(rsdp.signature), rsdp_signature)) {
+            continue;
+        }
+        if (checksum(&rsdp, sizeof(rsdp))) {
+            continue;
+        }
+        if (rsdp.revision == rsdp_revision::v1) {
+            dbgout() << "Found v1 rsdp @ " << as_hex(&rsdp) << "\n";
+            return &rsdp;
+        }
+        if (rsdp.revision != rsdp_revision::v2) {
+            // Unsupported/invalid revision
+            continue;
+        }
+        const auto& v2 = static_cast<const root_system_description_pointer_v2&>(rsdp);
+        if (checksum(&v2, sizeof(v2))) {
+            continue;
+        }
+        dbgout() << "Found v2 rsdp @ " << as_hex(&rsdp) << "\n";
+        return &v2;
+    }
+    return nullptr;
+}
+
+} } // namespace attos::acpi
+
+class mem_map_helper {
+public:
+    explicit mem_map_helper(physical_address phys, uint64_t length)
+        : phys_(phys)
+        , length_(length)
+        , mapped_virt_(kmemory_manager().map_memory(memory_manager::map_alloc_virt, mapped_length(), memory_type::read, mapped_base())) {
+    }
+    mem_map_helper(const mem_map_helper&) = delete;
+    mem_map_helper& operator=(const mem_map_helper&) = delete;
+
+    ~mem_map_helper() {
+        kmemory_manager().unmap_memory(mapped_virt_, mapped_length());
+    }
+
+    uint8_t* ptr() {
+        return reinterpret_cast<uint8_t*>(static_cast<uint64_t>(mapped_virt_) + (phys_ & (memory_manager::page_size-1)));
+    }
+
+private:
+    const physical_address phys_;
+    const uint64_t         length_;
+    const virtual_address  mapped_virt_;
+
+    physical_address mapped_base() const {
+        return phys_ & ~(memory_manager::page_size - 1);
+    }
+
+    uint64_t mapped_length() const {
+        const auto end_page = round_up(phys_ + length_, memory_manager::page_size);
+        return end_page - static_cast<uint64_t>(mapped_base());
+    }
+};
+
+void acpi_test() {
+    using namespace attos::acpi;
+
+    const auto& ebda_segment = *fixed_physical_address<uint16_t, 0x40E>;
+    const physical_address ebda_address{ebda_segment*16ULL};
+    dbgout() << "Extended BIOS Data Area: " << as_hex(ebda_address) << "\n";
+    const root_system_description_pointer* rsdp = nullptr;
+    // The RSDP is either within the extended BIOS data area
+    if ((rsdp = find_rsdp(ebda_address, ebda_address + (1ULL<<10))) == nullptr) {
+        dbgout() << "Searching main BIOS area\n";
+        // or in the general BIOS data area
+        rsdp = find_rsdp(physical_address{0x000e0000}, physical_address{0x000ffff0});
+    }
+    REQUIRE(rsdp && "ACPI not available");
+    dbgout() << "ACPI OEMID    " << format_str(rsdp->oem_id) << "\n";
+    dbgout() << "ACPI Revision " << static_cast<uint8_t>(rsdp->revision) << "\n";
+    dbgout() << "ACPI RsdtAddress " << as_hex(rsdp->rsdt_address) << "\n";
+    if (rsdp->revision == rsdp_revision::v2) {
+        const auto& v2 = *static_cast<const root_system_description_pointer_v2*>(rsdp);
+        dbgout() << "Length      " << v2.length << "\n";
+        dbgout() << "XsdtAddress " << as_hex(v2.xsdt_address) << "\n";
+    }
+
+    const uint64_t default_mapping_size = memory_manager::page_size;
+
+    mem_map_helper rsdt_mapping{physical_address{rsdp->rsdt_address}, default_mapping_size};
+    const auto& rsdt_desc = *reinterpret_cast<const description*>(rsdt_mapping.ptr());
+    dbgout() << rsdt_desc << "\n";
+    REQUIRE(rsdt_desc.length <= default_mapping_size);
+    REQUIRE(!checksum(&rsdt_desc, rsdt_desc.length));
+    REQUIRE(rsdt_desc.revision == 1);
+    const auto entries = reinterpret_cast<const uint32_t*>(rsdt_mapping.ptr() + sizeof(description));
+    for (uint32_t i = 0; i < (rsdt_desc.length-sizeof(description)) / 4; ++i) {
+//        dbgout() << " " << as_hex(entries[i]);
+        mem_map_helper table_mapping{physical_address{entries[i]}, default_mapping_size};
+        const auto& desc = *reinterpret_cast<const description*>(table_mapping.ptr());
+        dbgout() << " " << desc << "\n";
+        REQUIRE(desc.length <= default_mapping_size);
+        REQUIRE(!checksum(&desc, desc.length));
+    }
+
+    ps2::read_key();
+}
+
 void stage3_entry(const arguments& args)
 {
     // First make sure we can output debug information
@@ -647,6 +813,8 @@ void stage3_entry(const arguments& args)
 
     // ATA
     //ata::test();
+
+    acpi_test();
 
     // Networking
     kowned_ptr<net::ethernet_device> netdev{};

@@ -54,9 +54,14 @@ out_stream& operator<<(out_stream& os, int32_t arg) {
 namespace detail {
 
 out_stream& operator<<(out_stream& os, const formatted_string& fs) {
-    auto l = string_length(fs.str());
-    os.write(fs.str(), l);
-    write_many(os, fs.fill(), fs.width() - static_cast<int>(l));
+    const char* str = fs.str();
+    int l = 0;
+    for (; l < fs.max_width() && str[l]; ++l)
+        ;
+    os.write(str, l);
+    if (fs.width() > l) {
+        write_many(os, fs.fill(), fs.width() - l);
+    }
     return os;
 }
 
