@@ -655,6 +655,57 @@ struct description {
 };
 static_assert(sizeof(description) == 36, "");
 
+struct multiple_apic_description : description {
+    static constexpr char expected_signature[4] = { 'A', 'P', 'I', 'C' };
+    uint32_t local_interrupt_controller_address; // Physical address where each CPU can access its local interrupt controller
+    uint32_t flags;
+    // Interrupt controller structure follows <id, length, data [length-2]>
+};
+static_assert(sizeof(multiple_apic_description) == 44, "");
+
+struct fixed_acpi_description : description {
+    static constexpr char expected_signature[4] = { 'F', 'A', 'C', 'P' };
+    uint32_t firmware_ctrl;         // Physical address of the FACS
+    uint32_t dsdt;                  // Physical address of the DSDT
+    uint8_t  int_model;             // ACPI 1.0 INT_MODEL, reserved in ACPI 2.0+
+    uint8_t  preferred_pm_profile;
+    uint16_t sci_int;               // System vector the SCI interrupt is wired to in 8259 mode. Otherwise global system interrupt number.
+    uint32_t sci_cmd;               // System port address of the SCI command port
+    uint8_t  acpi_enable;
+    uint8_t  acpi_disable;
+    uint8_t  s4bios_req;
+    uint8_t  pstate_cnt;
+    uint32_t pm1a_evt_blk;          // System port address of the PM1a event register block
+    uint32_t pm1b_evt_blk;          // System port address of the PM1b event register block
+    uint32_t pm1a_cnt_blk;          // System port address of the PM1a control register block
+    uint32_t pm1b_cnt_blk;          // System port address of the PM1b control register block
+    uint32_t pm2_cnt_blk;           // System port address of the PM2 control register block
+    uint32_t pm_tmr_blk;            // System port address of the power management timer control register block
+    uint32_t gpe0_blk;              // System port address of the general purpose event 0 register block
+    uint32_t gpe1_blk;              // System port address of the general purpose event 1 register block
+    uint8_t  pm1_evt_len;           // Number of bytes decoded by pm1a_evt_blk
+    uint8_t  pm1_cnt_len;           // Number of bytes decoded by pm1a_cnt_blk
+    uint8_t  pm2_cnt_len;           // Number of bytes decoded by pm2_cnt_blk
+    uint8_t  pm_tmr_len;            // Number of bytes decoded by pm_tmr_blk
+    uint8_t  gpe0_blk_len;          // Number of bytes decoded by gpe0_blk
+    uint8_t  gpe1_blk_len;          // Number of bytes decoded by gpe1_blk
+    uint8_t  gpe1_base;             // Start number of GPE1 based events
+    uint8_t  cst_cnt;
+    uint16_t p_lvl2_lat;            // Worst-case hardware latency to enter/exit C2 state (in microseconds)
+    uint16_t p_lvl3_lat;            // Worst-case hardware latency to enter/exit C3 state (in microseconds)
+    uint16_t flush_size;
+    uint16_t flush_stride;
+    uint8_t  duty_offset;
+    uint8_t  duty_width;
+    uint8_t  day_alrm;
+    uint8_t  mon_alrm;
+    uint8_t  century;
+    uint16_t iapc_boot_arch;
+    uint8_t  reserved;
+    uint32_t flags;
+};
+static_assert(sizeof(fixed_acpi_description) == 116, "");
+
 #pragma pack(pop)
 
 out_stream& operator<<(out_stream& os, const description& desc) {
@@ -671,6 +722,13 @@ uint8_t checksum(const void* ptr, uint32_t bytes) {
         sum += *d++;
     }
     return sum;
+}
+
+template<typename T>
+const T* match_structure(const description& desc) {
+    // Desc must be prevalidated (i.e. checksum and length verified)
+    return std::equal(desc.signature, desc.signature+sizeof(desc.signature), T::expected_signature)
+        && desc.length >= sizeof(T) ? &static_cast<const T&>(desc) : nullptr;
 }
 
 const root_system_description_pointer* find_rsdp(physical_address low, physical_address high)
@@ -753,6 +811,69 @@ kvector<uint8_t> get_description(physical_address phys) {
     return kvector<uint8_t>{mapping.ptr(), mapping.ptr() + mapping.length()};
 }
 
+void handle(const acpi::multiple_apic_description& madt) {
+    enum class icst_type : uint8_t { // Interrupt Controller Structure Type
+        processor_local_apic      = 0x00,
+        io_apic                   = 0x01,
+        interrupt_source_override = 0x02,
+        local_apic_nmi            = 0x04,
+    };
+
+    const uint8_t* const desc_begin = reinterpret_cast<const uint8_t*>(&madt);
+    const uint8_t* const beg = desc_begin + sizeof(acpi::multiple_apic_description);
+    const uint8_t* const end = desc_begin + madt.length;
+
+    dbgout() << madt << "\n";
+    for (auto p = beg; p != end;) {
+        REQUIRE(p + 2 <= end);
+        const auto type = static_cast<icst_type>(p[0]);
+        const auto len  = p[1];
+        REQUIRE(p + p[1] <= end);
+        switch (type) {
+            case icst_type::processor_local_apic:
+                {
+                    REQUIRE(len == 8);
+                    const auto flags = *reinterpret_cast<const uint32_t*>(p + 4);
+                    REQUIRE(flags == 0 || flags == 1);
+                    dbgout() << " Processor Local APIC processor id " << as_hex(p[2]) << " APIC id " << as_hex(p[3]) << " " << (flags?"Enabled":"Disabled") << "\n";
+                    break;
+                }
+            case icst_type::io_apic:
+                REQUIRE(len == 12);
+                REQUIRE(p[3] == 0);
+                dbgout() << " I/O APIC id " << as_hex(p[2]) << " address " << as_hex(*reinterpret_cast<const uint32_t*>(p+4)) << " interrupt base " << as_hex(*reinterpret_cast<const uint32_t*>(p+8)) << "\n";
+                break;
+            case icst_type::interrupt_source_override:
+                REQUIRE(len == 10);
+                REQUIRE(p[2] == 0); // Bus must be ISA
+                dbgout() << " Interrupt source override IRQ#" << as_hex(p[3]) << " global interrupt " << as_hex(*reinterpret_cast<const uint32_t*>(p+4)) << " flags " << as_hex(*reinterpret_cast<const uint16_t*>(p+8)) << "\n";
+                break;
+            case icst_type::local_apic_nmi:
+                REQUIRE(len == 6);
+                dbgout () << " Local APIC NMI processor id " << as_hex(p[2]) << " flags " << as_hex(*reinterpret_cast<const uint16_t*>(p+3)) << " LINT# " << as_hex(p[5]) << "\n";
+                break;
+            default:
+                dbgout() << "Unknown MADT entry: ";
+                for (int i = 0; i < p[1]; ++i) {
+                    dbgout() << " " << as_hex(p[i]);
+                }
+                dbgout() << "\n";
+                REQUIRE(false);
+        }
+        p += len;
+    }
+}
+
+void handle(const acpi::fixed_acpi_description& facp) {
+    dbgout() << facp << "\n";
+    dbgout() << " Revision " << facp.revision << "\n";
+    REQUIRE((facp.revision == 1 && facp.length == 0x50+sizeof(acpi::description)) || (facp.revision == 2 && facp.length == 0x5d+sizeof(acpi::description)));
+    dbgout() << " FACS    " << as_hex(facp.firmware_ctrl) << "\n";
+    dbgout() << " DSDT    " << as_hex(facp.dsdt) << "\n";
+    dbgout() << " SCI_INT " << as_hex(facp.sci_int) << "\n";
+    dbgout() << " SCI_CMD " << as_hex(facp.sci_cmd) << "\n";
+}
+
 void acpi_test() {
     using namespace attos::acpi;
 
@@ -804,10 +925,15 @@ void acpi_test() {
 
     for (const auto& entry_bytes : rsdt_entries) {
         const auto& desc = *reinterpret_cast<const description*>(entry_bytes.begin());
-        dbgout() << desc << "\n";
+        if (auto madt = match_structure<multiple_apic_description>(desc)) {
+            handle(*madt);
+        } else if (auto facp = match_structure<fixed_acpi_description>(desc)) {
+            handle(*facp);
+        } else {
+            dbgout() << " ??" << desc << "\n";
+        }
+//        ps2::read_key();
     }
-
-    ps2::read_key();
 }
 
 void stage3_entry(const arguments& args)
@@ -843,7 +969,7 @@ void stage3_entry(const arguments& args)
     // ATA
     //ata::test();
 
-    acpi_test();
+//    acpi_test();
 
     // Networking
     kowned_ptr<net::ethernet_device> netdev{};
