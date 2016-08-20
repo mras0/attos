@@ -2,34 +2,10 @@
 #include <attos/net/tftp.h>
 #include <attos/cpu.h>
 #include <attos/string.h>
-#include <attos/syscall.h>
+#include <attos/sysuser.h>
 
 using namespace attos;
 using namespace attos::net;
-
-class sys_handle {
-public:
-    explicit sys_handle(const char* name) : id_(syscall1(syscall_number::create, (uint64_t)name)) {
-    }
-    ~sys_handle() {
-        syscall1(syscall_number::destroy, id_);
-    }
-    sys_handle(const sys_handle&) = delete;
-    sys_handle& operator=(const sys_handle&) = delete;
-
-    uint64_t id() const { return id_; }
-
-private:
-    uint64_t id_;
-};
-
-void write(sys_handle& h, const void* data, uint32_t length) {
-    syscall3(syscall_number::write, h.id(), (uint64_t)data, length);
-}
-
-uint32_t read(sys_handle& h, void* data, uint32_t max) {
-    return static_cast<uint32_t>(syscall3(syscall_number::read, h.id(), (uint64_t)data, max));
-}
 
 class my_ethernet_device : public ethernet_device {
 public:
@@ -95,22 +71,6 @@ private:
     }
 };
 
-template<typename T>
-struct push_back_stream_adapter : public out_stream {
-    explicit push_back_stream_adapter(T& c) : c_(c) {
-    }
-
-    virtual void write(const void* data, size_t size) override {
-        auto src = reinterpret_cast<const uint8_t*>(data);
-        while (size--) {
-            c_.push_back(*src++);
-        }
-    }
-
-private:
-    T& c_;
-};
-
 constexpr int cmd_max = 40;
 
 void clearline()
@@ -130,7 +90,7 @@ void tftp_execute(ipv4_device& ipv4dev, const char* filename)
 {
     auto data = tftp::nettest(ipv4dev, &escape_pressed, filename);
     if (!data.empty()) {
-        hexdump(dbgout(), data.begin(), data.size());
+        //hexdump(dbgout(), data.begin(), data.size());
         sys_handle proc{"process"};
         syscall2(syscall_number::start_exe, proc.id(), (uint64_t)data.begin());
         dbgout() << filename << " exited with error code " << as_hex(syscall1(syscall_number::process_exit_code, proc.id())) << "!\n";
@@ -142,18 +102,6 @@ void tftp_execute(ipv4_device& ipv4dev, const char* filename)
 int main()
 {
     my_keyboard kbd;
-
-    sys_handle dsdt{"hack-acpi-dsdt"};
-    struct mem_map_info {
-        virtual_address addr;
-        uint64_t        length;
-        memory_type     type;
-    } dsdt_mem;
-    syscall2(syscall_number::mem_map_info, dsdt.id(), reinterpret_cast<uint64_t>(&dsdt_mem));
-    hexdump(dbgout(), dsdt_mem.addr.in_current_address_space<>(), dsdt_mem.length);
-    dbgout() << "Length = " << as_hex(dsdt_mem.length) << "\n";
-    kbd.read_key();
-
     my_ethernet_device ethdev;
     auto ipv4dev = net::make_ipv4_device(ethdev);
     do_dhcp(*ipv4dev, &escape_pressed);
@@ -161,7 +109,6 @@ int main()
     dbgout() << "Interactive mode. Use escape to quit.\n";
 
     kvector<char> cmd;
-    push_back_stream_adapter<kvector<char>> cmd_stream(cmd);
     for (;;) {
         auto k = kbd.read_key();
         if (k == '\x1b') { // ESC
@@ -182,6 +129,13 @@ int main()
                     dbgout() << "Exit\n";
                     break;
                 } else if (cmd.size() > 3 && cmd[0] == 'X' && cmd[1] == ' ') {
+                    // automatically append .EXE
+                    cmd.pop_back();
+                    cmd.push_back('.');
+                    cmd.push_back('E');
+                    cmd.push_back('X');
+                    cmd.push_back('E');
+                    cmd.push_back('\0');
                     dbgout() << "Execute '" << &cmd[2] << "'\n";
                     tftp_execute(*ipv4dev, &cmd[2]);
                 } else {
@@ -191,7 +145,7 @@ int main()
             }
         } else {
             if (cmd.size() < cmd_max) {
-                cmd_stream << (char)k;
+                cmd.push_back(k);
                 dbgout() << (char)k;
             }
         }

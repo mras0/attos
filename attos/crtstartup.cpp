@@ -1,5 +1,5 @@
 #include <attos/out_stream.h>
-#include <attos/syscall.h>
+#include <attos/sysuser.h>
 #include <attos/cpu.h>
 
 using namespace attos;
