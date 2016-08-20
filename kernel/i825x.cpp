@@ -417,6 +417,7 @@ private:
         ioreg(reg::RDH0, 0);
         ioreg(reg::RDT0, num_rx_descriptors-1);
 
+        memset((void*)rx_desc_, 0, sizeof(rx_desc_));
         for (uint32_t i = 0; i < num_rx_descriptors; ++i) {
             rx_desc_[i].buffer_addr = virt_to_phys(rx_buffer_[i]);
             rx_desc_[i].status = 0;
@@ -432,6 +433,7 @@ private:
         rx_head_ = 0;
 
         // Enable TX
+        memset((void*)tx_desc_, 0, sizeof(tx_desc_));
         const uint64_t tx_desc_phys = virt_to_phys((const void*)&tx_desc_[0]);
         REQUIRE((tx_desc_phys & 15) == 0);
         ioreg(reg::TDBAL0, static_cast<uint32_t>(tx_desc_phys));
