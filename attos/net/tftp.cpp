@@ -636,113 +636,6 @@ private:
     }
 };
 
-class tftp_client {
-public:
-    explicit tftp_client(ipv4_ethernet_device& dev, ipv4_address remote_addr, const char* filename)
-        : dev_{dev}
-        , remote_addr_(remote_addr)
-        , s_{dev_.udp_open(dev.ipv4_config().addr, 0, [this] (const uint8_t* data, uint32_t length) { tftp_in(data, length); })} {
-
-        const auto filename_length = string_length(filename);
-        REQUIRE(filename_length < sizeof(filename_));
-        memcpy(filename_, filename, filename_length + 1);
-
-        send_rrq();
-    }
-
-    enum class result { running, timeout, done };
-
-    result tick() {
-        if (done_) {
-            return result::done;
-        }
-        if (timeout_ && !--timeout_) {
-            dbgout() << "[tftp] Timed out! Last block " << last_block_ << "\n";
-            if (!last_block_) {
-                send_rrq();
-            }
-            return result::timeout;
-        }
-        return result::running;
-    }
-
-    kvector<uint8_t>&& data() {
-        REQUIRE(done_);
-        return std::move(data_);
-    }
-
-private:
-    ipv4_ethernet_device&  dev_;
-    const ipv4_address     remote_addr_;
-    kowned_ptr<udp_socket> s_;
-    char                   filename_[64];
-    uint8_t                buffer_[128];
-
-    uint16_t               last_block_;
-    uint32_t               timeout_;
-    bool                   done_ = false;
-    kvector<uint8_t>       data_;
-
-    static constexpr uint32_t default_timeout = 50;
-
-    uint8_t* start_packet(tftp::opcode op) {
-        return tftp::put(buffer_, op);
-    }
-
-    void send_packet(const uint8_t* b) {
-        s_->sendto(remote_addr_, tftp::dst_port, buffer_, static_cast<uint16_t>(b - buffer_));
-        timeout_ = default_timeout;
-    }
-
-    void send_rrq() {
-        dbgout() << "[tftp] Sending RRQ for " << filename_ << "\n";
-        last_block_ = 0;
-        auto b = start_packet(tftp::opcode::rrq);
-        b = tftp::put(b, filename_);
-        b = tftp::put(b, "octet");
-        send_packet(b);
-    }
-
-    void send_ack(uint16_t block_number) {
-        auto b = start_packet(tftp::opcode::ack);
-        b = tftp::put(b, block_number);
-        send_packet(b);
-    }
-
-    void tftp_in(const uint8_t* data, uint32_t length) {
-        REQUIRE(length <= 4 + tftp::block_size);
-        const auto opcode = tftp::get_opcode(data, length);
-        switch (opcode) {
-        case tftp::opcode::data:
-            {
-                const auto block_number = tftp::get_u16(data, length);
-                dbgout() << "[tftp] Got Data #" << block_number << ":\n";
-                REQUIRE(block_number - 1 == last_block_);
-                data_.insert(data_.end(), data, data + length);
-                last_block_ = block_number;
-                send_ack(block_number);
-                if (length != tftp::block_size) {
-                    dbgout() << "[tftp] Done!\n";
-                    done_ = true;
-                }
-                break;
-            }
-        case tftp::opcode::error:
-            {
-                const auto error_code = tftp::get_u16(data, length);
-                const auto error_msg  = tftp::get_string(data, length);
-                dbgout() << "[tftp] Error " << error_code << ": " << error_msg << "\n";
-                done_ = true;
-                break;
-            }
-        default:
-            dbgout() << "Got Unhandled TFTP packet opcode " << static_cast<uint16_t>(opcode) << ":\n";
-            hexdump(dbgout(), data, length);
-        }
-
-    }
-};
-
 kowned_ptr<ipv4_device> make_ipv4_device(ethernet_device& ethdev) {
     return kowned_ptr<ipv4_device>{knew<ipv4_ethernet_device>(ethdev).release()};
 }
@@ -763,25 +656,274 @@ bool do_dhcp(ipv4_device& ipv4dev_, should_quit_function_type should_quit)
     return false;
 }
 
-kvector<uint8_t> tftp::nettest(ipv4_device& ipv4dev_, should_quit_function_type should_quit, const char* filename)
-{
-    auto& ipv4dev = static_cast<ipv4_ethernet_device&>(ipv4dev_);
-    kvector<uint8_t> res{};
-
-    // HAAAAACK
-    const auto tftp_ip = ipv4dev.ipv4_config().addr == ipv4_address{192, 168, 10, 2} ? ipv4_address{192, 168, 10, 1} : ipv4_address{192, 168, 1, 67};
-
-    tftp_client tftpc{ipv4dev, tftp_ip, filename};
-    for (bool done = false; !should_quit() && !done; ) {
-        ipv4dev.process_packets();
-        if (tftpc.tick() == tftp_client::result::done) {
-            res = tftpc.data();
-            break;
-        }
-        yield();
+class __declspec(novtable) tftp_base {
+public:
+    explicit tftp_base(ipv4_ethernet_device& dev, ipv4_address remote_addr)
+        : dev_{dev}
+        , remote_addr_(remote_addr)
+        , s_{dev_.udp_open(dev.ipv4_config().addr, 0, [this] (const uint8_t* data, uint32_t length) { tftp_in(data, length); })} {
     }
-    return res;
+
+    enum class result { running, timeout, done };
+
+    result tick() {
+        if (is_done()) {
+            return result::done;
+        }
+        if (timeout_ && !--timeout_) {
+            on_timeout();
+            return result::timeout;
+        }
+        return result::running;
+    }
+
+private:
+    ipv4_ethernet_device&  dev_;
+    const ipv4_address     remote_addr_;
+    kowned_ptr<udp_socket> s_;
+    uint8_t                buffer_[4 + tftp::block_size]; // DATA 2 byte code, 2 byte block number + data bytes
+    uint32_t               timeout_;
+
+    static constexpr uint32_t default_timeout = 50;
+
+protected:
+    uint8_t* start_packet(tftp::opcode op) {
+        return tftp::put(buffer_, op);
+    }
+
+    void send_packet(const uint8_t* b) {
+        s_->sendto(remote_addr_, tftp::dst_port, buffer_, static_cast<uint16_t>(b - buffer_));
+        timeout_ = default_timeout;
+    }
+
+private:
+    void tftp_in(const uint8_t* data, uint32_t length) {
+        REQUIRE(length <= 4 + tftp::block_size);
+        const auto opcode = tftp::get_opcode(data, length);
+        if (on_packet(opcode, data, length)) {
+            return;
+        }
+        switch (opcode) {
+        case tftp::opcode::error:
+            {
+                const auto error_code = tftp::get_u16(data, length);
+                const auto error_msg  = tftp::get_string(data, length);
+                dbgout() << "[tftp] Error " << error_code << ": " << error_msg << "\n";
+                REQUIRE(false); // TODO: Handle errors
+                break;
+            }
+        default:
+            dbgout() << "Got Unhandled TFTP packet opcode " << static_cast<uint16_t>(opcode) << ":\n";
+            hexdump(dbgout(), data, length);
+            REQUIRE(false);
+        }
+
+    }
+
+    virtual bool is_done() const = 0;
+    virtual void on_timeout() = 0;
+    virtual bool on_packet(tftp::opcode opcode, const uint8_t* data, uint32_t length) = 0;
+};
+
+class tftp_reader : public tftp_base {
+public:
+    explicit tftp_reader(ipv4_ethernet_device& dev, ipv4_address remote_addr, const char* filename)
+        : tftp_base{dev, remote_addr} {
+        const auto filename_length = string_length(filename);
+        REQUIRE(filename_length < sizeof(filename_));
+        memcpy(filename_, filename, filename_length + 1);
+
+        send_rrq();
+    }
+
+    kvector<uint8_t>&& data() {
+        REQUIRE(is_done());
+        return std::move(data_);
+    }
+
+private:
+    char             filename_[64];
+    uint16_t         last_block_;
+    kvector<uint8_t> data_;
+    bool             done_;
+
+    void send_rrq() {
+        dbgout() << "[tftp] Sending RRQ for " << filename_ << "\n";
+        done_ = false;
+        last_block_ = 0;
+        data_.clear();
+        auto b = start_packet(tftp::opcode::rrq);
+        b = tftp::put(b, filename_);
+        b = tftp::put(b, "octet");
+        send_packet(b);
+    }
+
+    void send_ack(uint16_t block_number) {
+        auto b = start_packet(tftp::opcode::ack);
+        b = tftp::put(b, block_number);
+        send_packet(b);
+    }
+
+    virtual bool is_done() const override {
+        return done_;
+    }
+
+    virtual void on_timeout() override {
+        dbgout() << "[tftp] Timed out! Last block " << last_block_ << "\n";
+        if (!last_block_) {
+            send_rrq();
+        } else {
+            REQUIRE(false);
+        }
+    }
+
+    virtual bool on_packet(tftp::opcode opcode, const uint8_t* data, uint32_t length) override {
+        if (opcode != tftp::opcode::data) return false;
+        const auto block_number = tftp::get_u16(data, length);
+        dbgout() << "[tftp] Got Data #" << block_number << ":\n";
+        REQUIRE(block_number - 1 == last_block_);
+        data_.insert(data_.end(), data, data + length);
+        last_block_ = block_number;
+        send_ack(block_number);
+        if (length != tftp::block_size) {
+            dbgout() << "[tftp] Read of " << filename_ << " done!\n";
+            done_ = true;
+        }
+        return true;
+    }
+};
+
+class tftp_writer : public tftp_base {
+public:
+    explicit tftp_writer(ipv4_ethernet_device& dev, ipv4_address remote_addr, const char* filename, array_view<uint8_t> data)
+        : tftp_base{dev, remote_addr}
+        , data_{data} {
+        const auto filename_length = string_length(filename);
+        REQUIRE(filename_length < sizeof(filename_));
+        memcpy(filename_, filename, filename_length + 1);
+
+        REQUIRE(tftp::legal_size(data_.size()));
+        send_wrq();
+    }
+
+private:
+    char                filename_[64];
+    array_view<uint8_t> data_;
+    uint16_t            last_ack_;
+    static constexpr auto  no_acks = static_cast<uint16_t>(-1);
+
+    uint16_t block_count() const {
+        return tftp::block_count(data_.size());
+    }
+
+    void send_wrq() {
+        dbgout() << "[tftp] Sending WRQ for " << filename_ << "\n";
+        last_ack_ = no_acks;
+        auto b = start_packet(tftp::opcode::wrq);
+        b = tftp::put(b, filename_);
+        b = tftp::put(b, "octet");
+        send_packet(b);
+    }
+
+    void send_data(uint16_t block_number, const uint8_t* data, uint16_t size) {
+        dbgout() << "[tftp] Sending block " << block_number << " of " << filename_ << "\n";
+        last_ack_ = no_acks;
+        auto b = start_packet(tftp::opcode::data);
+        b = tftp::put(b, block_number);
+        memcpy(b, data, size);
+        b += size;
+        send_packet(b);
+    }
+
+    virtual bool is_done() const override {
+        return last_ack_ == block_count();
+    }
+
+    virtual void on_timeout() override {
+        dbgout() << "[tftp] Timed out! Last ack " << last_ack_ << "\n";
+        if (last_ack_ == no_acks) {
+            send_wrq();
+        } else {
+            REQUIRE(false);
+        }
+    }
+
+    virtual bool on_packet(tftp::opcode opcode, const uint8_t* data, uint32_t length) override {
+        if (opcode != tftp::opcode::ack) return false;
+        const auto block_number = tftp::get_u16(data, length);
+        dbgout() << "[tftp] Got ACK #" << block_number << ":\n";
+        REQUIRE(block_number <= block_count());
+        last_ack_ = block_number;
+        if (block_number < block_count()) {
+            const auto index = block_number * tftp::block_size;
+            const auto size  = std::min(static_cast<uint64_t>(tftp::block_size), data_.size() - index);
+            if (block_number != block_count() - 1) {
+                // normal full sized block
+                dbgout() << "[tftp] Writing normal block\n";
+            } else {
+                // last block
+                dbgout() << "[tftp] Last block\n";
+            }
+            dbgout() << "Index: " << as_hex(index) << " Size: " << as_hex(size) << "\n";
+            send_data(block_number + 1, data_.begin() + index, static_cast<uint16_t>(size));
+        } else {
+            dbgout() << "[tftp] Write of " << filename_ << " done!\n";
+        }
+        return true;
+    }
+};
+
+
+template<typename T>
+struct tftp_op {
+    template<typename... Args>
+    explicit tftp_op(ipv4_device& ipv4dev_, should_quit_function_type should_quit, Args&&... args) 
+        : ipv4dev{static_cast<ipv4_ethernet_device&>(ipv4dev_)}
+        , should_quit_(should_quit)
+        , op_{ipv4dev, tftp_address(), static_cast<Args&&>(args)...} {
+    }
+
+    bool do_op() {
+        while (!should_quit_()) {
+            ipv4dev.process_packets();
+            if (op_.tick() == tftp_base::result::done) {
+                return true;
+            }
+            yield();
+        }
+        return false;
+    }
+
+    T& get_op() {
+        return op_;
+    }
+
+private:
+    ipv4_ethernet_device&     ipv4dev;
+    should_quit_function_type should_quit_;
+    T                         op_;
+
+    ipv4_address tftp_address() const {
+        // HAAAAACK
+        return ipv4dev.ipv4_config().addr == ipv4_address{192, 168, 10, 2} ? ipv4_address{192, 168, 10, 1} : ipv4_address{192, 168, 1, 67};
+    }
+};
+
+kvector<uint8_t> tftp::read(ipv4_device& ipv4dev, should_quit_function_type should_quit, const char* filename)
+{
+    tftp_op<tftp_reader> reader{ipv4dev, should_quit, filename};
+    if (reader.do_op()) {
+        return reader.get_op().data();
+    }
+    return kvector<uint8_t>{};
 }
+
+bool tftp::write(ipv4_device& ipv4dev, should_quit_function_type should_quit, const char* filename, array_view<uint8_t> data)
+{
+    tftp_op<tftp_writer> writer{ipv4dev, should_quit, filename, data};
+    return writer.do_op();
+}
+
 
 } } // namespace attos::net
 

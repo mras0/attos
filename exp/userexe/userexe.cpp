@@ -88,7 +88,7 @@ bool escape_pressed()
 
 void tftp_execute(ipv4_device& ipv4dev, const char* filename)
 {
-    auto data = tftp::nettest(ipv4dev, &escape_pressed, filename);
+    auto data = tftp::read(ipv4dev, &escape_pressed, filename);
     if (!data.empty()) {
         //hexdump(dbgout(), data.begin(), data.size());
         sys_handle proc{"process"};
@@ -99,12 +99,28 @@ void tftp_execute(ipv4_device& ipv4dev, const char* filename)
     }
 }
 
+void dump_dsdt(ipv4_device& ipv4dev)
+{
+    mem_map_info dsdt_mem;
+    sys_handle dsdt{"hack-acpi-dsdt"};
+    syscall2(syscall_number::mem_map_info, dsdt.id(), reinterpret_cast<uint64_t>(&dsdt_mem));
+    const char* filename = "dsdt.aml";
+    if (tftp::write(ipv4dev, &escape_pressed, filename, make_array_view(dsdt_mem.addr.in_current_address_space<>(), dsdt_mem.length))) {
+        dbgout() << "Wrote " << filename << "\n";
+    } else {
+        dbgout() << "Error writing " << filename << "\n";
+    }
+}
+
 int main()
 {
     my_keyboard kbd;
     my_ethernet_device ethdev;
     auto ipv4dev = net::make_ipv4_device(ethdev);
     do_dhcp(*ipv4dev, &escape_pressed);
+
+    dump_dsdt(*ipv4dev);
+
     tftp_execute(*ipv4dev, "test.exe");
     dbgout() << "Interactive mode. Use escape to quit.\n";
 

@@ -3,6 +3,7 @@
 
 #include <attos/net/net.h>
 #include <attos/containers.h>
+#include <attos/array_view.h>
 #include <attos/function.h>
 
 namespace attos { namespace net {
@@ -18,6 +19,15 @@ namespace attos { namespace net { namespace tftp {
 constexpr uint16_t dst_port = 69;
 
 constexpr uint32_t block_size = 512;
+
+constexpr bool legal_size(uint64_t size) {
+    return size <= block_size*(UINT16_MAX-1);
+}
+
+constexpr uint16_t block_count(uint64_t size) {
+    return static_cast<uint16_t>((size + 512) / tftp::block_size);
+}
+
 
 enum class opcode : uint16_t {
     rrq   = 1, // Read request (RRQ)
@@ -56,7 +66,8 @@ uint16_t get_u16(const uint8_t*& data, uint32_t& length);
 opcode get_opcode(const uint8_t*& data, uint32_t& length);
 const char* get_string(const uint8_t*& data, uint32_t& length);
 
-kvector<uint8_t> nettest(ipv4_device& ipv4dev, should_quit_function_type should_quit, const char* filename);
+kvector<uint8_t> read(ipv4_device& ipv4dev, should_quit_function_type should_quit, const char* filename);
+bool write(ipv4_device& ipv4dev, should_quit_function_type should_quit, const char* filename, array_view<uint8_t> data);
 
 
 } } } // namespace attos::net::tftp

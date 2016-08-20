@@ -24,6 +24,11 @@ private:
     const T* end_;
 };
 
+template<typename T>
+inline array_view<T> make_array_view(const T* p, size_t length) {
+    return array_view<T>(p, p + length);
+}
+
 } // namespace attos
 
 #endif

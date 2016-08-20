@@ -1042,7 +1042,7 @@ void stage3_entry(const arguments& args)
         auto should_quit = []() { return ps2::key_available() && ps2::read_key() == '\x1b'; };
         auto ipv4dev = net::make_ipv4_device(*netdev);
         do_dhcp(*ipv4dev, should_quit);
-        auto data = net::tftp::nettest(*ipv4dev, should_quit, "test.txt");
+        auto data = net::tftp::read(*ipv4dev, should_quit, "test.txt");
         hexdump(dbgout(), data.begin(), data.size());
     }
 

@@ -10,6 +10,7 @@ using namespace attos::net;
 class tftp_server_session {
 public:
     explicit tftp_server_session(ipv4_address remote_addr, uint16_t remote_port, kvector<uint8_t>&& data) : remote_addr_(remote_addr), remote_port_(remote_port), data_(std::move(data)) {
+        REQUIRE(tftp::legal_size(data_.size()));
     }
 
     tftp_server_session(const tftp_server_session&) = delete;
@@ -19,7 +20,7 @@ public:
     uint16_t     remote_port() const { return remote_port_; }
 
     uint16_t block_count() {
-        return static_cast<uint16_t>((data_.size() + 512) / tftp::block_size);
+        return tftp::block_count(data_.size());
     }
 
     uint8_t* put_block(uint8_t* b, uint16_t block) {

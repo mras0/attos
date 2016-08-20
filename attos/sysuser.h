@@ -35,6 +35,5 @@ inline uint32_t read(sys_handle& h, void* data, uint32_t max) {
     return static_cast<uint32_t>(syscall3(syscall_number::read, h.id(), (uint64_t)data, max));
 }
 
-
 } // namespace attos
 #endif
