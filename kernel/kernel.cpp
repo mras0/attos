@@ -722,6 +722,10 @@ public:
         return reinterpret_cast<uint8_t*>(static_cast<uint64_t>(mapped_virt_) + (phys_ & (memory_manager::page_size-1)));
     }
 
+    uint64_t length() const {
+        return length_;
+    }
+
 private:
     const physical_address phys_;
     const uint64_t         length_;
@@ -737,6 +741,18 @@ private:
     }
 };
 
+kvector<uint8_t> get_description(physical_address phys) {
+    using namespace attos::acpi;
+
+    const uint64_t max_description_size = memory_manager::page_size;
+
+    mem_map_helper mapping{phys, max_description_size};
+    const auto& desc = *reinterpret_cast<const description*>(mapping.ptr());
+    REQUIRE(desc.length <= max_description_size);
+    REQUIRE(!checksum(&desc, desc.length));
+    return kvector<uint8_t>{mapping.ptr(), mapping.ptr() + mapping.length()};
+}
+
 void acpi_test() {
     using namespace attos::acpi;
 
@@ -751,6 +767,29 @@ void acpi_test() {
         rsdp = find_rsdp(physical_address{0x000e0000}, physical_address{0x000ffff0});
     }
     REQUIRE(rsdp && "ACPI not available");
+    auto rsdt_bytes = get_description(physical_address{rsdp->rsdt_address});
+    const auto& rsdt_desc = *reinterpret_cast<const description*>(rsdt_bytes.begin());
+    dbgout() << rsdt_desc << "\n";
+    REQUIRE(rsdt_desc.revision == 1);
+    const auto entries = reinterpret_cast<const uint32_t*>(rsdt_bytes.begin() + sizeof(description));
+    kvector<kvector<uint8_t>> rsdt_entries;
+    for (uint32_t i = 0; i < (rsdt_desc.length-sizeof(description)) / 4; ++i) {
+        rsdt_entries.push_back(get_description(physical_address{entries[i]}));
+    }
+
+#if 0
+    APIC
+    ECDT
+    FACP
+    MCFG
+    HPET
+    SLIC
+    BOOT
+    ASF!
+    SSDT
+    TCPA
+#endif
+
     dbgout() << "ACPI OEMID    " << format_str(rsdp->oem_id) << "\n";
     dbgout() << "ACPI Revision " << static_cast<uint8_t>(rsdp->revision) << "\n";
     dbgout() << "ACPI RsdtAddress " << as_hex(rsdp->rsdt_address) << "\n";
@@ -760,22 +799,9 @@ void acpi_test() {
         dbgout() << "XsdtAddress " << as_hex(v2.xsdt_address) << "\n";
     }
 
-    const uint64_t default_mapping_size = memory_manager::page_size;
-
-    mem_map_helper rsdt_mapping{physical_address{rsdp->rsdt_address}, default_mapping_size};
-    const auto& rsdt_desc = *reinterpret_cast<const description*>(rsdt_mapping.ptr());
-    dbgout() << rsdt_desc << "\n";
-    REQUIRE(rsdt_desc.length <= default_mapping_size);
-    REQUIRE(!checksum(&rsdt_desc, rsdt_desc.length));
-    REQUIRE(rsdt_desc.revision == 1);
-    const auto entries = reinterpret_cast<const uint32_t*>(rsdt_mapping.ptr() + sizeof(description));
-    for (uint32_t i = 0; i < (rsdt_desc.length-sizeof(description)) / 4; ++i) {
-//        dbgout() << " " << as_hex(entries[i]);
-        mem_map_helper table_mapping{physical_address{entries[i]}, default_mapping_size};
-        const auto& desc = *reinterpret_cast<const description*>(table_mapping.ptr());
-        dbgout() << " " << desc << "\n";
-        REQUIRE(desc.length <= default_mapping_size);
-        REQUIRE(!checksum(&desc, desc.length));
+    for (const auto& entry_bytes : rsdt_entries) {
+        const auto& desc = *reinterpret_cast<const description*>(entry_bytes.begin());
+        dbgout() << desc << "\n";
     }
 
     ps2::read_key();
