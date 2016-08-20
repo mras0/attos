@@ -769,15 +769,31 @@ public:
         , length_(length)
         , mapped_virt_(kmemory_manager().map_memory(memory_manager::map_alloc_virt, mapped_length(), memory_type::read, mapped_base())) {
     }
+    mem_map_helper(mem_map_helper&& other) : phys_(), length_(0), mapped_virt_() {
+        *this = std::move(other);
+    }
+    mem_map_helper& operator=(mem_map_helper&& other) {
+        std::swap(phys_, other.phys_);
+        std::swap(length_, other.length_);
+        std::swap(mapped_virt_, other.mapped_virt_);
+        return *this;
+    }
     mem_map_helper(const mem_map_helper&) = delete;
     mem_map_helper& operator=(const mem_map_helper&) = delete;
 
     ~mem_map_helper() {
-        kmemory_manager().unmap_memory(mapped_virt_, mapped_length());
+        if (length_) {
+            kmemory_manager().unmap_memory(mapped_virt_, mapped_length());
+        }
     }
 
     uint8_t* ptr() {
         return reinterpret_cast<uint8_t*>(static_cast<uint64_t>(mapped_virt_) + (phys_ & (memory_manager::page_size-1)));
+    }
+
+    template<typename T>
+    T& as() {
+        return *reinterpret_cast<T*>(ptr());
     }
 
     uint64_t length() const {
@@ -785,9 +801,9 @@ public:
     }
 
 private:
-    const physical_address phys_;
-    const uint64_t         length_;
-    const virtual_address  mapped_virt_;
+    physical_address phys_;
+    uint64_t         length_;
+    virtual_address  mapped_virt_;
 
     physical_address mapped_base() const {
         return phys_ & ~(memory_manager::page_size - 1);
@@ -802,13 +818,15 @@ private:
 kvector<uint8_t> get_description(physical_address phys) {
     using namespace attos::acpi;
 
-    const uint64_t max_description_size = memory_manager::page_size;
-
-    mem_map_helper mapping{phys, max_description_size};
-    const auto& desc = *reinterpret_cast<const description*>(mapping.ptr());
-    REQUIRE(desc.length <= max_description_size);
+    mem_map_helper mapping{phys, 0x1000}; // Speculatively map more bytes, to reduce the number of remappings
+    const auto len = mapping.as<const description>().length;
+    REQUIRE(len >= sizeof(description));
+    if (len > mapping.length()) {
+        mapping = mem_map_helper{phys, len}; // TODO: This could be done smarter
+    }
+    const auto& desc = mapping.as<const description>();
     REQUIRE(!checksum(&desc, desc.length));
-    return kvector<uint8_t>{mapping.ptr(), mapping.ptr() + mapping.length()};
+    return kvector<uint8_t>{mapping.ptr(), mapping.ptr() + desc.length};
 }
 
 void handle(const acpi::multiple_apic_description& madt) {
@@ -872,6 +890,11 @@ void handle(const acpi::fixed_acpi_description& facp) {
     dbgout() << " DSDT    " << as_hex(facp.dsdt) << "\n";
     dbgout() << " SCI_INT " << as_hex(facp.sci_int) << "\n";
     dbgout() << " SCI_CMD " << as_hex(facp.sci_cmd) << "\n";
+
+    kvector<uint8_t> dsdt_bytes = get_description(physical_address{facp.dsdt});
+    const auto& dsdt_desc = *reinterpret_cast<const acpi::description*>(dsdt_bytes.begin());
+    dbgout() << " " << dsdt_desc << "\n";
+    hexdump(dbgout(), dsdt_bytes.begin() + sizeof(dsdt_desc), dsdt_desc.length - sizeof(dsdt_desc));
 }
 
 void acpi_test() {
@@ -932,8 +955,8 @@ void acpi_test() {
         } else {
             dbgout() << " ??" << desc << "\n";
         }
-//        ps2::read_key();
     }
+    ps2::read_key();
 }
 
 void stage3_entry(const arguments& args)
@@ -969,7 +992,7 @@ void stage3_entry(const arguments& args)
     // ATA
     //ata::test();
 
-//    acpi_test();
+    acpi_test();
 
     // Networking
     kowned_ptr<net::ethernet_device> netdev{};

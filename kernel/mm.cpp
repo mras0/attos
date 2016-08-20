@@ -184,8 +184,6 @@ private:
 
 protected:
     virtual virtual_address do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
-        dbgout() << "[mem] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << ' ' << type << "\n";
-
         const uint64_t map_page_size = memory_type_page_size(type);
 
         // Check length
@@ -202,6 +200,8 @@ protected:
         } else if (virt == memory_manager::map_alloc_virt_close_to_kernel) {
             virt = virtual_alloc(length);
         }
+
+        dbgout() << "[mem] map " << as_hex(virt) << " <- " << as_hex(phys) << " len " << as_hex(length).width(0) << ' ' << type << "\n";
 
         // Check virtual address
         REQUIRE((virt & (map_page_size - 1)) == 0);
@@ -254,6 +254,8 @@ protected:
         const auto type = it->type();
         const uint64_t map_page_size = memory_type_page_size(it->type());
         REQUIRE(it->length() == length);
+
+        dbgout() << "[mem] unmap " << as_hex(virt) << " len " << as_hex(length).width(0) << ' ' << it->type() << "\n";
 
         memory_map_tree_.remove(*it);
         for (; length; length -= map_page_size, virt += map_page_size) {
