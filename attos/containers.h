@@ -90,7 +90,7 @@ public:
         const auto old_size = size();
         T* new_ptr = reinterpret_cast<T*>(kalloc(sizeof(T) * new_capacity));
         for (auto it = begin(), it2 = new_ptr; it != end(); ++it, ++it2) {
-            *it2 = std::move(*it);
+            new (it2) T(std::move(*it));
         }
         destroy_range(begin(), end());
         begin_    = new_ptr;
