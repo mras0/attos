@@ -5,6 +5,6 @@ call exp\userexe\compile.cmd || (popd & exit /b 1)
 call kernel\compile.cmd || (popd & exit /b 1)
 call make_vmdk\compile.cmd || (popd & exit /b 1)
 cd test-vm
-copy /b /y ..\bootloader\stage1.bin+..\bootloader\stage2.bin+..\kernel\kernel.bin test-vm.raw || (popd & exit /b 1)
+copy /b /y ..\bootloader\stage1.bin+..\kernel\kernel.bin test-vm.raw || (popd & exit /b 1)
 ..\make_vmdk\make_vmdk.exe test-vm.raw > test-vm.vmdk || (popd & exit /b 1)
 popd
