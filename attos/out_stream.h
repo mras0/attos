@@ -78,9 +78,17 @@ auto as_hex(T* p) {
     return as_hex(reinterpret_cast<uint64_t>(p));
 }
 
+template<typename T>
+detail::formatted_string format_str(T);
+
 template<int sz>
 detail::formatted_string format_str(const char (&carr)[sz]) {
     return detail::formatted_string{0, ' ', carr}.max_width(sz);
+}
+
+template<>
+inline detail::formatted_string format_str(const char* p) {
+    return detail::formatted_string{0, ' ', p};
 }
 
 void write_many(out_stream& out, char c, int count);

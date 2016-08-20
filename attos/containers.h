@@ -87,6 +87,22 @@ public:
         --end_;
     }
 
+    void resize(size_t new_size) {
+        if (new_size <= size()) {
+           __debugbreak(); // Not implemented
+           auto new_end = begin() + new_size;
+           // destroy [new_end; end[
+           end_ = new_end;
+        } else {
+            ensure_room(new_size);
+            auto new_end = begin() + new_size;
+            for (auto it = end_; it != new_end; ++it) {
+                new (it) T();
+            }
+            end_ = new_end;
+        }
+    }
+
     void reserve(size_t new_capacity) {
         if (capacity() >= new_capacity) {
             return;
