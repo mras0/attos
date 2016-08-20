@@ -90,16 +90,13 @@ auto find_mapping(memory_mapping::tree_type& t, virtual_address addr, uint64_t l
 
 void free_physical_page(physical_address addr);
 
-constexpr virtual_address kernel_map_start{0xFFFFFFFF'FF000000};
-constexpr uint32_t        kernel_pml4 = 0x1ff;
-
 class memory_manager_base : public memory_manager {
 public:
-    explicit memory_manager_base()
+    explicit memory_manager_base(virtual_address free_virt_base)
         : memory_mappings_phys_{alloc_physical(page_size)}
         , memory_mappings_{memory_mappings_phys_.address(), memory_mappings_phys_.length()}
         , pml4_{alloc_table()}
-        , free_virt_base_{kernel_map_start-(1ULL<<30)} { // HACK: ISR needs virtual memory within 2GB of the kernel code...
+        , free_virt_base_{free_virt_base} {
     }
 
     ~memory_manager_base() {
@@ -177,7 +174,6 @@ private:
         REQUIRE((length & (page_size-1)) == 0);
         const auto addr = free_virt_base_;
         free_virt_base_ += length;
-        REQUIRE(free_virt_base_ <= kernel_map_start);
         REQUIRE(free_virt_base_ >= addr); // Make sure we didn't wrap around
         return addr;
     }
@@ -280,7 +276,9 @@ protected:
 
 };
 
-constexpr uint64_t initial_heap_size = 1<<20;
+constexpr virtual_address kernel_map_start{0xFFFFFFFF'FF000000};
+constexpr uint32_t        kernel_pml4 = 0x1ff;
+constexpr uint64_t        initial_heap_size = 1<<20;
 
 class kernel_memory_manager : public memory_manager, public singleton<kernel_memory_manager> {
 public:
@@ -290,7 +288,7 @@ public:
         , kernel_heap_phys_{alloc_physical(initial_heap_size)}
         , kernel_heap_{static_cast<uint8_t*>(kernel_heap_phys_.address()), kernel_heap_phys_.length()} {
         dbgout() << "[mem] Starting. Base 0x" << as_hex(base) << " Length " << (length>>20) << " MB\n";
-        mm_ = mm_buffer_.construct();
+        mm_ = mm_buffer_.construct(kernel_map_start-(1ULL<<30)); // HACK: ISR needs virtual memory within 2GB of the kernel code...
     }
 
     ~kernel_memory_manager() {
@@ -473,7 +471,7 @@ void free_physical_page(physical_address addr) { // Internal use only
 
 class default_memory_manager : public memory_manager_base {
 public:
-    explicit default_memory_manager() {
+    explicit default_memory_manager() : memory_manager_base{virtual_address{1<<20}} {
         // The mm is born with the current high mem (kernel) mapping
         static_cast<uint64_t*>(pml4())[kernel_pml4] = static_cast<const uint64_t*>(kernel_memory_manager::instance().pml4())[kernel_pml4];
     }
@@ -485,8 +483,10 @@ public:
 
 private:
     virtual virtual_address do_map_memory(virtual_address virt, uint64_t length, memory_type type, physical_address phys) override {
-        REQUIRE(virt.pml4e() != kernel_pml4); // Make sure we don't clobber the kernel pml4
-        REQUIRE(virt.pml4e() < 0x100); // For now don't allow mappings in "high mem" (0x0xffff0000`00000000-0xffffffff`ffffffff)
+        if (virt != memory_manager::map_alloc_virt) {
+            REQUIRE(virt.pml4e() != kernel_pml4); // Make sure we don't clobber the kernel pml4
+            REQUIRE(virt.pml4e() < 0x100); // For now don't allow mappings in "high mem" (0x0xffff0000`00000000-0xffffffff`ffffffff)
+        }
         return memory_manager_base::do_map_memory(virt, length, type, phys);
     }
 };

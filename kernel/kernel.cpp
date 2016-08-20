@@ -137,6 +137,8 @@ enum class kernel_object_protocol_number {
     read,
     write,
     process,
+
+    hack_mem_map,
 };
 
 template<kernel_object_protocol_number>
@@ -146,6 +148,8 @@ template<> struct kernel_object_protocol_traits<kernel_object_protocol_number::r
 template<> struct kernel_object_protocol_traits<kernel_object_protocol_number::write> { using type = out_stream; };
 class user_process;
 template<> struct kernel_object_protocol_traits<kernel_object_protocol_number::process> { using type = user_process; };
+class mem_map_helper;
+template<> struct kernel_object_protocol_traits<kernel_object_protocol_number::hack_mem_map> { using type = mem_map_helper; };
 
 class __declspec(novtable) kernel_object {
 public:
@@ -188,6 +192,69 @@ private:
 
     virtual void* do_get_protocol(kernel_object_protocol_number protocol) {
         return get_protocol_impl<protocols...>::get(static_cast<Derived*>(this), protocol);
+    }
+};
+
+class mem_map_helper : kernel_object_helper<mem_map_helper, kernel_object_protocol_number::hack_mem_map> {
+public:
+    explicit mem_map_helper(memory_manager& mm, physical_address phys, uint64_t length, memory_type type)
+        : mm_(&mm)
+        , phys_(phys)
+        , length_(length)
+        , type_(type)
+        , mapped_virt_(mm.map_memory(memory_manager::map_alloc_virt, mapped_length(), type, mapped_base())) {
+    }
+    mem_map_helper(mem_map_helper&& other) : mm_(nullptr), phys_(), length_(0), mapped_virt_() {
+        *this = std::move(other);
+    }
+    mem_map_helper& operator=(mem_map_helper&& other) {
+        std::swap(mm_, other.mm_);
+        std::swap(phys_, other.phys_);
+        std::swap(length_, other.length_);
+        std::swap(type_, other.type_);
+        std::swap(mapped_virt_, other.mapped_virt_);
+        return *this;
+    }
+    mem_map_helper(const mem_map_helper&) = delete;
+    mem_map_helper& operator=(const mem_map_helper&) = delete;
+
+    ~mem_map_helper() {
+        if (length_) {
+            mm_->unmap_memory(mapped_virt_, mapped_length());
+        }
+    }
+
+    uint8_t* ptr() {
+        return reinterpret_cast<uint8_t*>(static_cast<uint64_t>(mapped_virt_) + (phys_ & (memory_manager::page_size-1)));
+    }
+
+    template<typename T>
+    T& as() {
+        return *reinterpret_cast<T*>(ptr());
+    }
+
+    uint64_t length() const {
+        return length_;
+    }
+
+    memory_type type() const {
+        return type_;
+    }
+
+private:
+    memory_manager*  mm_;
+    physical_address phys_;
+    uint64_t         length_;
+    memory_type      type_;
+    virtual_address  mapped_virt_;
+
+    physical_address mapped_base() const {
+        return phys_ & ~(memory_manager::page_size - 1);
+    }
+
+    uint64_t mapped_length() const {
+        const auto end_page = round_up(phys_ + length_, memory_manager::page_size);
+        return end_page - static_cast<uint64_t>(mapped_base());
     }
 };
 
@@ -234,6 +301,10 @@ public:
     registers& context() {
         REQUIRE(state_ != states::exited);
         return context_;
+    }
+
+    memory_manager& mm() {
+        return *mm_;
     }
 
     void image_base(virtual_address image_base) {
@@ -442,6 +513,9 @@ uint64_t create_object(Args&&... args) {
     return user_process::current().object_open(kowned_ptr<kernel_object>{knew<T>(static_cast<Args&&>(args)...).release()});
 }
 
+physical_address hack_dsdt_phys;
+uint32_t hack_dsdt_len;
+
 void syscall_handler(registers& regs)
 {
     // TODO: Check user addresses...
@@ -488,6 +562,9 @@ void syscall_handler(registers& regs)
                     regs.rax = create_object<ko_keyboard>();
                 } else if(string_equal(name, "process")) {
                     regs.rax = create_object<user_process>();
+                } else if(string_equal(name, "hack-acpi-dsdt")) {
+                    REQUIRE(hack_dsdt_phys && hack_dsdt_len);
+                    regs.rax = create_object<mem_map_helper>(user_process::current().mm(), hack_dsdt_phys, hack_dsdt_len, memory_type::read | memory_type::user);
                 } else {
                     REQUIRE(!"Unknown device");
                 }
@@ -533,6 +610,15 @@ void syscall_handler(registers& regs)
             {
                 auto& proc = user_process::current().object_get(regs.rdx).get_protocol<kernel_object_protocol_number::process>();
                 regs.rax = proc.exit_code();
+                break;
+            }
+        case syscall_number::mem_map_info:
+            {
+                auto& mem_map = user_process::current().object_get(regs.rdx).get_protocol<kernel_object_protocol_number::hack_mem_map>();
+                uint64_t* ptr = reinterpret_cast<uint64_t*>(regs.r8);
+                ptr[0] = reinterpret_cast<uint64_t>(mem_map.ptr());
+                ptr[1] = mem_map.length();
+                ptr[2] = static_cast<uint64_t>(mem_map.type());
                 break;
             }
         default:
@@ -762,67 +848,14 @@ const root_system_description_pointer* find_rsdp(physical_address low, physical_
 
 } } // namespace attos::acpi
 
-class mem_map_helper {
-public:
-    explicit mem_map_helper(physical_address phys, uint64_t length)
-        : phys_(phys)
-        , length_(length)
-        , mapped_virt_(kmemory_manager().map_memory(memory_manager::map_alloc_virt, mapped_length(), memory_type::read, mapped_base())) {
-    }
-    mem_map_helper(mem_map_helper&& other) : phys_(), length_(0), mapped_virt_() {
-        *this = std::move(other);
-    }
-    mem_map_helper& operator=(mem_map_helper&& other) {
-        std::swap(phys_, other.phys_);
-        std::swap(length_, other.length_);
-        std::swap(mapped_virt_, other.mapped_virt_);
-        return *this;
-    }
-    mem_map_helper(const mem_map_helper&) = delete;
-    mem_map_helper& operator=(const mem_map_helper&) = delete;
-
-    ~mem_map_helper() {
-        if (length_) {
-            kmemory_manager().unmap_memory(mapped_virt_, mapped_length());
-        }
-    }
-
-    uint8_t* ptr() {
-        return reinterpret_cast<uint8_t*>(static_cast<uint64_t>(mapped_virt_) + (phys_ & (memory_manager::page_size-1)));
-    }
-
-    template<typename T>
-    T& as() {
-        return *reinterpret_cast<T*>(ptr());
-    }
-
-    uint64_t length() const {
-        return length_;
-    }
-
-private:
-    physical_address phys_;
-    uint64_t         length_;
-    virtual_address  mapped_virt_;
-
-    physical_address mapped_base() const {
-        return phys_ & ~(memory_manager::page_size - 1);
-    }
-
-    uint64_t mapped_length() const {
-        const auto end_page = round_up(phys_ + length_, memory_manager::page_size);
-        return end_page - static_cast<uint64_t>(mapped_base());
-    }
-};
-
 kvector<uint8_t> get_description(physical_address phys) {
     using namespace attos::acpi;
 
-    mem_map_helper mapping{phys, 0x1000}; // Speculatively map more bytes, to reduce the number of remappings
+    mem_map_helper mapping{kmemory_manager(), phys, 0x1000, memory_type::read}; // Speculatively map more bytes, to reduce the number of remappings
     const auto len = mapping.as<const description>().length;
     REQUIRE(len >= sizeof(description));
     if (len > mapping.length()) {
-        mapping = mem_map_helper{phys, len}; // TODO: This could be done smarter
+        mapping = mem_map_helper{kmemory_manager(), phys, len, memory_type::read}; // TODO: This could be done smarter
     }
     const auto& desc = mapping.as<const description>();
     REQUIRE(!checksum(&desc, desc.length));
@@ -894,7 +927,9 @@ void handle(const acpi::fixed_acpi_description& facp) {
     kvector<uint8_t> dsdt_bytes = get_description(physical_address{facp.dsdt});
     const auto& dsdt_desc = *reinterpret_cast<const acpi::description*>(dsdt_bytes.begin());
     dbgout() << " " << dsdt_desc << "\n";
-    hexdump(dbgout(), dsdt_bytes.begin() + sizeof(dsdt_desc), dsdt_desc.length - sizeof(dsdt_desc));
+    //hexdump(dbgout(), dsdt_bytes.begin() + sizeof(dsdt_desc), dsdt_desc.length - sizeof(dsdt_desc));
+    hack_dsdt_phys = physical_address{facp.dsdt+sizeof(dsdt_desc)};
+    hack_dsdt_len  = dsdt_desc.length - sizeof(dsdt_desc);
 }
 
 void acpi_test() {
@@ -956,7 +991,6 @@ void acpi_test() {
             dbgout() << " ??" << desc << "\n";
         }
     }
-    ps2::read_key();
 }
 
 void stage3_entry(const arguments& args)

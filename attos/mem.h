@@ -86,6 +86,11 @@ public:
         return virtual_address{reinterpret_cast<uint64_t>(ptr)};
     }
 
+    template<typename T = uint8_t>
+    constexpr T* in_current_address_space() const {
+        return reinterpret_cast<T*>(static_cast<uint64_t>(*this));
+    }
+
     constexpr static uint64_t table_mask = 0x1FF;
     constexpr static uint32_t pml4_shift = 39;
     constexpr static uint32_t pdp_shift  = 30;

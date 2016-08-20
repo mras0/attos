@@ -142,6 +142,18 @@ void tftp_execute(ipv4_device& ipv4dev, const char* filename)
 int main()
 {
     my_keyboard kbd;
+
+    sys_handle dsdt{"hack-acpi-dsdt"};
+    struct mem_map_info {
+        virtual_address addr;
+        uint64_t        length;
+        memory_type     type;
+    } dsdt_mem;
+    syscall2(syscall_number::mem_map_info, dsdt.id(), reinterpret_cast<uint64_t>(&dsdt_mem));
+    hexdump(dbgout(), dsdt_mem.addr.in_current_address_space<>(), dsdt_mem.length);
+    dbgout() << "Length = " << as_hex(dsdt_mem.length) << "\n";
+    kbd.read_key();
+
     my_ethernet_device ethdev;
     auto ipv4dev = net::make_ipv4_device(ethdev);
     do_dhcp(*ipv4dev, &escape_pressed);

@@ -18,6 +18,8 @@ enum class syscall_number : uint64_t {
 
     start_exe,
     process_exit_code,
+
+    mem_map_info,
 };
 
 extern "C" uint64_t syscall0(syscall_number n);
