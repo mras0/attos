@@ -41,13 +41,18 @@ public:
         other.real_end_ = nullptr;
     }
 
-    kvector(const kvector&) = delete;
+    kvector(const kvector& other) {
+        *this = other;
+    }
 
     ~kvector() {
         clear();
     }
 
-    kvector& operator=(const kvector&) = delete;
+    kvector& operator=(const kvector& other) {
+        clear();
+        return *this = kvector(other.begin(), other.end());
+    }
 
     kvector& operator=(kvector&& other) {
         std::swap(begin_, other.begin_);

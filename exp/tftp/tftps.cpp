@@ -9,7 +9,9 @@ using namespace attos::net;
 
 class tftp_server_session {
 public:
-    explicit tftp_server_session(ipv4_address remote_addr, uint16_t remote_port, kvector<uint8_t>&& data) : remote_addr_(remote_addr), remote_port_(remote_port), data_(std::move(data)) {
+    explicit tftp_server_session(ipv4_address remote_addr, uint16_t remote_port, const kvector<char>& filename) : remote_addr_(remote_addr), remote_port_(remote_port), filename_(filename), is_read_(false) {
+    }
+    explicit tftp_server_session(ipv4_address remote_addr, uint16_t remote_port, const kvector<char>& filename, kvector<uint8_t>&& data) : remote_addr_(remote_addr), remote_port_(remote_port), filename_(filename), is_read_(true), data_(std::move(data)) {
         REQUIRE(tftp::legal_size(data_.size()));
     }
 
@@ -18,12 +20,19 @@ public:
 
     ipv4_address remote_addr() const { return remote_addr_; }
     uint16_t     remote_port() const { return remote_port_; }
+    const char*  filename() const { return filename_.begin(); }
+    const kvector<uint8_t>& data() const { return data_; }
+
+    bool is_read() const {
+        return is_read_;
+    }
 
     uint16_t block_count() {
         return tftp::block_count(data_.size());
     }
 
     uint8_t* put_block(uint8_t* b, uint16_t block) {
+        REQUIRE(is_read());
         REQUIRE(block >= 1 && block <= block_count());
         b = tftp::put(b, tftp::opcode::data);
         b = tftp::put(b, block);
@@ -36,11 +45,35 @@ public:
         return b;
     }
 
+    uint16_t got_data(uint16_t block, const uint8_t* data, uint16_t size) {
+        REQUIRE(!is_read());
+        REQUIRE(block > 0);
+        REQUIRE(size <= tftp::block_size);
+        const uint16_t expected_block_number = static_cast<uint16_t>(1 + data_.size() / tftp::block_size);
+        dbgout() << "[tftp] Got data from " << remote_addr_ << ":" << remote_port_ << " Block #" << block << " Size " << size << " Expecting #" << expected_block_number << "\n";
+        if (block == expected_block_number) {
+            data_.insert(data_.end(), data, data+size);
+        } else {
+            dbgout() << "[tftp] Discarding block.\n";
+            REQUIRE(false);
+        }
+        return expected_block_number;
+    }
+
 private:
     const ipv4_address       remote_addr_;
     const uint16_t           remote_port_;
-    const kvector<uint8_t>   data_;
+    kvector<char>            filename_;
+    const bool               is_read_;
+    kvector<uint8_t>         data_;
 };
+
+uint8_t* put_ack(uint8_t* b, uint16_t block_number) {
+    b = tftp::put(b, tftp::opcode::ack);
+    b = tftp::put(b, block_number);
+    return b;
+}
+
 
 #include <winsock2.h>
 #include <memory>
@@ -75,9 +108,17 @@ bool valid_filename(const char* filename)
     return true;
 }
 
+std::string complete_path(const char* filename) {
+    return exe_dir() + "\\" + filename;
+}
+
+bool file_exists(const char* filename) {
+    return std::ifstream(complete_path(filename).c_str(), std::ifstream::binary).is_open();
+}
+
 bool read_file(const char* filename, kvector<uint8_t>& data)
 {
-    std::ifstream in((exe_dir() + "\\" + filename).c_str(), std::ifstream::binary);
+    std::ifstream in(complete_path(filename).c_str(), std::ifstream::binary);
     if (!in.is_open()) {
         return false;
     }
@@ -143,10 +184,12 @@ int main()
         const auto opcode = tftp::get_opcode(in, in_len);
         switch (opcode) {
         case tftp::opcode::rrq:
+        case tftp::opcode::wrq:
             {
+                const bool is_read = opcode == tftp::opcode::rrq;
                 auto filename = tftp::get_string(in, in_len);
                 auto mode = tftp::get_string(in, in_len);
-                dbgout() << "[tftp] RRQ from " << remote_addr << ":" << remote_port << " file '" << filename << " mode '" << mode << "'\n";
+                dbgout() << "[tftp] " << (is_read ? "RRQ" : "WRQ") << " from " << remote_addr << ":" << remote_port << " file '" << filename << " mode '" << mode << "'\n";
                 if (it != sessions_.end()) {
                     dbgout() << "[tftp] Closing previous sessions for " << (*it)->remote_addr() << ":" << (*it)->remote_port() << "\n";
                     sessions_.erase(it);
@@ -161,14 +204,24 @@ int main()
                     b = tftp::put_error_reply(b, tftp::error_code::file_not_found, "Invalid filename");
                     break;
                 }
-                kvector<uint8_t> data;
-                if (!read_file(filename, data)) {
-                    dbgout() << "[tftp] File not found\n";
-                    b = tftp::put_error_reply(b, tftp::error_code::file_not_found, "File not found");
-                    break;
+                kvector<char> fname{filename, filename+string_length(filename)};
+                if (is_read) {
+                    kvector<uint8_t> data;
+                    if (!read_file(filename, data)) {
+                        dbgout() << "[tftp] File not found\n";
+                        b = tftp::put_error_reply(b, tftp::error_code::file_not_found, "File not found");
+                        break;
+                    }
+                    sessions_.push_back(std::make_unique<tftp_server_session>(remote_addr, remote_port, fname, std::move(data)));
+                    b = sessions_.back()->put_block(b, 1);
+                } else {
+                    if (file_exists(filename)) {
+                        b = tftp::put_error_reply(b, tftp::error_code::access_violation, "File exists");
+                    } else {
+                        sessions_.push_back(std::make_unique<tftp_server_session>(remote_addr, remote_port, fname));
+                        b = put_ack(b, 0);
+                    }
                 }
-                sessions_.push_back(std::make_unique<tftp_server_session>(remote_addr, remote_port, std::move(data)));
-                b = sessions_.back()->put_block(b, 1);
                 break;
             }
         case tftp::opcode::ack:
@@ -183,6 +236,26 @@ int main()
                     dbgout() << "[tftp] Transfer done.\n";
                 } else {
                     b = session.put_block(b, block_number + 1);
+                }
+            }
+            break;
+        case tftp::opcode::data:
+            {
+                const auto block_number = tftp::get_u16(in, in_len);
+                dbgout() << "[tftp] DATA from " << remote_addr << ":" << remote_port << " Block #" << block_number << "\n";
+                REQUIRE(it != sessions_.end());
+                auto& session = **it;
+                b = put_ack(b, session.got_data(block_number, in, static_cast<uint16_t>(in_len)));
+                if (in_len < tftp::block_size) {
+                    if (file_exists(session.filename())) {
+                        b = tftp::put_error_reply(b, tftp::error_code::access_violation, "File exists");
+                    } else {
+                        std::ofstream out(complete_path(session.filename()), std::ofstream::binary);
+                        REQUIRE(out.is_open());
+                        out.write(reinterpret_cast<const char*>(session.data().begin()), session.data().size());
+                        dbgout() << "[tftp] Transfer of " << session.filename() << " done.\n";
+                    }
+                    sessions_.erase(it);
                 }
             }
             break;

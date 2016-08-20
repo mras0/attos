@@ -825,12 +825,14 @@ private:
         send_packet(b);
     }
 
-    void send_data(uint16_t block_number, const uint8_t* data, uint16_t size) {
+    void send_data(uint16_t block_number) {
         dbgout() << "[tftp] Sending block " << block_number << " of " << filename_ << "\n";
-        last_ack_ = no_acks;
+        REQUIRE(block_number >= 1 && block_number <= block_count());
+        const auto index = (block_number-1) * tftp::block_size;
+        const auto size  = std::min(static_cast<uint64_t>(tftp::block_size), data_.size() - index);
         auto b = start_packet(tftp::opcode::data);
         b = tftp::put(b, block_number);
-        memcpy(b, data, size);
+        memcpy(b, data_.begin() + index, size);
         b += size;
         send_packet(b);
     }
@@ -843,6 +845,8 @@ private:
         dbgout() << "[tftp] Timed out! Last ack " << last_ack_ << "\n";
         if (last_ack_ == no_acks) {
             send_wrq();
+        } else if (last_ack_ < block_count()) {
+            send_data(last_ack_ + 1);
         } else {
             REQUIRE(false);
         }
@@ -855,17 +859,7 @@ private:
         REQUIRE(block_number <= block_count());
         last_ack_ = block_number;
         if (block_number < block_count()) {
-            const auto index = block_number * tftp::block_size;
-            const auto size  = std::min(static_cast<uint64_t>(tftp::block_size), data_.size() - index);
-            if (block_number != block_count() - 1) {
-                // normal full sized block
-                dbgout() << "[tftp] Writing normal block\n";
-            } else {
-                // last block
-                dbgout() << "[tftp] Last block\n";
-            }
-            dbgout() << "Index: " << as_hex(index) << " Size: " << as_hex(size) << "\n";
-            send_data(block_number + 1, data_.begin() + index, static_cast<uint16_t>(size));
+            send_data(last_ack_ + 1);
         } else {
             dbgout() << "[tftp] Write of " << filename_ << " done!\n";
         }
