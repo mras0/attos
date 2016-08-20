@@ -778,16 +778,19 @@ void acpi_test() {
     }
 
 #if 0
-    APIC
-    ECDT
-    FACP
-    MCFG
-    HPET
-    SLIC
-    BOOT
-    ASF!
-    SSDT
-    TCPA
+    //   x200s VMWARE Bochs
+    APIC   x     x      x
+    ASF!   x
+    BOOT   x     x
+    ECDT   x
+    FACP   x     x      x
+    HPET   x     x
+    MCFG   x     x
+    SLIC   x
+    SRAT         x
+    SSDT   x            x
+    TCPA   x
+    WAET         x
 #endif
 
     dbgout() << "ACPI OEMID    " << format_str(rsdp->oem_id) << "\n";
