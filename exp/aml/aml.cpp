@@ -13,23 +13,31 @@ enum class opcode : uint8_t {
     byte                = 0x0a, // BytedData
     word                = 0x0b, // WordData
     dword               = 0x0c, // DWordData
-    qword               = 0x0d, // QWordData
+    string_             = 0x0d,
+    qword               = 0x0e, // QWordData
     scope               = 0x10,
     buffer              = 0x11,
     package             = 0x12,
     method              = 0x14,
     ext_prefix          = 0x5b, // '[' ByteData follows specifying the extended opcode
     store               = 0x70,
+    add                 = 0x72,
     decrement           = 0x76,
     shift_left          = 0x79,
     and_                = 0x7b,
     or_                 = 0x7d,
     find_set_right_bit  = 0x82,
+    deref_of            = 0x83,
+    size_of             = 0x87,
+    index               = 0x88,
     create_word_field   = 0x8b,
+    not_                = 0x92,
     lequal              = 0x93,
+    lgreater            = 0x94,
     lless               = 0x95,
     if_                 = 0xa0,
     else_               = 0xa1,
+    while_              = 0xa2,
     return_             = 0xa4,
     ones                = 0xff,
 };
@@ -49,9 +57,13 @@ private:
 using node_ptr = kowned_ptr<node>;
 using kstring  = kvector<char>;
 
+kstring make_kstring(const char* str) {
+    return kstring{str, str+string_length(str)+1};
+}
+
 class dummy_node : public node {
 public:
-    explicit dummy_node(const char* name) : name_(name, name + string_length(name) + 1) {
+    explicit dummy_node(const char* name) : name_(make_kstring(name)) {
     }
 
 private:
@@ -123,6 +135,11 @@ auto parse_pkg_length(array_view<uint8_t> data)
         case 1:
             len = b0 & 0xf;
             len |= (consume(data) << 4);
+            break;
+        case 2:
+            len = b0 & 0xf;
+            len |= (consume(data) << 4);
+            len |= (consume(data) << 12);
             break;
         default:
             dbgout()<<"TODO: Handle " << (b0>>6) << " extra PkgLength bytes\n";
@@ -220,11 +237,11 @@ parse_result<kstring> parse_arg_or_local(array_view<uint8_t> data)
     if (c >= local_0 && c <= local_7) { // LocalObj
         char buffer[] = "Local0";
         buffer[sizeof(buffer)-2] += c-local_0;
-        return parse_result<kstring>{data, kstring(buffer, buffer+sizeof(buffer))};
+        return parse_result<kstring>{data, make_kstring(buffer)};
     } else if (c >= arg_0 && c <= arg_6) { // ArgObj
         char buffer[] = "Arg0";
         buffer[sizeof(buffer)-2] += c-arg_0;
-        return parse_result<kstring>{data, kstring(buffer, buffer+sizeof(buffer))};
+        return parse_result<kstring>{data, make_kstring(buffer)};
     } else {
         REQUIRE(false);
     }
@@ -238,7 +255,11 @@ parse_result<kstring> parse_super_name(array_view<uint8_t> data)
     if (is_arg_or_local(first)) {
         return parse_arg_or_local(data);
     }
-    REQUIRE(is_name_string_start(first));
+    if (!is_name_string_start(first)) {
+        dbgout() << "First = " << as_hex(first) << "\n";
+        hexdump(dbgout(), data.begin()-10, std::min(32ULL, data.size()+10));
+        REQUIRE(false);
+    }
     return parse_name_string(data);
 }
 
@@ -292,10 +313,22 @@ parse_result<node_ptr> parse_data_object(array_view<uint8_t> data)
         case opcode::dword:
             {
                 uint32_t d = consume(data);
-                d |= consume(data) << 8;
-                d |= consume(data) << 16;
-                d |= consume(data) << 24;
+                d |= static_cast<uint32_t>(consume(data)) << 8;
+                d |= static_cast<uint32_t>(consume(data)) << 16;
+                d |= static_cast<uint32_t>(consume(data)) << 24;
                 return make_parse_result(data, make_const_node(d));
+            }
+        case opcode::qword:
+            {
+                uint64_t q = consume(data);
+                q |= static_cast<uint64_t>(consume(data)) << 8;
+                q |= static_cast<uint64_t>(consume(data)) << 16;
+                q |= static_cast<uint64_t>(consume(data)) << 24;
+                q |= static_cast<uint64_t>(consume(data)) << 32;
+                q |= static_cast<uint64_t>(consume(data)) << 40;
+                q |= static_cast<uint64_t>(consume(data)) << 48;
+                q |= static_cast<uint64_t>(consume(data)) << 56;
+                return make_parse_result(data, make_const_node(q));
             }
         case opcode::buffer:
             {
@@ -339,19 +372,45 @@ parse_result<node_ptr> parse_data_object(array_view<uint8_t> data)
 
 constexpr bool is_type2_opcode(opcode op) {
     return op == opcode::decrement
+        || op == opcode::add
         || op == opcode::shift_left
         || op == opcode::and_
         || op == opcode::or_
         || op == opcode::find_set_right_bit
+        || op == opcode::deref_of
+        || op == opcode::size_of
+        || op == opcode::index
+        || op == opcode::not_
         || op == opcode::lequal
+        || op == opcode::lgreater
         || op == opcode::lless;
+}
+
+constexpr bool is_type2_ext_opcode(uint8_t ext) {
+    return ext == 0x12;
+}
+
+parse_result<kstring> parse_target(array_view<uint8_t> data) {
+    // Target := SuperName | NullName
+    if (peek(data) == 0) {
+        consume(data);
+        return parse_result<kstring>{data, make_kstring("null_name")};
+    } else {
+        return parse_super_name(data);
+    }
 }
 
 parse_result<node_ptr> parse_unary_op(array_view<uint8_t> data, const char* name) {
     const auto arg    = parse_term_arg(data);
-    const auto target = parse_super_name(arg.data);
+    const auto target = parse_target(arg.data);
     dbgout() << name << " " << *arg.result << " -> " << target.result.begin() << "\n";
     return make_parse_result(target.data, knew<dummy_node>(name));
+}
+
+parse_result<node_ptr> parse_unary_op_no_target(array_view<uint8_t> data, const char* name) {
+    const auto arg = parse_super_name(data);
+    dbgout() << name << " " << arg.result.begin() << "\n";
+    return make_parse_result(arg.data, knew<dummy_node>(name));
 }
 
 parse_result<node_ptr> parse_binary_op(array_view<uint8_t> data, const char* name) {
@@ -360,7 +419,7 @@ parse_result<node_ptr> parse_binary_op(array_view<uint8_t> data, const char* nam
     // Target := SuperName | NullName
     const auto arg0   = parse_term_arg(data);
     const auto arg1   = parse_term_arg(arg0.data);
-    const auto target = parse_super_name(arg1.data);
+    const auto target = parse_target(arg1.data);
     dbgout() << name << " " << *arg0.result << ", " << *arg1.result << " -> " << target.result.begin() << "\n";
     return make_parse_result(target.data, knew<dummy_node>(name));
 }
@@ -374,15 +433,38 @@ parse_result<node_ptr> parse_logical_op(array_view<uint8_t> data, const char* na
 
 parse_result<node_ptr> parse_type2_opcode(array_view<uint8_t> data) {
     const auto op = static_cast<opcode>(consume(data));
-    REQUIRE(is_type2_opcode(op));
+    if (op == opcode::ext_prefix) {
+        if (!is_type2_ext_opcode(peek(data))) {
+            dbgout() << "op = 0x5B 0x" << as_hex(peek(data)) << "\n";
+            REQUIRE(false);
+        }
+    } else {
+        if (!is_type2_opcode(op)) {
+            dbgout() << "op = 0x" << as_hex(static_cast<uint8_t>(op)) << "\n";
+            REQUIRE(false);
+        }
+    }
     switch (op) {
-        case opcode::decrement:
+        case opcode::ext_prefix:
             {
-                // DefDecrement := DecrementOp SuperName
-                const auto name = parse_super_name(data);
-                dbgout() << "decrement " << name.result.begin() << "\n";
-                return make_parse_result(name.data, knew<dummy_node>("decrement"));
+                const auto ext_op = consume(data);
+                if (ext_op == 0x12) {
+                    // DefCondRefOf := CondRefOfOp SuperName Target
+                    const auto name   = parse_super_name(data);
+                    const auto target = parse_target(name.data);
+                    dbgout() << "CondRefOf " << name.result.begin() << " -> " << target.result.begin() << "\n";
+                    return make_parse_result(target.data, knew<dummy_node>("cond_ref_of"));
+                } else {
+                    dbgout() << "Unhadled extended op " << as_hex(ext_op) << "\n";
+                    REQUIRE(false);
+                }
             }
+            break;
+        case opcode::add:
+            return parse_binary_op(data, "add");
+        case opcode::decrement:
+            // DefDecrement := DecrementOp SuperName
+            return parse_unary_op_no_target(data, "decrement");
         case opcode::shift_left:
             return parse_binary_op(data, "shiftleft");
         case opcode::and_:
@@ -391,8 +473,42 @@ parse_result<node_ptr> parse_type2_opcode(array_view<uint8_t> data) {
             return parse_binary_op(data, "or");
         case opcode::find_set_right_bit:
             return parse_unary_op(data, "find_set_right_bit");
+        case opcode::deref_of:
+            {
+                const auto arg = parse_term_arg(data);
+                // DefDerefOf := DerefOfOp ObjReference
+                // ObjReference := TermArg => ObjectReference | String
+                dbgout() << "deref_of " << *arg.result << "\n";
+                return make_parse_result(arg.data, knew<dummy_node>("deref_of"));
+            }
+        case opcode::size_of:
+            return parse_unary_op_no_target(data, "sizeof");
+        case opcode::index:
+            {
+                // DefIndex := IndexOp BuffPkgStrObj IndexValue Target
+                // BuffPkgStrObj := TermArg => Buffer, Package or String
+                // IndexValue := TermArg => Integer
+                return parse_binary_op(data, "index");
+            }
+        case opcode::not_:
+            {
+                const auto next = static_cast<opcode>(peek(data));
+                if (next == opcode::lequal) {
+                    consume(data);
+                    return parse_logical_op(data, "lnotequal");
+                } else if (next == opcode::lgreater) {
+                    consume(data);
+                    return parse_logical_op(data, "lnotgreater");
+                } else if (next == opcode::lless) {
+                    consume(data);
+                    return parse_logical_op(data, "lnotless");
+                }
+                return parse_unary_op(data, "not");
+            }
         case opcode::lequal:
             return parse_logical_op(data, "lequal");
+        case opcode::lgreater:
+            return parse_logical_op(data, "lgreater");
         case opcode::lless:
             return parse_logical_op(data, "lless");
         default:
@@ -407,11 +523,16 @@ parse_result<node_ptr> parse_type2_opcode(array_view<uint8_t> data) {
 parse_result<node_ptr> parse_term_arg(array_view<uint8_t> data) {
     // TermArg := Type2Opcode | DataObject | ArgObj | LocalObj
     const uint8_t first = peek(data);
+    //dbgout() << "parse_term_arg first = " << as_hex(first) << "\n";
     if (is_arg_or_local(first)) {
         auto name = parse_arg_or_local(data);
         return make_parse_result(name.data, knew<dummy_node>(name.result.begin()));
-    } else if (is_name_string_start(first)) { // It seems NameSeg is valid here. E.g. ReturnOp 'TMP_'
+    } else if (is_name_string_start(first)) {
+        // It seems NameSeg is valid here. E.g. ReturnOp 'TMP_'
+        // Is this sometimes a method invocation?
         auto name = parse_name_string(data);
+        dbgout() << name.result.begin() << "\n";
+        hexdump(dbgout(), name.data.begin(), name.data.size());
         return make_parse_result(name.data, knew<dummy_node>(name.result.begin()));
     } else if (is_data_object(static_cast<opcode>(first))) {
         return parse_data_object(data);
@@ -452,9 +573,19 @@ parse_result<dummy> parse_field_list(array_view<uint8_t> data)
         // AccessField   := 0x01 AccessType AccessAttrib
         // ConnectField  := <0x02 NameString> | <0x02 BufferData>
         // ExtendedAccessField := 0x03 AccessType ExtendedAccessAttrib AccessLength
-        REQUIRE(is_lead_name_char(peek(data)));
-        auto named_field = parse_named_field(data);
-        data = named_field.data;
+        const uint8_t first = peek(data);
+        if (first == 0) {
+            consume(data);
+            const auto len = parse_pkg_length(data);
+            dbgout() << "ReservedField " << " PkgLen 0x" <<  as_hex(len.result).width(0) << "\n";
+            data = len.data;
+        } else if (is_lead_name_char(first)) {
+            const auto named_field = parse_named_field(data);
+            data = named_field.data;
+        } else {
+            dbgout() << "Unknown FieldElement " << as_hex(first) << "\n";
+            REQUIRE(false);
+        }
     }
     return parse_result<dummy>{data, dummy{}};
 }
@@ -518,7 +649,7 @@ parse_result<node_ptr> parse_term_obj(array_view<uint8_t> data)
     // TermObj := NameSpaceModifierObject | NamedObj | Type1Opcode | Type2Opcode
     // NameSpaceModifierObject := DefAlias | DefName | DefScope
     const auto op = static_cast<opcode>(peek(data));
-    if (is_type2_opcode(op)) {
+    if (is_type2_opcode(op) || (op == opcode::ext_prefix && is_type2_ext_opcode(data[1]))) {
         return parse_type2_opcode(data);
     }
     consume(data);
@@ -591,6 +722,14 @@ parse_result<node_ptr> parse_term_obj(array_view<uint8_t> data)
                 }
                 return make_parse_result(data, knew<dummy_node>("if"));
             }
+        case opcode::while_:
+            {
+                // DefWhile := WhileOp PkgLength Predicate TermList
+                const auto predicate = parse_term_arg(adjust_with_pkg_length(data));
+                dbgout() << "DefWhile predicate = " << *predicate.result << "\n";
+                const auto term_list = parse_term_list(predicate.data);
+                return make_parse_result(array_view<uint8_t>(term_list.data.begin(), data.end()), knew<dummy_node>("while"));
+            }
         case opcode::return_:
             {
                 // DefReturn := ReturnOp ArgObject
@@ -652,6 +791,7 @@ bool read_file(const char* filename, kvector<uint8_t>& data)
 int main()
 {
     kvector<uint8_t> data;
+    //const char* filename = "vmware_dsdt.aml";
     const char* filename = "bochs_dsdt.aml";
     if (!read_file(filename, data)) {
         dbgout() << "Could not read " << filename << "\n";

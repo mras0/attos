@@ -90,7 +90,7 @@ void hexdump(out_stream& out, const void* ptr, size_t len) {
     const uint64_t end = beg + len;
     for (uint64_t a = beg & ~0xf; a < ((end+15) & ~0xf); a += 16) {
         for (uint32_t i = 0; i < 16; i++) {
-            if (a+i >= beg && a+i <= end) {
+            if (a+i >= beg && a+i < end) {
                 out << as_hex(*reinterpret_cast<const uint8_t*>(a+i));
             } else {
                 out << "  ";
@@ -99,7 +99,7 @@ void hexdump(out_stream& out, const void* ptr, size_t len) {
         }
         for (uint32_t i = 0; i < 16; i++) {
             uint8_t c = ' ';
-            if (a+i >= beg && a+i <= end) {
+            if (a+i >= beg && a+i < end) {
                 uint8_t rc = *reinterpret_cast<const uint8_t*>(a+i);
                 if (rc > ' ' && rc < 128) c = rc; // poor mans isprint
             }

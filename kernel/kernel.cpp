@@ -927,8 +927,8 @@ void handle(const acpi::fixed_acpi_description& facp) {
     kvector<uint8_t> dsdt_bytes = get_description(physical_address{facp.dsdt});
     const auto& dsdt_desc = *reinterpret_cast<const acpi::description*>(dsdt_bytes.begin());
     dbgout() << " " << dsdt_desc << "\n";
-    hack_dsdt_phys = physical_address{facp.dsdt+sizeof(dsdt_desc)};
-    hack_dsdt_len  = dsdt_desc.length - sizeof(dsdt_desc);
+    hack_dsdt_phys = physical_address{facp.dsdt};
+    hack_dsdt_len  = dsdt_desc.length;
 }
 
 void acpi_test() {
