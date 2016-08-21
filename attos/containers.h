@@ -74,7 +74,7 @@ public:
     }
 
     void clear() {
-        destroy_range(begin(), end());
+        destroy_range_and_free(begin(), end());
         begin_ = end_ = real_end_ = nullptr;
     }
 
@@ -89,9 +89,8 @@ public:
 
     void resize(size_t new_size) {
         if (new_size <= size()) {
-           __debugbreak(); // Not implemented
            auto new_end = begin() + new_size;
-           // destroy [new_end; end[
+           destroy_range(new_end, end_);
            end_ = new_end;
         } else {
             ensure_room(new_size);
@@ -113,7 +112,7 @@ public:
         for (auto it = begin(), it2 = new_ptr; it != end(); ++it, ++it2) {
             new (it2) T(std::move(*it));
         }
-        destroy_range(begin(), end());
+        clear();
         begin_    = new_ptr;
         end_      = new_ptr + old_size;
         real_end_ = new_ptr + new_capacity;
@@ -178,7 +177,11 @@ private:
                 end->~T();
             } while (end != beg);
         }
+    }
+
+    static void destroy_range_and_free(T* beg, T* end) {
         if (beg) {
+            destroy_range(beg, end);
             kfree(beg);
         }
     }

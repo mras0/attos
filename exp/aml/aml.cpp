@@ -143,13 +143,7 @@ node_ptr make_const_node(T value) {
     return node_ptr{knew<const_node<T>>(value).release()};
 }
 
-class name_space {
-public:
-    explicit name_space() {
-    }
-    name_space(const name_space&) = delete;
-    name_space& operator=(const name_space&) = delete;
-};
+class name_space;
 
 class parse_state {
 public:
@@ -192,18 +186,101 @@ public:
 
     friend parse_state adjust_with_pkg_length(parse_state data);
 
+    name_space& ns() {
+        REQUIRE(ns_);
+        return *ns_;
+    }
+
 private:
     name_space*         ns_;
     array_view<uint8_t> data_;
 
     parse_state(name_space& ns, const uint8_t* begin, const uint8_t* end) : ns_(&ns), data_(begin, end) {
     }
+};
 
-    name_space& ns() {
-        REQUIRE(ns_);
-        return *ns_;
+class name_space {
+public:
+    explicit name_space() {
+    }
+
+    name_space(const name_space&) = delete;
+    name_space& operator=(const name_space&) = delete;
+
+    ~name_space() {
+        REQUIRE(cur_namespace_.empty());
+    }
+
+    class scope_registration {
+    public:
+        void provide(node& node) {
+            REQUIRE(!node_);
+            node_ = &node;
+        }
+        ~scope_registration() {
+            REQUIRE(node_);
+            ns_.close_scope(name_.begin(), *node_);
+        }
+    private:
+        friend name_space;
+        name_space& ns_;
+        kstring     name_;
+        node*       node_ = nullptr;
+        explicit scope_registration(name_space& ns, const char* name) : ns_(ns), name_(make_kstring(name)) {}
+    };
+
+    scope_registration open_scope(const char* name) {
+        //dbgout() << "open_scope " << name << "\n";
+        cur_namespace_.insert(cur_namespace_.end(), name, name + string_length(name));
+        return scope_registration{*this, name};
+    }
+
+    node* lookup(const char* name) {
+        const auto rn = relative(name);
+        if (auto* b = find_binding(rn.begin())) {
+            return b->n;
+        }
+        dbgout() << "Lookup of " << name << " failed in " << hack_cur_name() << "\n";
+        return nullptr;
+    }
+
+private:
+    struct binding {
+        kstring name;
+        node*   n;
+    };
+
+    kstring          cur_namespace_; // Not NUL-terimnated!
+    kvector<binding> bindings_;
+
+    const binding* find_binding(const char* name) const {
+        for (const auto& b : bindings_) {
+            if (string_equal(name, b.name.begin())) {
+                return &b;
+            }
+        }
+        return nullptr;
+    }
+
+    kstring relative(const char* path) {
+        kstring name{cur_namespace_};
+        name.insert(name.end(), path, path + string_length(path) + 1);
+        return name;
+    }
+
+    detail::formatted_string hack_cur_name() const {
+        return format_str((const char*)cur_namespace_.begin()).max_width((int)cur_namespace_.size());
+    }
+
+    void close_scope(const char* scope_name, node& n) {
+        auto name = relative("");
+        dbgout() << "Registered " << name.begin() << " as " << as_hex(&n) << "\n";
+        bindings_.push_back(binding{std::move(name), &n});
+        REQUIRE(cur_namespace_.size() >= string_length(scope_name));
+        cur_namespace_.resize(cur_namespace_.size()-string_length(scope_name));
     }
 };
+using scope_reg = name_space::scope_registration;
 
 template<typename T>
 struct parse_result {
@@ -248,7 +325,7 @@ parse_state adjust_with_pkg_length(parse_state data)
     const uint8_t pkg_length_bytes = 1+(data.peek()>>6);
     auto pkg_len = parse_pkg_length(data);
     REQUIRE(pkg_len.result >= pkg_length_bytes);
-    return parse_state(data.ns(), pkg_len.data.begin(), pkg_len.data.begin() + pkg_len.result-pkg_length_bytes);
+    return parse_state(*data.ns_, pkg_len.data.begin(), pkg_len.data.begin() + pkg_len.result-pkg_length_bytes);
 }
 
 constexpr bool is_lead_name_char(char c) { return c == '_' || (c >= 'A' && c <= 'Z') ;}
@@ -653,6 +730,7 @@ parse_result<node_ptr> parse_term_arg(parse_state data) {
         // It seems NameSeg is valid here. E.g. ReturnOp 'TMP_'
         // Is this sometimes a method invocation?
         auto name = parse_name_string(data);
+        data.ns().lookup(name.result.begin());
         //dbgout() << name.result.begin() << "\n";
         //hexdump(dbgout(), name.data.begin(), name.data.size());
         return make_parse_result(name.data, make_text_node(name.result));
@@ -756,7 +834,8 @@ parse_result<obj_list_node_ptr> parse_object_list(parse_state data);
 
 class device_node : public node {
 public:
-    explicit device_node(kstring&& name, obj_list_node_ptr&& objs) : name_(std::move(name)), objs_(std::move(objs)) {
+    explicit device_node(scope_reg& ns_reg, kstring&& name, obj_list_node_ptr&& objs) : name_(std::move(name)), objs_(std::move(objs)) {
+        ns_reg.provide(*this);
     }
 
 private:
@@ -821,10 +900,11 @@ parse_result<node_ptr> parse_ext_prefix(parse_state data)
             {
                 // DefDevice := DeviceOp PkgLength NameString ObjectList
                 auto name        = parse_name_string(adjust_with_pkg_length(data));
+                auto scope_reg   = data.ns().open_scope(name.result.begin());
                 auto object_list = parse_object_list(name.data);
                 //dbgout() << "DefDevice " << name.result.begin() << "\n";
                 //return make_parse_result(parse_state(object_list.data.begin(), data.end()), knew<dummy_node>("device"));
-                return make_parse_result(data.moved_to(object_list.data.begin()), knew<device_node>(std::move(name.result), std::move(object_list.result)));
+                return make_parse_result(data.moved_to(object_list.data.begin()), knew<device_node>(scope_reg, std::move(name.result), std::move(object_list.result)));
             }
         default:
             dbgout() << "Unhandled ext opcode 0x5b 0x" << as_hex(static_cast<uint8_t>(ext)) << "\n";
@@ -840,14 +920,19 @@ parse_result<node_ptr> parse_data_ref_object(parse_state data)
 
 class name_node : public node {
 public:
-    explicit name_node(kstring&& name, node_ptr&& obj) : name_(std::move(name)), obj_(std::move(obj)) {
+    explicit name_node(scope_reg& ns_reg, kstring&& name, node_ptr&& obj) : name_(std::move(name)), obj_(std::move(obj)) {
+        ns_reg.provide(*this);
+    }
+
+    const char* name() const {
+        return name_.begin();
     }
 
 private:
-    kstring  name_;
-    node_ptr obj_;
+    kstring     name_;
+    node_ptr    obj_;
     virtual void do_print(out_stream& os) const override {
-        os << "Name " << name_.begin() << " " << *obj_;
+        os << "Name " << name() << " " << *obj_;
     }
 };
 
@@ -868,7 +953,8 @@ private:
 
 class scope_node : public node {
 public:
-    explicit scope_node(kstring&& name, term_list_node_ptr&& statements) : name_(std::move(name)), statements_(std::move(statements)) {
+    explicit scope_node(scope_reg& ns_reg, kstring&& name, term_list_node_ptr&& statements) : name_(std::move(name)), statements_(std::move(statements)) {
+        ns_reg.provide(*this);
     }
 
 private:
@@ -913,17 +999,19 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
             {
                 // DefName := NameOp NameString DataRefOjbect
                 auto name            = parse_name_string(data);
+                auto scope_reg       = data.ns().open_scope(name.result.begin());
                 auto data_ref_object = parse_data_ref_object(name.data);
                 //dbgout() << "DefName " << name.result.begin() << " " << *data_ref_object.result << "\n";
-                return make_parse_result(data_ref_object.data, knew<name_node>(std::move(name.result), std::move(data_ref_object.result)));
+                return make_parse_result(data_ref_object.data, knew<name_node>(scope_reg, std::move(name.result), std::move(data_ref_object.result)));
             }
         case opcode::scope:
             {
                 // DefScope := ScopeOp PkgLength NameString TermList
-                auto name    = parse_name_string(adjust_with_pkg_length(data));
+                auto name      = parse_name_string(adjust_with_pkg_length(data));
+                auto scope_reg = data.ns().open_scope(name.result.begin());
                 auto term_list = parse_term_list(name.data);
                 //dbgout() << "DefScope " << name.result.begin() << "\n";
-                return make_parse_result(data.moved_to(term_list.data.begin()), knew<scope_node>(std::move(name.result), std::move(term_list.result)));
+                return make_parse_result(data.moved_to(term_list.data.begin()), knew<scope_node>(scope_reg, std::move(name.result), std::move(term_list.result)));
             }
         case opcode::method:
             {
@@ -1030,7 +1118,11 @@ void process(array_view<uint8_t> data)
 {
     name_space ns;
     parse_state state{ns, data};
+#if 1
     dbgout() << *parse_term_list(state).result << "\n";
+#else
+    parse_term_list(state);
+#endif
 }
 
 } } // namespace attos::aml
