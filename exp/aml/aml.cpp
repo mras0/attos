@@ -199,6 +199,9 @@ private:
     }
 };
 
+constexpr char root_char             = '\\';
+constexpr char parent_prefix_char    = '^';
+
 class name_space {
 public:
     explicit name_space() {
@@ -236,9 +239,15 @@ public:
     }
 
     node* lookup(const char* name) {
-        const auto rn = relative(name);
-        if (auto* b = find_binding(rn.begin())) {
-            return b->n;
+        if (name[0] == root_char) {
+            if (auto* b = find_binding(name)) {
+                return b->n;
+            }
+        } else {
+            const auto rn = relative(name);
+            if (auto* b = find_binding(rn.begin())) {
+                return b->n;
+            }
         }
         dbgout() << "Lookup of " << name << " failed in " << hack_cur_name() << "\n";
         return nullptr;
@@ -338,8 +347,6 @@ constexpr bool valid_nameseg(const uint8_t* d) {
     return valid_nameseg(reinterpret_cast<const char*>(d));
 }
 
-constexpr char root_char             = '\\';
-constexpr char parent_prefix_char    = '^';
 constexpr char dual_name_path_start  = 0x2e;
 constexpr char multi_name_path_start = 0x2f;
 
@@ -719,6 +726,8 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
     REQUIRE(false);
 }
 
+constexpr auto* hack_osi_node = (node*)42;
+
 parse_result<node_ptr> parse_term_arg(parse_state data) {
     // TermArg := Type2Opcode | DataObject | ArgObj | LocalObj
     const uint8_t first = data.peek();
@@ -730,10 +739,18 @@ parse_result<node_ptr> parse_term_arg(parse_state data) {
         // It seems NameSeg is valid here. E.g. ReturnOp 'TMP_'
         // Is this sometimes a method invocation?
         auto name = parse_name_string(data);
-        data.ns().lookup(name.result.begin());
-        //dbgout() << name.result.begin() << "\n";
-        //hexdump(dbgout(), name.data.begin(), name.data.size());
-        return make_parse_result(name.data, make_text_node(name.result));
+        data = name.data;
+        if (auto n = data.ns().lookup(name.result.begin())) {
+            if (n == hack_osi_node) {
+                REQUIRE(data.consume_opcode() == opcode::string_);
+                dbgout () << "\\_OSI hack:" << (char*)data.begin() << "\n";
+                const auto arg_len = static_cast<uint32_t>(string_length((const char*)data.begin()) + 1);
+                data.consume(arg_len);
+            } else {
+                dbgout () << "Know name: " << *n << "\n";
+            }
+        }
+        return make_parse_result(data, make_text_node(name.result));
     } else if (is_data_object(static_cast<opcode>(first))) {
         return parse_data_object(data);
     } else {
@@ -1117,6 +1134,11 @@ parse_result<term_list_node_ptr> parse_term_list(parse_state state)
 void process(array_view<uint8_t> data)
 {
     name_space ns;
+
+    {
+        auto reg = ns.open_scope("\\_OSI");
+        reg.provide(*hack_osi_node); // HACK... See ACPI 6.1: 5.7.2 _OSI (Operating System Interfaces)
+    }
     parse_state state{ns, data};
 #if 1
     dbgout() << *parse_term_list(state).result << "\n";
