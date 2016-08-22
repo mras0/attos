@@ -268,26 +268,27 @@ public:
         }
         ~scope_registration() {
             REQUIRE(node_);
-            ns_.close_scope(name_.begin(), *node_);
+            ns_.close_scope(std::move(old_scope_), *node_);
         }
     private:
         friend name_space;
         name_space& ns_;
-        kstring     name_;
+        kstring     old_scope_;
         node*       node_ = nullptr;
-        explicit scope_registration(name_space& ns, const char* name) : ns_(ns), name_(make_kstring(name)) {}
+        explicit scope_registration(name_space& ns, kstring&& old_scope) : ns_(ns), old_scope_(std::move(old_scope)) {}
     };
 
     scope_registration open_scope(const char* name) {
+        auto old_scope = cur_namespace_;
         //dbgout() << "open_scope " << name << " in " << hack_cur_name() << "\n";
         REQUIRE(name[0] != parent_prefix_char);
         if (name[0] == root_char) {
             ++name;
-            REQUIRE(cur_namespace_.empty());
+            cur_namespace_.clear();
         }
         REQUIRE(string_length(name) % 4 == 0);
         cur_namespace_.insert(cur_namespace_.end(), name, name + string_length(name));
-        return scope_registration{*this, name};
+        return scope_registration{*this, std::move(old_scope)};
     }
 
     node* lookup(const char* name) {
@@ -356,12 +357,11 @@ private:
         return format_str((const char*)cur_namespace_.begin()).max_width((int)cur_namespace_.size());
     }
 
-    void close_scope(const char* scope_name, node& n) {
+    void close_scope(kstring&& old_scope, node& n) {
         auto name = relative(cur_namespace_, "");
-        //dbgout() << "Registered " << name.begin() << " as " << as_hex(&n) << "\n";
+        dbgout() << "Registered " << name.begin() << "\n";
         bindings_.push_back(binding{std::move(name), &n});
-        REQUIRE(cur_namespace_.size() >= string_length(scope_name));
-        cur_namespace_.resize(cur_namespace_.size()-string_length(scope_name));
+        cur_namespace_ = std::move(old_scope);
     }
 };
 using scope_reg = name_space::scope_registration;
