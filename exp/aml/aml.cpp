@@ -383,7 +383,7 @@ private:
 
     void close_scope(kstring&& old_scope, node& n) {
         auto name = relative(cur_namespace_, "");
-        //dbgout() << "Registered " << name.begin() << " as " << n << "\n";
+        dbgout() << "Registered " << name.begin() << " as " << n << "\n";
         bindings_.push_back(binding{std::move(name), &n});
         cur_namespace_ = std::move(old_scope);
     }
@@ -840,6 +840,7 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                 }
                 return make_parse_result(data, make_text_node(name.result));
             }
+            // assume object reference
             return make_parse_result(data, make_text_node(name.result));
         }
         return {data, node_ptr{}};
@@ -1275,19 +1276,33 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
             {
                 // DefIfElse := IfOp PkgLength Predicate TermList DefElse
                 // Predicate := TermArg => Integer
-                auto predicate = parse_term_arg(adjust_with_pkg_length(data));
-                //dbgout() << "DefIfElse predicate = " << *predicate.result << "\n";
-                auto term_list = parse_term_list(predicate.data);
-                data = data.moved_to(term_list.data.begin());
                 // DefElse := Nothing | <ElseOp PkgLength TermList>
+                auto pkg_data  = adjust_with_pkg_length(data);
+                node_ptr predicate;
+                term_list_node_ptr if_statements;
                 term_list_node_ptr else_statements;
+                if (auto predicate_arg = parse_term_arg(pkg_data)) {
+                    predicate = std::move(predicate_arg.result);
+                    if (auto term_list = parse_term_list(predicate_arg.data)) {
+                        if_statements = std::move(term_list.result);
+                    } else {
+                        return make_parse_result(term_list.data, node_ptr{});
+                    }
+                } else {
+                    return predicate_arg;
+                }
+                data = data.moved_to(pkg_data.end());
                 if (data.peek_opcode() == opcode::else_) {
                     data.consume_opcode();
-                    auto else_term_list = parse_term_list(adjust_with_pkg_length(data));
-                    data = data.moved_to(else_term_list.data.begin());
-                    else_statements = std::move(else_term_list.result);
+                    auto else_pkg = adjust_with_pkg_length(data);
+                    if (auto else_term_list = parse_term_list(else_pkg)) {
+                        else_statements = std::move(else_term_list.result);
+                    } else {
+                        return make_parse_result(else_term_list.data, node_ptr{});
+                    }
+                    data = data.moved_to(else_pkg.end());
                 }
-                return make_parse_result(data, knew<if_node>(std::move(predicate.result), std::move(term_list.result), std::move(else_statements)));
+                return make_parse_result(data, knew<if_node>(std::move(predicate), std::move(if_statements), std::move(else_statements)));
             }
         case opcode::while_:
             {
