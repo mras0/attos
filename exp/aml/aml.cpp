@@ -279,14 +279,20 @@ public:
     };
 
     scope_registration open_scope(const char* name) {
-        //dbgout() << "open_scope " << name << "\n";
+        REQUIRE(name[0] != parent_prefix_char);
+        if (name[0] == root_char) {
+            ++name;
+            REQUIRE(cur_namespace_.empty());
+        }
+        //dbgout() << "open_scope " << name << " in " << hack_cur_name() << "\n";
+        REQUIRE(string_length(name) % 4 == 0);
         cur_namespace_.insert(cur_namespace_.end(), name, name + string_length(name));
         return scope_registration{*this, name};
     }
 
     node* lookup(const char* name) {
         if (name[0] == root_char) {
-            if (auto* b = find_binding(name)) {
+            if (auto* b = find_binding(name+1)) {
                 return b->n;
             }
         } else {
@@ -307,7 +313,7 @@ public:
                 }
             }
         }
-        dbgout() << "Lookup of " << name << " failed in " << hack_cur_name() << "\n";
+        dbgout() << "!! Lookup of " << name << " failed in " << hack_cur_name() << "\n";
         return nullptr;
     }
 
@@ -755,12 +761,12 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
         auto name = parse_name_string(data);
         data = name.data;
         if (auto n = data.ns().lookup(name.result.begin())) {
-            dbgout () << "Known name: " << *n << "\n";
+            //dbgout () << "Known name: " << *n << "\n";
             if (auto m = method_cast(*n)) {
-                dbgout() << "Method with " << m->arg_count() << " argument(s)\n";
+                //dbgout() << "Method with " << m->arg_count() << " argument(s)\n";
                 for (int i = 0; i < m->arg_count(); ++i) {
                     auto arg = parse_term_arg(data);
-                    dbgout() << "Arg" << i << ": " << *arg.result << "\n";
+                    //dbgout() << "Arg" << i << ": " << *arg.result << "\n";
                     data = arg.data;
                 }
             }
@@ -883,7 +889,8 @@ parse_result<uint8_t> parse_field_flags(parse_state data) {
 
 class named_field_node : public node {
 public:
-    explicit named_field_node(kstring&& name, uint32_t len) : name_(std::move(name)), len_(len) {
+    explicit named_field_node(scope_reg&& ns_reg, kstring&& name, uint32_t len) : name_(std::move(name)), len_(len) {
+        ns_reg.provide(*this);
     }
 
 private:
@@ -926,7 +933,8 @@ parse_result<node_ptr> parse_named_field(parse_state data)
     name.push_back('\0');
     const auto len = parse_pkg_length(data);
     //dbgout() << "NamedField " << name.begin() << " PkgLen 0x" <<  as_hex(len.result).width(0) << "\n";
-    return make_parse_result(len.data, knew<named_field_node>(std::move(name), len.result));
+    auto scope_reg = data.ns().open_scope(name.begin());
+    return make_parse_result(len.data, knew<named_field_node>(std::move(scope_reg), std::move(name), len.result));
 }
 
 parse_result<field_list_node_ptr> parse_field_list(parse_state data)
@@ -1076,6 +1084,33 @@ private:
     }
 };
 
+class create_field_node : public node {
+public:
+    explicit create_field_node(scope_reg&& ns_reg, opcode type, kstring&& name, node_ptr&& buffer, node_ptr&& index)
+        : type_(type)
+        , name_(std::move(name))
+        , buffer_(std::move(buffer))
+        , index_(std::move(index)) {
+        ns_reg.provide(*this);
+    }
+private:
+    opcode   type_;
+    kstring  name_;
+    node_ptr buffer_;
+    node_ptr index_;
+    virtual void do_print(out_stream& os) const override {
+        // DefCreateBitField   := CreateBitFieldOp SourceBuff BitIndex NameString
+        // DefCreateDWordField := CreateDWordFieldOp SourceBuff ByteIndex NameString
+        // DefCreateWordField  := CreateWordFieldOp SourceBuff ByteIndex NameString
+        const char* text = nullptr;
+        if (type_ == opcode::create_dword_field)     text = "CreateDWordField";
+        else if (type_ == opcode::create_word_field) text = "CreateWordField";
+        else if (type_ == opcode::create_bit_field)  text = "CreateBitField";
+        REQUIRE(text);
+        os << text << " " << name_.begin() << " " << *buffer_ << " " << *index_;
+    }
+};
+
 parse_result<node_ptr> parse_term_obj(parse_state data)
 {
     // TermObj := NameSpaceModifierObject | NamedObj | Type1Opcode | Type2Opcode
@@ -1135,16 +1170,11 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 // BitIndex            := TermArg => Integer
                 // ByteIndex           := TermArg => Integer
 
-                // Hack hack
                 auto source_buffer = parse_term_arg(data);
                 auto byte_index    = parse_term_arg(source_buffer.data); // bit_index for CreateBitField
                 auto name          = parse_name_string(byte_index.data);
-                const char* text = nullptr;
-                if (op == opcode::create_dword_field)     text = "CreateDWordField";
-                else if (op == opcode::create_word_field) text = "CreateWordField";
-                else if (op == opcode::create_bit_field)  text = "CreateBitField";
-                REQUIRE(text);
-                return make_parse_result(name.data, knew<op_node>(text, std::move(source_buffer.result), std::move(byte_index.result), std::move(name.result)));
+                auto scope_reg     = data.ns().open_scope(name.result.begin());
+                return make_parse_result(name.data, knew<create_field_node>(std::move(scope_reg), op, std::move(name.result), std::move(source_buffer.result), std::move(byte_index.result)));
             }
             break;
         case opcode::if_:
@@ -1198,7 +1228,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto bit_index     = parse_term_arg(source_buffer.data);
                 auto num_bits      = parse_term_arg(bit_index.data);
                 auto name          = parse_name_string(num_bits.data);
-                // Even more hackish tan Crete(D)WordField...
+                // Very hackish
                 return make_parse_result(name.data, knew<op_node>("CreateField", std::move(source_buffer.result), std::move(num_bits.result), std::move(name.result)));
             }
         case opcode::op_region:
@@ -1268,7 +1298,14 @@ parse_result<term_list_node_ptr> parse_term_list(parse_state state)
 void process(array_view<uint8_t> data)
 {
     name_space ns;
-    // HACK... See ACPI 6.1: 5.7.2 _OSI (Operating System Interfaces)
+    // See ACPI 6.1: 5.7.2 
+    // \_OS Name of the operating system
+    // \_OSI (Operating System Interfaces)
+    auto os_string  = make_text_node("\\_OS_");
+    {
+        auto reg = ns.open_scope("\\_OS_");
+        reg.provide(*os_string);
+    }
     auto osi_method = node_ptr{knew<method_node>(ns.open_scope("\\_OSI"), make_kstring("\\_OSI"), uint8_t(1), knew<term_list_node>(kvector<node_ptr>())).release()};
     parse_state state{ns, data};
 #if 1
