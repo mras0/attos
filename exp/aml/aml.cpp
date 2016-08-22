@@ -28,8 +28,11 @@ enum class opcode : uint16_t {
     multiply            = 0x77,
     divide              = 0x78,
     shift_left          = 0x79,
+    shift_right         = 0x7a,
     and_                = 0x7b,
     or_                 = 0x7d,
+    not_                = 0x80,
+    find_set_left_bit   = 0x81,
     find_set_right_bit  = 0x82,
     deref_of            = 0x83,
     notify              = 0x86,
@@ -62,6 +65,7 @@ enum class opcode : uint16_t {
     field               = 0x5b81,
     device              = 0x5b82,
     processor           = 0x5b83,
+    index_field         = 0x5b86,
 };
 
 constexpr bool is_extended(opcode op) {
@@ -383,7 +387,7 @@ private:
 
     void close_scope(kstring&& old_scope, node& n) {
         auto name = relative(cur_namespace_, "");
-        dbgout() << "Registered " << name.begin() << " as " << n << "\n";
+        //dbgout() << "Registered " << name.begin() << " as " << n << "\n";
         bindings_.push_back(binding{std::move(name), &n});
         cur_namespace_ = std::move(old_scope);
     }
@@ -651,7 +655,7 @@ parse_result<node_ptr> parse_data_object(parse_state data)
                         pkg_data = data_ref_object.data;
                     }
                 }
-                REQUIRE(num_elements == elements.size());
+                REQUIRE(elements.empty() || num_elements == elements.size()); // Local0 = Package(0x02){} is legal ==> PackageElementList is empty
                 return make_parse_result(data.moved_to(pkg_data.begin()), knew<package_node>(std::move(elements)));
             }
         default:
@@ -803,8 +807,11 @@ constexpr bool is_type2_opcode(opcode op) {
         || op == opcode::multiply
         || op == opcode::divide
         || op == opcode::shift_left
+        || op == opcode::shift_right
         || op == opcode::and_
         || op == opcode::or_
+        || op == opcode::not_
+        || op == opcode::find_set_left_bit
         || op == opcode::find_set_right_bit
         || op == opcode::deref_of
         || op == opcode::size_of
@@ -874,8 +881,11 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
             }
         case opcode::multiply:           return parse_binary_op(data, "multiply");
         case opcode::shift_left:         return parse_binary_op(data, "shiftleft");
+        case opcode::shift_right:        return parse_binary_op(data, "shiftright");
         case opcode::and_:               return parse_binary_op(data, "and");
         case opcode::or_:                return parse_binary_op(data, "or");
+        case opcode::not_:               return parse_unary_op(data, "not");
+        case opcode::find_set_left_bit:  return parse_unary_op(data, "find_set_left_bit");
         case opcode::find_set_right_bit: return parse_unary_op(data, "find_set_right_bit");
         case opcode::deref_of:
             {
@@ -1382,6 +1392,17 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto objs            = parse_object_list(name.data);
                 dbgout() << "Processor " << name.result.begin() << " Id " << as_hex(proc_id) << " Addr " << as_hex(pblk_addr) << " Len " << as_hex(pblk_len) << "\n";
                 return make_parse_result(data.moved_to(objs.data.begin()), make_text_node("Processor"));
+            }
+        case opcode::index_field:
+            {
+                // DefIndexField := IndexFieldOp PkgLength NameString NameString FieldFlags FieldList
+                // DefField := FieldOp PkgLength NameString FieldFlags FieldList
+                auto name        = parse_name_string(adjust_with_pkg_length(data));
+                auto name2       = parse_name_string(name.data);
+                auto field_flags = parse_field_flags(name2.data);
+                //dbgout() << "DefIndexField " << name.result.begin() << " " << name2.result.begin() << " flags " << field_flags.result << "\n";
+                auto field_list  = parse_field_list(field_flags.data);
+                return make_parse_result(data.moved_to(field_list.data.begin()), knew<field_node>(std::move(name.result), field_flags.result, std::move(field_list.result)));
             }
         default:
             dbgout() << "Unhandled opcode " << op << "\n";
