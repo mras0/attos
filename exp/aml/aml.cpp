@@ -42,6 +42,11 @@ enum class opcode : uint8_t {
     ones                = 0xff,
 };
 
+enum class node_kind {
+    normal,
+    method,
+};
+
 class __declspec(novtable) node {
 public:
     virtual ~node() = 0 {}
@@ -51,8 +56,15 @@ public:
         return os;
     }
 
+    node_kind kind() const {
+        return do_kind();
+    }
+
 private:
     virtual void do_print(out_stream& os) const = 0;
+    virtual node_kind do_kind() const {
+        return node_kind::normal;
+    }
 };
 using node_ptr = kowned_ptr<node>;
 using kstring  = kvector<char>;
@@ -244,9 +256,21 @@ public:
                 return b->n;
             }
         } else {
-            const auto rn = relative(name);
-            if (auto* b = find_binding(rn.begin())) {
-                return b->n;
+            // Hack... this isn't how lookup works...
+            auto ns = cur_namespace_;
+            for (; *name == parent_prefix_char; ++name) {
+                REQUIRE(parent_scope(ns));
+            }
+            REQUIRE(name[0]);
+            for (;;) {
+                const auto rn = relative(ns, name);
+                dbgout() << "Trying " << rn.begin() << "\n";
+                if (auto* b = find_binding(rn.begin())) {
+                    return b->n;
+                }
+                if (!parent_scope(ns)) {
+                    break;
+                }
             }
         }
         dbgout() << "Lookup of " << name << " failed in " << hack_cur_name() << "\n";
@@ -271,8 +295,19 @@ private:
         return nullptr;
     }
 
-    kstring relative(const char* path) {
-        kstring name{cur_namespace_};
+    static bool parent_scope(kstring& ns) { // ns should not be nul-terminated
+        if (ns.size() < 4) {
+            return false;
+        }
+        ns.pop_back();
+        ns.pop_back();
+        ns.pop_back();
+        ns.pop_back();
+        return true;
+    }
+
+    static kstring relative(const kstring& ns, const char* path) { // ns should not be nul-terminated
+        kstring name{ns};
         name.insert(name.end(), path, path + string_length(path) + 1);
         return name;
     }
@@ -282,7 +317,7 @@ private:
     }
 
     void close_scope(const char* scope_name, node& n) {
-        auto name = relative("");
+        auto name = relative(cur_namespace_, "");
         dbgout() << "Registered " << name.begin() << " as " << as_hex(&n) << "\n";
         bindings_.push_back(binding{std::move(name), &n});
         REQUIRE(cur_namespace_.size() >= string_length(scope_name));
@@ -457,6 +492,7 @@ constexpr bool is_data_object(opcode op) {
         || op == opcode::byte
         || op == opcode::word
         || op == opcode::dword
+        || op == opcode::string_
         || op == opcode::qword
         || op == opcode::buffer
         || op == opcode::package;
@@ -510,6 +546,12 @@ parse_result<node_ptr> parse_data_object(parse_state data)
                 q |= static_cast<uint64_t>(data.consume()) << 48;
                 q |= static_cast<uint64_t>(data.consume()) << 56;
                 return make_parse_result(data, make_const_node(q));
+            }
+        case opcode::string_:
+            {
+                const char* text = reinterpret_cast<const char*>(data.begin());
+                data.consume(static_cast<uint32_t>(string_length(text) + 1));
+                return make_parse_result(data, make_text_node(text));
             }
         case opcode::buffer:
             {
@@ -605,6 +647,42 @@ private:
         if (target_) os << " -> " << *target_;
     }
 };
+
+class method_node : public node {
+public:
+    explicit method_node(scope_reg&& ns_reg, kstring&& name, uint8_t flags, term_list_node_ptr&& statements) : name_(std::move(name)), flags_(flags), statements_(std::move(statements)) {
+        ns_reg.provide(*this);
+    }
+    /* MethodFlags := ByteData // bit 0-2: ArgCount (0-7)
+     *                         // bit 3: SerializeFlag
+     *                         // 0 NotSerialized
+     *                         // 1 Serialized
+     *                         // bit 4-7: SyncLevel (0x00-0x0f)
+     */
+    uint8_t arg_count() const { return flags_ & 0x07; }
+    bool    serialized() const { return !!(flags_ & 0x08); }
+    uint8_t sync_level() const { return flags_>>4; }
+
+private:
+    kstring            name_;
+    uint8_t            flags_;
+    term_list_node_ptr statements_;
+    virtual void do_print(out_stream& os) const override {
+        os << "Method " << name_.begin() << " Flags " << as_hex(flags_) << " " << *statements_;
+    }
+
+    virtual node_kind do_kind() const {
+        return node_kind::method;
+    }
+};
+
+method_node* method_cast(node& n) {
+    if (n.kind() == node_kind::method) {
+        return static_cast<method_node*>(&n);
+    }
+    return nullptr;
+}
+
 
 parse_result<node_ptr> parse_unary_op(parse_state data, const char* name) {
     auto arg    = parse_term_arg(data);
@@ -726,8 +804,6 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
     REQUIRE(false);
 }
 
-constexpr auto* hack_osi_node = (node*)42;
-
 parse_result<node_ptr> parse_term_arg(parse_state data) {
     // TermArg := Type2Opcode | DataObject | ArgObj | LocalObj
     const uint8_t first = data.peek();
@@ -741,13 +817,14 @@ parse_result<node_ptr> parse_term_arg(parse_state data) {
         auto name = parse_name_string(data);
         data = name.data;
         if (auto n = data.ns().lookup(name.result.begin())) {
-            if (n == hack_osi_node) {
-                REQUIRE(data.consume_opcode() == opcode::string_);
-                dbgout () << "\\_OSI hack:" << (char*)data.begin() << "\n";
-                const auto arg_len = static_cast<uint32_t>(string_length((const char*)data.begin()) + 1);
-                data.consume(arg_len);
-            } else {
-                dbgout () << "Know name: " << *n << "\n";
+            dbgout () << "Known name: " << *n << "\n";
+            if (auto m = method_cast(*n)) {
+                dbgout() << "Method with " << m->arg_count() << " argument(s)\n";
+                for (int i = 0; i < m->arg_count(); ++i) {
+                    auto arg = parse_term_arg(data);
+                    dbgout() << "Arg" << i << ": " << *arg.result << "\n";
+                    data = arg.data;
+                }
             }
         }
         return make_parse_result(data, make_text_node(name.result));
@@ -851,7 +928,7 @@ parse_result<obj_list_node_ptr> parse_object_list(parse_state data);
 
 class device_node : public node {
 public:
-    explicit device_node(scope_reg& ns_reg, kstring&& name, obj_list_node_ptr&& objs) : name_(std::move(name)), objs_(std::move(objs)) {
+    explicit device_node(scope_reg&& ns_reg, kstring&& name, obj_list_node_ptr&& objs) : name_(std::move(name)), objs_(std::move(objs)) {
         ns_reg.provide(*this);
     }
 
@@ -921,7 +998,7 @@ parse_result<node_ptr> parse_ext_prefix(parse_state data)
                 auto object_list = parse_object_list(name.data);
                 //dbgout() << "DefDevice " << name.result.begin() << "\n";
                 //return make_parse_result(parse_state(object_list.data.begin(), data.end()), knew<dummy_node>("device"));
-                return make_parse_result(data.moved_to(object_list.data.begin()), knew<device_node>(scope_reg, std::move(name.result), std::move(object_list.result)));
+                return make_parse_result(data.moved_to(object_list.data.begin()), knew<device_node>(std::move(scope_reg), std::move(name.result), std::move(object_list.result)));
             }
         default:
             dbgout() << "Unhandled ext opcode 0x5b 0x" << as_hex(static_cast<uint8_t>(ext)) << "\n";
@@ -937,7 +1014,7 @@ parse_result<node_ptr> parse_data_ref_object(parse_state data)
 
 class name_node : public node {
 public:
-    explicit name_node(scope_reg& ns_reg, kstring&& name, node_ptr&& obj) : name_(std::move(name)), obj_(std::move(obj)) {
+    explicit name_node(scope_reg&& ns_reg, kstring&& name, node_ptr&& obj) : name_(std::move(name)), obj_(std::move(obj)) {
         ns_reg.provide(*this);
     }
 
@@ -953,24 +1030,9 @@ private:
     }
 };
 
-
-class method_node : public node {
-public:
-    explicit method_node(kstring&& name, uint8_t flags, term_list_node_ptr&& statements) : name_(std::move(name)), flags_(flags), statements_(std::move(statements)) {
-    }
-
-private:
-    kstring            name_;
-    uint8_t            flags_;
-    term_list_node_ptr statements_;
-    virtual void do_print(out_stream& os) const override {
-        os << "Method " << name_.begin() << " Flags " << as_hex(flags_) << " " << *statements_;
-    }
-};
-
 class scope_node : public node {
 public:
-    explicit scope_node(scope_reg& ns_reg, kstring&& name, term_list_node_ptr&& statements) : name_(std::move(name)), statements_(std::move(statements)) {
+    explicit scope_node(scope_reg&& ns_reg, kstring&& name, term_list_node_ptr&& statements) : name_(std::move(name)), statements_(std::move(statements)) {
         ns_reg.provide(*this);
     }
 
@@ -1019,7 +1081,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto scope_reg       = data.ns().open_scope(name.result.begin());
                 auto data_ref_object = parse_data_ref_object(name.data);
                 //dbgout() << "DefName " << name.result.begin() << " " << *data_ref_object.result << "\n";
-                return make_parse_result(data_ref_object.data, knew<name_node>(scope_reg, std::move(name.result), std::move(data_ref_object.result)));
+                return make_parse_result(data_ref_object.data, knew<name_node>(std::move(scope_reg), std::move(name.result), std::move(data_ref_object.result)));
             }
         case opcode::scope:
             {
@@ -1028,19 +1090,19 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto scope_reg = data.ns().open_scope(name.result.begin());
                 auto term_list = parse_term_list(name.data);
                 //dbgout() << "DefScope " << name.result.begin() << "\n";
-                return make_parse_result(data.moved_to(term_list.data.begin()), knew<scope_node>(scope_reg, std::move(name.result), std::move(term_list.result)));
+                return make_parse_result(data.moved_to(term_list.data.begin()), knew<scope_node>(std::move(scope_reg), std::move(name.result), std::move(term_list.result)));
             }
         case opcode::method:
             {
                 // DefMethod := MethodOp PkgLength NameString MethodFlags TermList
                 auto pkg_data = adjust_with_pkg_length(data);
                 auto name = parse_name_string(pkg_data);
+                auto scope_reg = data.ns().open_scope(name.result.begin());
                 pkg_data = name.data;
                 uint8_t method_flags = pkg_data.consume();
                 auto term_list = parse_term_list(pkg_data);
                 //dbgout() << "DefMethod " << name.result.begin() << " Flags " << as_hex(method_flags) << "\n";
-                return make_parse_result(data.moved_to(term_list.data.begin()), knew<method_node>(std::move(name.result), method_flags, std::move(term_list.result)));
-                //return make_parse_result(parse_state(term_list.data.begin(), data.end()), knew<dummy_node>("method"));
+                return make_parse_result(data.moved_to(term_list.data.begin()), knew<method_node>(std::move(scope_reg), std::move(name.result), method_flags, std::move(term_list.result)));
             }
         case opcode::ext_prefix:
                 return parse_ext_prefix(data);
@@ -1100,6 +1162,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
             }
         default:
             dbgout() << "Unhandled opcode 0x" << as_hex(static_cast<uint8_t>(op)) << "\n";
+            hexdump(dbgout(), data.begin()-1, std::min(32ULL, data.size()));
             REQUIRE(false);
     }
 }
@@ -1134,11 +1197,8 @@ parse_result<term_list_node_ptr> parse_term_list(parse_state state)
 void process(array_view<uint8_t> data)
 {
     name_space ns;
-
-    {
-        auto reg = ns.open_scope("\\_OSI");
-        reg.provide(*hack_osi_node); // HACK... See ACPI 6.1: 5.7.2 _OSI (Operating System Interfaces)
-    }
+    // HACK... See ACPI 6.1: 5.7.2 _OSI (Operating System Interfaces)
+    auto osi_method = node_ptr{knew<method_node>(ns.open_scope("\\_OSI"), make_kstring("\\_OSI"), uint8_t(1), knew<term_list_node>(kvector<node_ptr>())).release()};
     parse_state state{ns, data};
 #if 1
     dbgout() << *parse_term_list(state).result << "\n";
