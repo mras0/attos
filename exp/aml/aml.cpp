@@ -43,12 +43,14 @@ enum class opcode : uint16_t {
     create_byte_field   = 0x8c,
     create_bit_field    = 0x8d,
     object_type         = 0x8e,
+    create_qword_field  = 0x8f,
     land                = 0x90,
     lor                 = 0x91,
     lnot                = 0x92,
     lequal              = 0x93,
     lgreater            = 0x94,
     lless               = 0x95,
+    mid                 = 0x9e,
     if_                 = 0xa0,
     else_               = 0xa1,
     while_              = 0xa2,
@@ -675,41 +677,56 @@ parse_result<node_ptr> parse_target(parse_state data) {
     }
 }
 
-class unary_op_node : public node {
+template<int arity>
+class op_node_base : public node {
 public:
-    explicit unary_op_node(const char* name, node_ptr&& arg0) : name_(make_kstring(name)), arg0_(std::move(arg0)) {
+    template<typename... Args>
+    explicit op_node_base(const char* name, Args&&... args) : name_(make_kstring(name)), args_{std::move(args)...} {
+        static_assert(sizeof...(Args) == arity || sizeof...(Args) == arity + 1, "");
     }
-    explicit unary_op_node(const char* name, node_ptr&& arg0, node_ptr&& target) : name_(make_kstring(name)), arg0_(std::move(arg0)), target_(std::move(target)) {
+    // public for knew.. because lazy
+    explicit op_node_base(const char* name, node_ptr (&args)[arity+1]) : name_(make_kstring(name)) {
+        for (int i = 0; i < arity+1; ++i) {
+            args_[i] = std::move(args[i]);
+        }
     }
+
+
+    static parse_result<node_ptr> parse(parse_state state, const char* name, bool target) {
+        node_ptr args_[arity+1];
+        for (int i = 0; i < arity; ++i) {
+           if (auto arg = parse_term_arg(state)) {
+               args_[i] = std::move(arg.result);
+               state = arg.data;
+           } else {
+               return arg;
+           }
+        }
+        if (target) {
+            auto tgt = parse_target(state);
+            args_[arity] = std::move(tgt.result);
+            state = tgt.data;
+        }
+        return make_parse_result(state, knew<op_node_base>(name, args_));
+    }
+
 private:
     kstring  name_;
-    node_ptr arg0_;
-    node_ptr target_;
+    node_ptr args_[arity+1]; // last is target (could be null)
 
     virtual void do_print(out_stream& os) const override {
-        os << name_.begin() << " " << *arg0_;
-        if (target_) os << " -> " << *target_;
+        os << name_.begin();
+        for (int i = 0; i < arity; ++i) {
+            os << " " << *args_[i];
+        }
+        if (args_[arity]) {
+            os << " " << *args_[arity];
+        }
     }
 };
 
-class binary_op_node : public node {
-public:
-    explicit binary_op_node(const char* name, node_ptr&& arg0, node_ptr&& arg1) : name_(make_kstring(name)), arg0_(std::move(arg0)), arg1_(std::move(arg1)) {
-    }
-    explicit binary_op_node(const char* name, node_ptr&& arg0, node_ptr&& arg1, node_ptr&& target) : name_(make_kstring(name)), arg0_(std::move(arg0)), arg1_(std::move(arg1)), target_(std::move(target)) {
-    }
-private:
-    kstring  name_;
-    node_ptr arg0_;
-    node_ptr arg1_;
-    node_ptr target_;
-
-    virtual void do_print(out_stream& os) const override {
-        os << name_.begin() << " " << *arg0_;
-        if (arg1_) os << " " << *arg1_;
-        if (target_) os << " -> " << *target_;
-    }
-};
+using unary_op_node = op_node_base<1>;
+using binary_op_node = op_node_base<2>;
 
 class method_node : public node {
 public:
@@ -748,39 +765,19 @@ method_node* method_cast(node& n) {
 
 
 parse_result<node_ptr> parse_unary_op(parse_state data, const char* name) {
-    auto arg    = parse_term_arg(data);
-    if (!arg) return arg;
-    auto target = parse_target(arg.data);
-    //dbgout() << name << " " << *arg.result << " -> " << target.result.begin() << "\n";
-    return make_parse_result(target.data, knew<unary_op_node>(name, std::move(arg.result), std::move(target.result)));
+    return unary_op_node::parse(data, name, true);
 }
 
 parse_result<node_ptr> parse_unary_op_no_target(parse_state data, const char* name) {
-    auto arg = parse_super_name(data);
-    //dbgout() << name << " " << arg.result.begin() << "\n";
-    return make_parse_result(arg.data, knew<unary_op_node>(name, std::move(arg.result)));
+    return unary_op_node::parse(data, name, false);
 }
 
 parse_result<node_ptr> parse_binary_op(parse_state data, const char* name) {
-    // DefAnd := AndOp Operand Operand Target
-    // Operand := TermArg => Integer
-    // Target := SuperName | NullName
-    auto arg0   = parse_term_arg(data);
-    if (!arg0) return arg0;
-    auto arg1   = parse_term_arg(arg0.data);
-    if (!arg1) return arg1;
-    auto target = parse_target(arg1.data);
-    //dbgout() << name << " " << *arg0.result << ", " << *arg1.result << " -> " << target.result.begin() << "\n";
-    return make_parse_result(target.data, knew<binary_op_node>(name, std::move(arg0.result), std::move(arg1.result), std::move(target.result)));
+    return binary_op_node::parse(data, name, true);
 }
 
 parse_result<node_ptr> parse_logical_op(parse_state data, const char* name) {
-    auto arg0   = parse_term_arg(data);
-    if (!arg0) return arg0;
-    auto arg1   = parse_term_arg(arg0.data);
-    if (!arg1) return arg1;
-    //dbgout() << name << " " << *arg0.result << ", " << *arg1.result << "\n";
-    return make_parse_result(arg1.data, knew<binary_op_node>(name, std::move(arg0.result), std::move(arg1.result)));
+    return binary_op_node::parse(data, name, false);
 }
 
 parse_result<node_ptr> parse_index(parse_state data)
@@ -823,6 +820,7 @@ constexpr bool is_type2_opcode(opcode op) {
         || op == opcode::lequal
         || op == opcode::lgreater
         || op == opcode::lless
+        || op == opcode::mid
         || op == opcode::cond_ref_of
         || op == opcode::acquire
         || op == opcode::release
@@ -920,6 +918,12 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
         case opcode::lequal:             return parse_logical_op(data, "lequal");
         case opcode::lgreater:           return parse_logical_op(data, "lgreater");
         case opcode::lless:              return parse_logical_op(data, "lless");
+        case opcode::mid:
+            {
+                // DefMid := MidOp MidObj TermArg TermArg Target
+                // MidObj := TermArg => Buffer | String
+                return op_node_base<3>::parse(data, "mid", true);
+            }
         case opcode::cond_ref_of:
             {
                 // DefCondRefOf := CondRefOfOp SuperName Target
@@ -1154,6 +1158,21 @@ private:
     }
 };
 
+class while_node : public node {
+public:
+    explicit while_node(node_ptr&& predicate, term_list_node_ptr&& statements)
+        : predicate_(std::move(predicate))
+        , statements_(std::move(statements)) {
+    }
+
+private:
+    node_ptr           predicate_;
+    term_list_node_ptr statements_;
+    virtual void do_print(out_stream& os) const override {
+        os << "While (" << *predicate_ << ") { " << *statements_ << "}";
+    }
+};
+
 class mutex_node : public node {
 public:
     explicit mutex_node(kstring&& name, uint8_t flags) : name_(std::move(name)), flags_(flags) {
@@ -1185,12 +1204,14 @@ private:
     virtual void do_print(out_stream& os) const override {
         // DefCreateBitField   := CreateBitFieldOp SourceBuff BitIndex NameString
         // DefCreateDWordField := CreateDWordFieldOp SourceBuff ByteIndex NameString
+        // DefCreateQWordField := CreateQWordFieldOp SourceBuff ByteIndex NameString
         // DefCreateWordField  := CreateWordFieldOp SourceBuff ByteIndex NameString
         const char* text = nullptr;
-        if (type_ == opcode::create_dword_field)     text = "CreateDWordField";
-        else if (type_ == opcode::create_word_field) text = "CreateWordField";
-        else if (type_ == opcode::create_byte_field) text = "CreateWordField";
-        else if (type_ == opcode::create_bit_field)  text = "CreateBitField";
+        if (type_ == opcode::create_dword_field)      text = "CreateDWordField";
+        else if (type_ == opcode::create_word_field)  text = "CreateWordField";
+        else if (type_ == opcode::create_byte_field)  text = "CreateByteField";
+        else if (type_ == opcode::create_bit_field)   text = "CreateBitField";
+        else if (type_ == opcode::create_qword_field) text = "CreateQWordField";
         REQUIRE(text);
         os << text << " " << name_.begin() << " " << *buffer_ << " " << *index_;
     }
@@ -1266,10 +1287,12 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
         case opcode::create_word_field:
         case opcode::create_byte_field:
         case opcode::create_bit_field:
+        case opcode::create_qword_field:
             {
                 // DefCreateBitField   := CreateBitFieldOp SourceBuff BitIndex NameString
                 // DefCreateByteField  := CreateByteFieldOp SourceBuff ByteIndex NameString
                 // DefCreateDWordField := CreateDWordFieldOp SourceBuff ByteIndex NameString
+                // DefCreateQWordField := CreateQWordFieldOp SourceBuff ByteIndex NameString
                 // DefCreateWordField  := CreateWordFieldOp SourceBuff ByteIndex NameString
                 // SourceBuff          := TermArg => Buffer
                 // BitIndex            := TermArg => Integer
@@ -1317,10 +1340,16 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
         case opcode::while_:
             {
                 // DefWhile := WhileOp PkgLength Predicate TermList
-                const auto predicate = parse_term_arg(adjust_with_pkg_length(data));
-                dbgout() << "DefWhile predicate = " << *predicate.result << "\n";
-                const auto term_list = parse_term_list(predicate.data);
-                return make_parse_result(data.moved_to(term_list.data.begin()), knew<dummy_node>("while"));
+                auto pkg_data  = adjust_with_pkg_length(data);
+                if (auto predicate = parse_term_arg(pkg_data)) {
+                    if (auto statements = parse_term_list(predicate.data)) {
+                        return make_parse_result(data.moved_to(pkg_data.end()), knew<while_node>(std::move(predicate.result), std::move(statements.result)));
+                    } else {
+                        return make_parse_result(statements.data, node_ptr{});
+                    }
+                } else {
+                    return predicate;
+                }
             }
         case opcode::return_:
             {
