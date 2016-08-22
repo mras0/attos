@@ -22,6 +22,7 @@ enum class opcode : uint16_t {
     ext_prefix          = 0x5b, // '[' ByteData follows specifying the extended opcode
     store               = 0x70,
     add                 = 0x72,
+    subtract            = 0x74,
     decrement           = 0x76,
     shift_left          = 0x79,
     and_                = 0x7b,
@@ -30,8 +31,10 @@ enum class opcode : uint16_t {
     deref_of            = 0x83,
     size_of             = 0x87,
     index               = 0x88,
+    create_dword_field  = 0x8a,
     create_word_field   = 0x8b,
-    not_                = 0x92,
+    create_bit_field    = 0x8d,
+    lnot                = 0x92,
     lequal              = 0x93,
     lgreater            = 0x94,
     lless               = 0x95,
@@ -42,7 +45,9 @@ enum class opcode : uint16_t {
     ones                = 0xff,
 
     // Extended opcodes
+    mutex_              = 0x5b01,
     cond_ref_of         = 0x5b12,
+    create_field        = 0x5b13,
     op_region           = 0x5b80,
     field               = 0x5b81,
     device              = 0x5b82,
@@ -287,7 +292,7 @@ public:
             REQUIRE(name[0]);
             for (;;) {
                 const auto rn = relative(ns, name);
-                dbgout() << "Trying " << rn.begin() << "\n";
+                //dbgout() << "Trying " << rn.begin() << "\n";
                 if (auto* b = find_binding(rn.begin())) {
                     return b->n;
                 }
@@ -721,6 +726,7 @@ parse_result<node_ptr> parse_logical_op(parse_state data, const char* name) {
 constexpr bool is_type2_opcode(opcode op) {
     return op == opcode::decrement
         || op == opcode::add
+        || op == opcode::subtract
         || op == opcode::shift_left
         || op == opcode::and_
         || op == opcode::or_
@@ -728,7 +734,7 @@ constexpr bool is_type2_opcode(opcode op) {
         || op == opcode::deref_of
         || op == opcode::size_of
         || op == opcode::index
-        || op == opcode::not_
+        || op == opcode::lnot
         || op == opcode::lequal
         || op == opcode::lgreater
         || op == opcode::lless
@@ -744,6 +750,8 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
     switch (op) {
         case opcode::add:
             return parse_binary_op(data, "add");
+        case opcode::subtract:
+            return parse_binary_op(data, "subtract");
         case opcode::decrement:
             // DefDecrement := DecrementOp SuperName
             return parse_unary_op_no_target(data, "decrement");
@@ -772,7 +780,7 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                 // IndexValue := TermArg => Integer
                 return parse_binary_op(data, "index");
             }
-        case opcode::not_:
+        case opcode::lnot:
             {
                 // XXX: Should this be handled like extended opcodes (0x5bXY)?
                 const auto next = data.peek_opcode();
@@ -786,7 +794,8 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                     data.consume();
                     return parse_logical_op(data, "lnotless");
                 }
-                return parse_unary_op(data, "not");
+                auto arg = parse_term_arg(data);
+                return make_parse_result(arg.data, knew<op_node>("lot", std::move(arg.result)));
             }
         case opcode::lequal:
             return parse_logical_op(data, "lequal");
@@ -916,6 +925,11 @@ parse_result<field_list_node_ptr> parse_field_list(parse_state data)
             //dbgout() << "ReservedField " << " PkgLen 0x" <<  as_hex(len.result).width(0) << "\n";
             elements.push_back(make_text_node("ReservedField"));
             data = len.data;
+        } else if (first == 1) {
+            data.consume();
+            const uint8_t access_type   = data.consume();
+            const uint8_t access_attrib = data.consume();
+            elements.push_back(make_text_node("AccessField"));
         } else if (is_lead_name_char(first)) {
             auto named_field = parse_named_field(data);
             elements.push_back(std::move(named_field.result));
@@ -1026,6 +1040,20 @@ private:
     }
 };
 
+class mutex_node : public node {
+public:
+    explicit mutex_node(kstring&& name, uint8_t flags) : name_(std::move(name)), flags_(flags) {
+        REQUIRE((flags & 0xf0) == 0x00);
+    }
+
+private:
+    kstring name_;
+    uint8_t flags_;
+    virtual void do_print(out_stream& os) const override {
+        os << "Mutex " << name_.begin() << " SyncLevel " << as_hex(flags_).width(1);
+    }
+};
+
 parse_result<node_ptr> parse_term_obj(parse_state data)
 {
     // TermObj := NameSpaceModifierObject | NamedObj | Type1Opcode | Type2Opcode
@@ -1074,16 +1102,27 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 //dbgout() << "Store " << *arg.result << " -> " << name.result.begin() << "\n";
                 return make_parse_result(name.data, knew<op_node>("store", std::move(arg.result), std::move(name.result)));
             }
+        case opcode::create_dword_field:
         case opcode::create_word_field:
+        case opcode::create_bit_field:
             {
-                // DefCreateWordField := CreateWordFieldOp SourceBuff ByteIndex NameString
-                // SourceBuff := TermArg => Buffer
-                // ByteIndex := TermArg => Integer
+                // DefCreateBitField   := CreateBitFieldOp SourceBuff BitIndex NameString
+                // DefCreateDWordField := CreateDWordFieldOp SourceBuff ByteIndex NameString
+                // DefCreateWordField  := CreateWordFieldOp SourceBuff ByteIndex NameString
+                // SourceBuff          := TermArg => Buffer
+                // BitIndex            := TermArg => Integer
+                // ByteIndex           := TermArg => Integer
+
+                // Hack hack
                 auto source_buffer = parse_term_arg(data);
-                auto byte_index    = parse_term_arg(source_buffer.data);
+                auto byte_index    = parse_term_arg(source_buffer.data); // bit_index for CreateBitField
                 auto name          = parse_name_string(byte_index.data);
-                //dbgout() << "DefCreateWordField " << *source_buffer.result << " Index " << *byte_index.result << " Name " << name.result.begin() << "\n";
-                return make_parse_result(name.data, knew<op_node>("CreateWordField", std::move(source_buffer.result), std::move(byte_index.result), std::move(name.result)));
+                const char* text = nullptr;
+                if (op == opcode::create_dword_field)     text = "CreateDWordField";
+                else if (op == opcode::create_word_field) text = "CreateWordField";
+                else if (op == opcode::create_bit_field)  text = "CreateBitField";
+                REQUIRE(text);
+                return make_parse_result(name.data, knew<op_node>(text, std::move(source_buffer.result), std::move(byte_index.result), std::move(name.result)));
             }
             break;
         case opcode::if_:
@@ -1120,6 +1159,26 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 //dbgout() << "Return " << *arg.result << "\n";
                 return make_parse_result(arg.data, knew<op_node>("return", std::move(arg.result)));
             }
+        case opcode::mutex_:
+            {
+                // DefMutex := MutexOp NameString SyncFlags
+                // SyncFlags := ByteData // bit 0-3: SyncLevel (0x00-0x0f), bit 4-7: Reserved (must be 0)
+                auto name  = parse_name_string(data);
+                auto flags = name.data.consume();
+                return make_parse_result(name.data, knew<mutex_node>(std::move(name.result), flags));
+            }
+        case opcode::create_field:
+            {
+                // DefCreateField := CreateFieldOp SourceBuff BitIndex NumBits NameString
+                // BitIndex := TermArg => Integer
+                // NumBits := TermArg => Integer
+                auto source_buffer = parse_term_arg(data);
+                auto bit_index     = parse_term_arg(source_buffer.data);
+                auto num_bits      = parse_term_arg(bit_index.data);
+                auto name          = parse_name_string(num_bits.data);
+                // Even more hackish tan Crete(D)WordField...
+                return make_parse_result(name.data, knew<op_node>("CreateField", std::move(source_buffer.result), std::move(num_bits.result), std::move(name.result)));
+            }
         case opcode::op_region:
             {
                 // DefOpRegion := OpRegionOp NameString RegionSpace(byte) RegionOffset(term=>int) RegionLen(term=>int)
@@ -1152,7 +1211,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
             }
         default:
             dbgout() << "Unhandled opcode " << op << "\n";
-            hexdump(dbgout(), data.begin()-1, std::min(32ULL, data.size()));
+            hexdump(dbgout(), data.begin()-(is_extended(op)?2:1), std::min(32ULL, data.size()));
             REQUIRE(false);
     }
 }
