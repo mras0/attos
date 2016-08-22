@@ -58,6 +58,7 @@ enum class opcode : uint16_t {
     op_region           = 0x5b80,
     field               = 0x5b81,
     device              = 0x5b82,
+    processor           = 0x5b83,
 };
 
 constexpr bool is_extended(opcode op) {
@@ -220,6 +221,14 @@ public:
 
     uint16_t consume_word() {
         return *reinterpret_cast<const uint16_t*>(consume(2).begin());
+    }
+
+    uint32_t consume_dword() {
+        return *reinterpret_cast<const uint32_t*>(consume(4).begin());
+    }
+
+    uint64_t consume_qword() {
+        return *reinterpret_cast<const uint64_t*>(consume(8).begin());
     }
 
     opcode consume_opcode() {
@@ -591,28 +600,18 @@ parse_result<node_ptr> parse_data_object(parse_state data)
         // WordConst
         case opcode::word:
             {
-                uint16_t w = data.consume_word();
+                const uint16_t w = data.consume_word();
                 return make_parse_result(data, make_const_node(w));
             }
         // DwordConst
         case opcode::dword:
             {
-                uint32_t d = data.consume();
-                d |= static_cast<uint32_t>(data.consume()) << 8;
-                d |= static_cast<uint32_t>(data.consume()) << 16;
-                d |= static_cast<uint32_t>(data.consume()) << 24;
+                const uint32_t d = data.consume_dword();
                 return make_parse_result(data, make_const_node(d));
             }
         case opcode::qword:
             {
-                uint64_t q = data.consume();
-                q |= static_cast<uint64_t>(data.consume()) << 8;
-                q |= static_cast<uint64_t>(data.consume()) << 16;
-                q |= static_cast<uint64_t>(data.consume()) << 24;
-                q |= static_cast<uint64_t>(data.consume()) << 32;
-                q |= static_cast<uint64_t>(data.consume()) << 40;
-                q |= static_cast<uint64_t>(data.consume()) << 48;
-                q |= static_cast<uint64_t>(data.consume()) << 56;
+                const uint64_t q = data.consume_qword();
                 return make_parse_result(data, make_const_node(q));
             }
         case opcode::string_:
@@ -1332,6 +1331,18 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 //dbgout() << "DefDevice " << name.result.begin() << "\n";
                 //return make_parse_result(parse_state(object_list.data.begin(), data.end()), knew<dummy_node>("device"));
                 return make_parse_result(data.moved_to(object_list.data.begin()), knew<device_node>(std::move(scope_reg), std::move(name.result), std::move(object_list.result)));
+            }
+        case opcode::processor:
+            {
+                // DefProcessor := ProcessorOp PkgLength NameString ProcID (:= ByteData) PblkAddr (:= DWordData) PblkLen (:= ByteData) ObjectList
+                auto pkg_data        = adjust_with_pkg_length(data);
+                auto name            = parse_name_string(pkg_data);
+                const auto proc_id   = name.data.consume();
+                const auto pblk_addr = name.data.consume_dword();
+                const auto pblk_len  = name.data.consume();
+                auto objs            = parse_object_list(name.data);
+                dbgout() << "Processor " << name.result.begin() << " Id " << as_hex(proc_id) << " Addr " << as_hex(pblk_addr) << " Len " << as_hex(pblk_len) << "\n";
+                return make_parse_result(data.moved_to(objs.data.begin()), make_text_node("Processor"));
             }
         default:
             dbgout() << "Unhandled opcode " << op << "\n";
