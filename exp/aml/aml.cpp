@@ -6,7 +6,7 @@
 
 namespace attos { namespace aml {
 
-enum class opcode : uint8_t {
+enum class opcode : uint16_t {
     zero                = 0x00,
     one                 = 0x01,
     name                = 0x08,
@@ -40,7 +40,21 @@ enum class opcode : uint8_t {
     while_              = 0xa2,
     return_             = 0xa4,
     ones                = 0xff,
+
+    // Extended opcodes
+    cond_ref_of         = 0x5b12,
+    op_region           = 0x5b80,
+    field               = 0x5b81,
+    device              = 0x5b82,
 };
+
+constexpr bool is_extended(opcode op) {
+    return static_cast<unsigned>(op) > 0xff;
+}
+
+out_stream& operator<<(out_stream& os, opcode op) {
+    return os << as_hex(static_cast<unsigned>(op)).width(is_extended(op) ? 4 : 2);
+}
 
 enum class node_kind {
     normal,
@@ -174,7 +188,11 @@ public:
     }
 
     opcode peek_opcode() const {
-        return static_cast<opcode>(peek());
+        const uint8_t first_byte = peek();
+        if (static_cast<opcode>(first_byte) == opcode::ext_prefix) {
+            return static_cast<opcode>((first_byte << 8) | data_[1]);
+        }
+        return static_cast<opcode>(first_byte);
     }
 
     array_view<uint8_t> consume(uint32_t size) {
@@ -189,7 +207,12 @@ public:
     }
 
     opcode consume_opcode() {
-        return static_cast<opcode>(consume());
+        const auto op = peek_opcode();
+        consume();
+        if (is_extended(op)) {
+            consume();
+        }
+        return op;
     }
 
     parse_state moved_to(const uint8_t* new_begin) const {
@@ -590,29 +613,9 @@ parse_result<node_ptr> parse_data_object(parse_state data)
             }
         default:
             hexdump(dbgout(), data.begin()-2, std::min(data.size()+2, 64ULL));
-            dbgout() << "Unhandled opcode 0x" << as_hex(static_cast<uint8_t>(op)) << "\n";
+            dbgout() << "Unhandled opcode " << op << "\n";
             REQUIRE(false);
     }
-}
-
-constexpr bool is_type2_opcode(opcode op) {
-    return op == opcode::decrement
-        || op == opcode::add
-        || op == opcode::shift_left
-        || op == opcode::and_
-        || op == opcode::or_
-        || op == opcode::find_set_right_bit
-        || op == opcode::deref_of
-        || op == opcode::size_of
-        || op == opcode::index
-        || op == opcode::not_
-        || op == opcode::lequal
-        || op == opcode::lgreater
-        || op == opcode::lless;
-}
-
-constexpr bool is_type2_ext_opcode(uint8_t ext) {
-    return ext == 0x12;
 }
 
 parse_result<kstring> parse_target(parse_state data) {
@@ -715,35 +718,30 @@ parse_result<node_ptr> parse_logical_op(parse_state data, const char* name) {
     return make_parse_result(arg1.data, knew<op_node>(name, std::move(arg0.result), std::move(arg1.result)));
 }
 
+constexpr bool is_type2_opcode(opcode op) {
+    return op == opcode::decrement
+        || op == opcode::add
+        || op == opcode::shift_left
+        || op == opcode::and_
+        || op == opcode::or_
+        || op == opcode::find_set_right_bit
+        || op == opcode::deref_of
+        || op == opcode::size_of
+        || op == opcode::index
+        || op == opcode::not_
+        || op == opcode::lequal
+        || op == opcode::lgreater
+        || op == opcode::lless
+        || op == opcode::cond_ref_of;
+}
+
 parse_result<node_ptr> parse_type2_opcode(parse_state data) {
     const auto op = data.consume_opcode();
-    if (op == opcode::ext_prefix) {
-        if (!is_type2_ext_opcode(data.peek())) {
-            dbgout() << "op = 0x5B 0x" << as_hex(data.peek()) << "\n";
-            REQUIRE(false);
-        }
-    } else {
-        if (!is_type2_opcode(op)) {
-            dbgout() << "op = 0x" << as_hex(static_cast<uint8_t>(op)) << "\n";
-            REQUIRE(false);
-        }
+    if (!is_type2_opcode(op)) {
+        dbgout() << "op = " << op << "\n";
+        REQUIRE(false);
     }
     switch (op) {
-        case opcode::ext_prefix:
-            {
-                const auto ext_op = data.consume();
-                if (ext_op == 0x12) {
-                    // DefCondRefOf := CondRefOfOp SuperName Target
-                    auto name   = parse_super_name(data);
-                    auto target = parse_target(name.data);
-                    //dbgout() << "CondRefOf " << name.result.begin() << " -> " << target.result.begin() << "\n";
-                    return make_parse_result(target.data, knew<op_node>("cond_ref_of", make_text_node(name.result), std::move(target.result)));
-                } else {
-                    dbgout() << "Unhadled extended op " << as_hex(ext_op) << "\n";
-                    REQUIRE(false);
-                }
-            }
-            break;
         case opcode::add:
             return parse_binary_op(data, "add");
         case opcode::decrement:
@@ -776,6 +774,7 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
             }
         case opcode::not_:
             {
+                // XXX: Should this be handled like extended opcodes (0x5bXY)?
                 const auto next = data.peek_opcode();
                 if (next == opcode::lequal) {
                     data.consume();
@@ -795,9 +794,18 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
             return parse_logical_op(data, "lgreater");
         case opcode::lless:
             return parse_logical_op(data, "lless");
+        case opcode::cond_ref_of:
+            {
+                // DefCondRefOf := CondRefOfOp SuperName Target
+                auto name   = parse_super_name(data);
+                auto target = parse_target(name.data);
+                //dbgout() << "CondRefOf " << name.result.begin() << " -> " << target.result.begin() << "\n";
+                return make_parse_result(target.data, knew<op_node>("cond_ref_of", make_text_node(name.result), std::move(target.result)));
+            }
+            break;
         default:
             hexdump(dbgout(), data.begin()-2, std::min(data.size()+2, 64ULL));
-            dbgout() << "Unhandled opcode 0x" << as_hex(static_cast<uint8_t>(op)) << "\n";
+            dbgout() << "Unhandled opcode " << op << "\n";
             REQUIRE(false);
     }
 
@@ -960,52 +968,6 @@ private:
 };
 
 
-parse_result<node_ptr> parse_ext_prefix(parse_state data)
-{
-    enum class ext_op : uint8_t {
-        op_region = 0x80,
-        field     = 0x81,
-        device    = 0x82,
-    };
-
-    const auto ext = static_cast<ext_op>(data.consume());
-    switch (ext) {
-        case ext_op::op_region:
-            {
-                // DefOpRegion := OpRegionOp NameString RegionSpace(byte) RegionOffset(term=>int) RegionLen(term=>int)
-                auto name = parse_name_string(data);
-                data = name.data;
-                uint8_t region_space = data.consume();
-                auto region_offset   = parse_term_arg(data);
-                auto region_len      = parse_term_arg(region_offset.data);
-                //dbgout() << "DefOpRegion " << name.result.begin() << " Region space " << as_hex(region_space) << " offset " << *region_offset.result << " len " << *region_len.result << "\n";
-                return make_parse_result(region_len.data, knew<op_region_node>(std::move(name.result), region_space, std::move(region_offset.result), std::move(region_len.result)));
-            }
-        case ext_op::field:
-            {
-                // DefField := FieldOp PkgLength NameString FieldFlags FieldList
-                auto name        = parse_name_string(adjust_with_pkg_length(data));
-                auto field_flags = parse_field_flags(name.data);
-                //dbgout() << "DefField " << name.result.begin() << " flags " << *field_flags.result << "\n";
-                auto field_list  = parse_field_list(field_flags.data);
-                return make_parse_result(data.moved_to(field_list.data.begin()), knew<field_node>(std::move(name.result), field_flags.result, std::move(field_list.result)));
-            }
-        case ext_op::device:
-            {
-                // DefDevice := DeviceOp PkgLength NameString ObjectList
-                auto name        = parse_name_string(adjust_with_pkg_length(data));
-                auto scope_reg   = data.ns().open_scope(name.result.begin());
-                auto object_list = parse_object_list(name.data);
-                //dbgout() << "DefDevice " << name.result.begin() << "\n";
-                //return make_parse_result(parse_state(object_list.data.begin(), data.end()), knew<dummy_node>("device"));
-                return make_parse_result(data.moved_to(object_list.data.begin()), knew<device_node>(std::move(scope_reg), std::move(name.result), std::move(object_list.result)));
-            }
-        default:
-            dbgout() << "Unhandled ext opcode 0x5b 0x" << as_hex(static_cast<uint8_t>(ext)) << "\n";
-            REQUIRE(false);
-    }
-}
-
 parse_result<node_ptr> parse_data_ref_object(parse_state data)
 {
     // DataRefObject := DataObject | ObjectReference | DDBHandle
@@ -1069,10 +1031,10 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
     // TermObj := NameSpaceModifierObject | NamedObj | Type1Opcode | Type2Opcode
     // NameSpaceModifierObject := DefAlias | DefName | DefScope
     const auto op = data.peek_opcode();
-    if (is_type2_opcode(op) || (op == opcode::ext_prefix && is_type2_ext_opcode(data.begin()[1]))) {
+    if (is_type2_opcode(op)) {
         return parse_type2_opcode(data);
     }
-    data.consume();
+    data.consume_opcode();
     switch (op) {
         case opcode::name:
             {
@@ -1104,8 +1066,6 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 //dbgout() << "DefMethod " << name.result.begin() << " Flags " << as_hex(method_flags) << "\n";
                 return make_parse_result(data.moved_to(term_list.data.begin()), knew<method_node>(std::move(scope_reg), std::move(name.result), method_flags, std::move(term_list.result)));
             }
-        case opcode::ext_prefix:
-                return parse_ext_prefix(data);
         case opcode::store:
             {
                 // DefStore := StoreOp TermArg SuperName
@@ -1137,7 +1097,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 // DefElse := Nothing | <ElseOp PkgLength TermList>
                 term_list_node_ptr else_statements;
                 if (data.peek_opcode() == opcode::else_) {
-                    data.consume();
+                    data.consume_opcode();
                     auto else_term_list = parse_term_list(adjust_with_pkg_length(data));
                     data = data.moved_to(else_term_list.data.begin());
                     else_statements = std::move(else_term_list.result);
@@ -1160,8 +1120,38 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 //dbgout() << "Return " << *arg.result << "\n";
                 return make_parse_result(arg.data, knew<op_node>("return", std::move(arg.result)));
             }
+        case opcode::op_region:
+            {
+                // DefOpRegion := OpRegionOp NameString RegionSpace(byte) RegionOffset(term=>int) RegionLen(term=>int)
+                auto name = parse_name_string(data);
+                data = name.data;
+                uint8_t region_space = data.consume();
+                auto region_offset   = parse_term_arg(data);
+                auto region_len      = parse_term_arg(region_offset.data);
+                //dbgout() << "DefOpRegion " << name.result.begin() << " Region space " << as_hex(region_space) << " offset " << *region_offset.result << " len " << *region_len.result << "\n";
+                return make_parse_result(region_len.data, knew<op_region_node>(std::move(name.result), region_space, std::move(region_offset.result), std::move(region_len.result)));
+            }
+        case opcode::field:
+            {
+                // DefField := FieldOp PkgLength NameString FieldFlags FieldList
+                auto name        = parse_name_string(adjust_with_pkg_length(data));
+                auto field_flags = parse_field_flags(name.data);
+                //dbgout() << "DefField " << name.result.begin() << " flags " << *field_flags.result << "\n";
+                auto field_list  = parse_field_list(field_flags.data);
+                return make_parse_result(data.moved_to(field_list.data.begin()), knew<field_node>(std::move(name.result), field_flags.result, std::move(field_list.result)));
+            }
+        case opcode::device:
+            {
+                // DefDevice := DeviceOp PkgLength NameString ObjectList
+                auto name        = parse_name_string(adjust_with_pkg_length(data));
+                auto scope_reg   = data.ns().open_scope(name.result.begin());
+                auto object_list = parse_object_list(name.data);
+                //dbgout() << "DefDevice " << name.result.begin() << "\n";
+                //return make_parse_result(parse_state(object_list.data.begin(), data.end()), knew<dummy_node>("device"));
+                return make_parse_result(data.moved_to(object_list.data.begin()), knew<device_node>(std::move(scope_reg), std::move(name.result), std::move(object_list.result)));
+            }
         default:
-            dbgout() << "Unhandled opcode 0x" << as_hex(static_cast<uint8_t>(op)) << "\n";
+            dbgout() << "Unhandled opcode " << op << "\n";
             hexdump(dbgout(), data.begin()-1, std::min(32ULL, data.size()));
             REQUIRE(false);
     }
