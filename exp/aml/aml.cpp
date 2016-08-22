@@ -48,6 +48,8 @@ enum class opcode : uint16_t {
     mutex_              = 0x5b01,
     cond_ref_of         = 0x5b12,
     create_field        = 0x5b13,
+    acquire             = 0x5b23,
+    release             = 0x5b27,
     op_region           = 0x5b80,
     field               = 0x5b81,
     device              = 0x5b82,
@@ -211,6 +213,10 @@ public:
         return consume(1)[0];
     }
 
+    uint16_t consume_word() {
+        return *reinterpret_cast<const uint16_t*>(consume(2).begin());
+    }
+
     opcode consume_opcode() {
         const auto op = peek_opcode();
         consume();
@@ -346,7 +352,7 @@ private:
 
     void close_scope(const char* scope_name, node& n) {
         auto name = relative(cur_namespace_, "");
-        dbgout() << "Registered " << name.begin() << " as " << as_hex(&n) << "\n";
+        //dbgout() << "Registered " << name.begin() << " as " << as_hex(&n) << "\n";
         bindings_.push_back(binding{std::move(name), &n});
         REQUIRE(cur_namespace_.size() >= string_length(scope_name));
         cur_namespace_.resize(cur_namespace_.size()-string_length(scope_name));
@@ -382,8 +388,7 @@ auto parse_pkg_length(parse_state data)
             break;
         case 2:
             len = b0 & 0xf;
-            len |= (data.consume() << 4);
-            len |= (data.consume() << 12);
+            len |= data.consume_word() << 4;
             break;
         default:
             dbgout()<<"TODO: Handle " << (b0>>6) << " extra PkgLength bytes\n";
@@ -550,8 +555,7 @@ parse_result<node_ptr> parse_data_object(parse_state data)
         // WordConst
         case opcode::word:
             {
-                uint16_t w = data.consume();
-                w |= data.consume() << 8;
+                uint16_t w = data.consume_word();
                 return make_parse_result(data, make_const_node(w));
             }
         // DwordConst
@@ -738,10 +742,32 @@ constexpr bool is_type2_opcode(opcode op) {
         || op == opcode::lequal
         || op == opcode::lgreater
         || op == opcode::lless
-        || op == opcode::cond_ref_of;
+        || op == opcode::cond_ref_of
+        || op == opcode::acquire
+        || op == opcode::release
+        || (static_cast<unsigned>(op) <= 0xff && is_name_string_start(static_cast<uint8_t>(op))); // Method invocation
 }
 
 parse_result<node_ptr> parse_type2_opcode(parse_state data) {
+    if (is_name_string_start(data.peek())) { // Method invocation
+        // It seems NameSeg is valid here. E.g. ReturnOp 'TMP_'
+        // Is this sometimes a method invocation?
+        auto name = parse_name_string(data);
+        data = name.data;
+        if (auto n = data.ns().lookup(name.result.begin())) {
+            dbgout () << "Known name: " << *n << "\n";
+            if (auto m = method_cast(*n)) {
+                dbgout() << "Method with " << m->arg_count() << " argument(s)\n";
+                for (int i = 0; i < m->arg_count(); ++i) {
+                    auto arg = parse_term_arg(data);
+                    dbgout() << "Arg" << i << ": " << *arg.result << "\n";
+                    data = arg.data;
+                }
+            }
+        }
+        return make_parse_result(data, make_text_node(name.result));
+    }
+
     const auto op = data.consume_opcode();
     if (!is_type2_opcode(op)) {
         dbgout() << "op = " << op << "\n";
@@ -812,6 +838,19 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                 return make_parse_result(target.data, knew<op_node>("cond_ref_of", make_text_node(name.result), std::move(target.result)));
             }
             break;
+        case opcode::acquire:
+            {
+                // DefAcquire := AcquireOp MutexObject (:= SuperName) Timeout (:= WordData)
+                auto arg = parse_super_name(data);
+                const auto timeout = arg.data.consume_word();
+                return make_parse_result(arg.data, knew<op_node>("acquire", make_text_node(arg.result)));
+            }
+        case opcode::release:
+            {
+                // DefRelease := ReleaseOp MutexObject (:= SuperName)
+                auto arg = parse_super_name(data);
+                return make_parse_result(arg.data, knew<op_node>("release", make_text_node(arg.result)));
+            }
         default:
             hexdump(dbgout(), data.begin()-2, std::min(data.size()+2, 64ULL));
             dbgout() << "Unhandled opcode " << op << "\n";
@@ -828,23 +867,6 @@ parse_result<node_ptr> parse_term_arg(parse_state data) {
     if (is_arg_or_local(first)) {
         auto name = parse_arg_or_local(data);
         return make_parse_result(name.data, make_text_node(name.result));
-    } else if (is_name_string_start(first)) {
-        // It seems NameSeg is valid here. E.g. ReturnOp 'TMP_'
-        // Is this sometimes a method invocation?
-        auto name = parse_name_string(data);
-        data = name.data;
-        if (auto n = data.ns().lookup(name.result.begin())) {
-            dbgout () << "Known name: " << *n << "\n";
-            if (auto m = method_cast(*n)) {
-                dbgout() << "Method with " << m->arg_count() << " argument(s)\n";
-                for (int i = 0; i < m->arg_count(); ++i) {
-                    auto arg = parse_term_arg(data);
-                    dbgout() << "Arg" << i << ": " << *arg.result << "\n";
-                    data = arg.data;
-                }
-            }
-        }
-        return make_parse_result(data, make_text_node(name.result));
     } else if (is_data_object(static_cast<opcode>(first))) {
         return parse_data_object(data);
     } else {
