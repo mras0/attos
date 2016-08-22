@@ -389,7 +389,7 @@ private:
 
     void close_scope(kstring&& old_scope, node& n) {
         auto name = relative(cur_namespace_, "");
-        //dbgout() << "Registered " << name.begin() << " as " << n << "\n";
+        dbgout() << "Registered " << name.begin() << " as " << n << "\n";
         bindings_.push_back(binding{std::move(name), &n});
         cur_namespace_ = std::move(old_scope);
     }
