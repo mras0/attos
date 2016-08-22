@@ -37,8 +37,11 @@ enum class opcode : uint16_t {
     index               = 0x88,
     create_dword_field  = 0x8a,
     create_word_field   = 0x8b,
+    create_byte_field   = 0x8c,
     create_bit_field    = 0x8d,
     object_type         = 0x8e,
+    land                = 0x90,
+    lor                 = 0x91,
     lnot                = 0x92,
     lequal              = 0x93,
     lgreater            = 0x94,
@@ -314,14 +317,6 @@ public:
             if (auto* b = find_binding(name+1)) {
                 return b->n;
             }
-            // HACK HACK, why does this occur in the vmware acpi tables?
-            const char* hack_match = "\\_SB_IVOC";
-            if (string_equal(name, hack_match)) {
-                dbgout() << "hack_match! " << hack_match << "\n";
-                if (auto* b = find_binding("_SB_PCI0IVOC")) {
-                    return b->n;
-                }
-            }
         } else if (name[0] == parent_prefix_char) {
             auto ns = cur_namespace_;
             for (; *name == parent_prefix_char; ++name) {
@@ -388,7 +383,7 @@ private:
 
     void close_scope(kstring&& old_scope, node& n) {
         auto name = relative(cur_namespace_, "");
-        dbgout() << "Registered " << name.begin() << " as " << n << "\n";
+        //dbgout() << "Registered " << name.begin() << " as " << n << "\n";
         bindings_.push_back(binding{std::move(name), &n});
         cur_namespace_ = std::move(old_scope);
     }
@@ -399,6 +394,10 @@ template<typename T>
 struct parse_result {
     parse_state data;
     T           result;
+
+    explicit operator bool() const {
+        return static_cast<bool>(result);
+    }
 };
 
 template<typename Node>
@@ -746,6 +745,7 @@ method_node* method_cast(node& n) {
 
 parse_result<node_ptr> parse_unary_op(parse_state data, const char* name) {
     auto arg    = parse_term_arg(data);
+    if (!arg) return arg;
     auto target = parse_target(arg.data);
     //dbgout() << name << " " << *arg.result << " -> " << target.result.begin() << "\n";
     return make_parse_result(target.data, knew<unary_op_node>(name, std::move(arg.result), std::move(target.result)));
@@ -762,7 +762,9 @@ parse_result<node_ptr> parse_binary_op(parse_state data, const char* name) {
     // Operand := TermArg => Integer
     // Target := SuperName | NullName
     auto arg0   = parse_term_arg(data);
+    if (!arg0) return arg0;
     auto arg1   = parse_term_arg(arg0.data);
+    if (!arg1) return arg1;
     auto target = parse_target(arg1.data);
     //dbgout() << name << " " << *arg0.result << ", " << *arg1.result << " -> " << target.result.begin() << "\n";
     return make_parse_result(target.data, knew<binary_op_node>(name, std::move(arg0.result), std::move(arg1.result), std::move(target.result)));
@@ -770,7 +772,9 @@ parse_result<node_ptr> parse_binary_op(parse_state data, const char* name) {
 
 parse_result<node_ptr> parse_logical_op(parse_state data, const char* name) {
     auto arg0   = parse_term_arg(data);
+    if (!arg0) return arg0;
     auto arg1   = parse_term_arg(arg0.data);
+    if (!arg1) return arg1;
     //dbgout() << name << " " << *arg0.result << ", " << *arg1.result << "\n";
     return make_parse_result(arg1.data, knew<binary_op_node>(name, std::move(arg0.result), std::move(arg1.result)));
 }
@@ -806,6 +810,8 @@ constexpr bool is_type2_opcode(opcode op) {
         || op == opcode::size_of
         || op == opcode::index
         || op == opcode::object_type
+        || op == opcode::land
+        || op == opcode::lor
         || op == opcode::lnot
         || op == opcode::lequal
         || op == opcode::lgreater
@@ -828,12 +834,15 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                 //dbgout() << "Method with " << m->arg_count() << " argument(s)\n";
                 for (int i = 0; i < m->arg_count(); ++i) {
                     auto arg = parse_term_arg(data);
+                    if (!arg) return arg;
                     //dbgout() << "Arg" << i << ": " << *arg.result << "\n";
                     data = arg.data;
                 }
+                return make_parse_result(data, make_text_node(name.result));
             }
+            return make_parse_result(data, make_text_node(name.result));
         }
-        return make_parse_result(data, make_text_node(name.result));
+        return {data, node_ptr{}};
     }
 
     const auto op = data.consume_opcode();
@@ -878,6 +887,8 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
         case opcode::index:              return parse_index(data);
         // DefObjectType := ObjectTypeOp <SimpleName | DebugObj | DefRefOf | DefDerefOf | DefIndex>
         case opcode::object_type:        return parse_unary_op_no_target(data, "ObjectType");
+        case opcode::land:               return parse_logical_op(data, "land");
+        case opcode::lor:                return parse_logical_op(data, "lor");
         case opcode::lnot:
             {
                 // XXX: Should this be handled like extended opcodes (0x5bXY)?
@@ -1167,6 +1178,7 @@ private:
         const char* text = nullptr;
         if (type_ == opcode::create_dword_field)     text = "CreateDWordField";
         else if (type_ == opcode::create_word_field) text = "CreateWordField";
+        else if (type_ == opcode::create_byte_field) text = "CreateWordField";
         else if (type_ == opcode::create_bit_field)  text = "CreateBitField";
         REQUIRE(text);
         os << text << " " << name_.begin() << " " << *buffer_ << " " << *index_;
@@ -1209,14 +1221,23 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto scope_reg = data.ns().open_scope(name.result.begin());
                 pkg_data = name.data;
                 uint8_t method_flags = pkg_data.consume();
-                auto term_list = parse_term_list(pkg_data);
+                term_list_node_ptr term_list;
+                auto term_list_parsed = parse_term_list(pkg_data);
+                if (term_list_parsed.result) {
+                    data = data.moved_to(term_list_parsed.data.begin());
+                    term_list = std::move(term_list_parsed.result);
+                } else {
+                    term_list = knew<term_list_node>(kvector<node_ptr>());
+                    data = data.moved_to(pkg_data.end());
+                }
                 //dbgout() << "DefMethod " << name.result.begin() << " Flags " << as_hex(method_flags) << "\n";
-                return make_parse_result(data.moved_to(term_list.data.begin()), knew<method_node>(std::move(scope_reg), std::move(name.result), method_flags, std::move(term_list.result)));
+                return make_parse_result(data, knew<method_node>(std::move(scope_reg), std::move(name.result), method_flags, std::move(term_list)));
             }
         case opcode::store:
             {
                 // DefStore := StoreOp TermArg SuperName
                 auto arg  = parse_term_arg(data);
+                if (!arg) return arg;
                 auto name = parse_super_name(arg.data);
                 //dbgout() << "Store " << *arg.result << " -> " << name.result.begin() << "\n";
                 return make_parse_result(name.data, knew<unary_op_node>("store", std::move(arg.result), std::move(name.result)));
@@ -1232,9 +1253,11 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
             }
         case opcode::create_dword_field:
         case opcode::create_word_field:
+        case opcode::create_byte_field:
         case opcode::create_bit_field:
             {
                 // DefCreateBitField   := CreateBitFieldOp SourceBuff BitIndex NameString
+                // DefCreateByteField  := CreateByteFieldOp SourceBuff ByteIndex NameString
                 // DefCreateDWordField := CreateDWordFieldOp SourceBuff ByteIndex NameString
                 // DefCreateWordField  := CreateWordFieldOp SourceBuff ByteIndex NameString
                 // SourceBuff          := TermArg => Buffer
@@ -1279,6 +1302,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 // DefReturn := ReturnOp ArgObject
                 // ArgObject := TermArg => DataRefObject
                 auto arg = parse_term_arg(data);
+                if (!arg) return arg;
                 //dbgout() << "Return " << *arg.result << "\n";
                 return make_parse_result(arg.data, knew<unary_op_node>("return", std::move(arg.result)));
             }
@@ -1351,31 +1375,32 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
     }
 }
 
-template<typename P>
-parse_result<kvector<node_ptr>> parse_list(parse_state state, P p)
+template<typename T, typename P>
+parse_result<kowned_ptr<T>> parse_list(parse_state state, P p)
 {
     kvector<node_ptr> objs;
     while (state.begin() != state.end()) {
         auto res = p(state);
         state = res.data;
+        if (!res) {
+            return {state, kowned_ptr<T>{}};
+        }
         objs.push_back(std::move(res.result));
     }
-    return {state, std::move(objs)};
+    return {state, knew<T>(std::move(objs))};
 }
 
 parse_result<obj_list_node_ptr> parse_object_list(parse_state state)
 {
     // ObjectList := Nothing | <Object ObjectList>
     // Object := NameSpaceModifierObj | NamedObj
-    auto objs = parse_list(state, &parse_term_obj); // TODO: Type1Opcode | Type2Opcode not allowed in ObjectList
-    return {objs.data, knew<obj_list_node>(std::move(objs.result))};
+    return parse_list<obj_list_node>(state, &parse_term_obj); // TODO: Type1Opcode | Type2Opcode not allowed in ObjectList
 }
 
 parse_result<term_list_node_ptr> parse_term_list(parse_state state)
 {
     // TermList := Nothing | <TermObj TermList>
-    auto terms = parse_list(state, &parse_term_obj);
-    return {terms.data, knew<term_list_node>(std::move(terms.result))};
+    return parse_list<term_list_node>(state, &parse_term_obj);
 }
 
 void process(array_view<uint8_t> data)
