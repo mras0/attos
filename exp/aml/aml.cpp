@@ -279,12 +279,12 @@ public:
     };
 
     scope_registration open_scope(const char* name) {
+        //dbgout() << "open_scope " << name << " in " << hack_cur_name() << "\n";
         REQUIRE(name[0] != parent_prefix_char);
         if (name[0] == root_char) {
             ++name;
             REQUIRE(cur_namespace_.empty());
         }
-        //dbgout() << "open_scope " << name << " in " << hack_cur_name() << "\n";
         REQUIRE(string_length(name) % 4 == 0);
         cur_namespace_.insert(cur_namespace_.end(), name, name + string_length(name));
         return scope_registration{*this, name};
@@ -484,36 +484,46 @@ auto parse_name_string(parse_state data)
     return parse_result<kstring>{data, std::move(name)};
 }
 
-parse_result<kstring> parse_arg_or_local(parse_state data)
+parse_result<node_ptr> parse_arg_or_local(parse_state data)
 {
     const auto c = data.consume();
     if (c >= local_0 && c <= local_7) { // LocalObj
         char buffer[] = "Local0";
         buffer[sizeof(buffer)-2] += c-local_0;
-        return parse_result<kstring>{data, make_kstring(buffer)};
+        return make_parse_result(data, make_text_node(buffer));
     } else if (c >= arg_0 && c <= arg_6) { // ArgObj
         char buffer[] = "Arg0";
         buffer[sizeof(buffer)-2] += c-arg_0;
-        return parse_result<kstring>{data, make_kstring(buffer)};
+        return make_parse_result(data, make_text_node(buffer));
     } else {
         REQUIRE(false);
     }
 }
 
-parse_result<kstring> parse_super_name(parse_state data)
+constexpr bool is_type6_opcode(opcode op) {
+    // Type6Opcode := DefRefOf | DefDerefOf | DefIndex | UserTermObj
+    return op == opcode::deref_of
+        || op == opcode::index;
+}
+
+parse_result<node_ptr> parse_type6_opcode(parse_state data);
+
+parse_result<node_ptr> parse_super_name(parse_state data)
 {
     // SimpleName := NameString | ArgObj | LocalObj
     // SuperName := SimpleName | DebugObj | Type6Opcode
     const uint8_t first = data.peek();
     if (is_arg_or_local(first)) {
         return parse_arg_or_local(data);
+    } else if (is_name_string_start(first)) {
+        auto name = parse_name_string(data);
+        return make_parse_result(name.data, make_text_node(name.result));
+    } else if (is_type6_opcode(static_cast<opcode>(first))) {
+        return parse_type6_opcode(data);
     }
-    if (!is_name_string_start(first)) {
-        dbgout() << "First = " << as_hex(first) << "\n";
-        hexdump(dbgout(), data.begin()-10, std::min(32ULL, data.size()+10));
-        REQUIRE(false);
-    }
-    return parse_name_string(data);
+    dbgout() << "First = " << as_hex(first) << "\n";
+    hexdump(dbgout(), data.begin()-10, std::min(32ULL, data.size()+10));
+    REQUIRE(false);
 }
 
 extern const char term_list_node_tag[] = "TermList";
@@ -633,25 +643,38 @@ parse_result<node_ptr> parse_data_object(parse_state data)
     }
 }
 
-parse_result<kstring> parse_target(parse_state data) {
+parse_result<node_ptr> parse_target(parse_state data) {
     // Target := SuperName | NullName
     if (data.peek() == 0) {
         data.consume();
-        return parse_result<kstring>{data, make_kstring("null_name")};
+        return make_parse_result(data, make_text_node("null_name"));
     } else {
         return parse_super_name(data);
     }
 }
 
-class op_node : public node {
+class unary_op_node : public node {
 public:
-    explicit op_node(const char* name, node_ptr&& arg0) : name_(make_kstring(name)), arg0_(std::move(arg0)) {
+    explicit unary_op_node(const char* name, node_ptr&& arg0) : name_(make_kstring(name)), arg0_(std::move(arg0)) {
     }
-    explicit op_node(const char* name, node_ptr&& arg0, kstring&& target) : name_(make_kstring(name)), arg0_(std::move(arg0)), target_(make_text_node(target)) {
+    explicit unary_op_node(const char* name, node_ptr&& arg0, node_ptr&& target) : name_(make_kstring(name)), arg0_(std::move(arg0)), target_(std::move(target)) {
     }
-    explicit op_node(const char* name, node_ptr&& arg0, node_ptr&& arg1) : name_(make_kstring(name)), arg0_(std::move(arg0)), arg1_(std::move(arg1)) {
+private:
+    kstring  name_;
+    node_ptr arg0_;
+    node_ptr target_;
+
+    virtual void do_print(out_stream& os) const override {
+        os << name_.begin() << " " << *arg0_;
+        if (target_) os << " -> " << *target_;
     }
-    explicit op_node(const char* name, node_ptr&& arg0, node_ptr&& arg1, kstring&& target) : name_(make_kstring(name)), arg0_(std::move(arg0)), arg1_(std::move(arg1)), target_(make_text_node(target)) {
+};
+
+class binary_op_node : public node {
+public:
+    explicit binary_op_node(const char* name, node_ptr&& arg0, node_ptr&& arg1) : name_(make_kstring(name)), arg0_(std::move(arg0)), arg1_(std::move(arg1)) {
+    }
+    explicit binary_op_node(const char* name, node_ptr&& arg0, node_ptr&& arg1, node_ptr&& target) : name_(make_kstring(name)), arg0_(std::move(arg0)), arg1_(std::move(arg1)), target_(std::move(target)) {
     }
 private:
     kstring  name_;
@@ -706,13 +729,13 @@ parse_result<node_ptr> parse_unary_op(parse_state data, const char* name) {
     auto arg    = parse_term_arg(data);
     auto target = parse_target(arg.data);
     //dbgout() << name << " " << *arg.result << " -> " << target.result.begin() << "\n";
-    return make_parse_result(target.data, knew<op_node>(name, std::move(arg.result), std::move(target.result)));
+    return make_parse_result(target.data, knew<unary_op_node>(name, std::move(arg.result), std::move(target.result)));
 }
 
 parse_result<node_ptr> parse_unary_op_no_target(parse_state data, const char* name) {
     auto arg = parse_super_name(data);
     //dbgout() << name << " " << arg.result.begin() << "\n";
-    return make_parse_result(arg.data, knew<op_node>(name, make_text_node(arg.result)));
+    return make_parse_result(arg.data, knew<unary_op_node>(name, std::move(arg.result)));
 }
 
 parse_result<node_ptr> parse_binary_op(parse_state data, const char* name) {
@@ -723,14 +746,30 @@ parse_result<node_ptr> parse_binary_op(parse_state data, const char* name) {
     auto arg1   = parse_term_arg(arg0.data);
     auto target = parse_target(arg1.data);
     //dbgout() << name << " " << *arg0.result << ", " << *arg1.result << " -> " << target.result.begin() << "\n";
-    return make_parse_result(target.data, knew<op_node>(name, std::move(arg0.result), std::move(arg1.result), std::move(target.result)));
+    return make_parse_result(target.data, knew<binary_op_node>(name, std::move(arg0.result), std::move(arg1.result), std::move(target.result)));
 }
 
 parse_result<node_ptr> parse_logical_op(parse_state data, const char* name) {
     auto arg0   = parse_term_arg(data);
     auto arg1   = parse_term_arg(arg0.data);
     //dbgout() << name << " " << *arg0.result << ", " << *arg1.result << "\n";
-    return make_parse_result(arg1.data, knew<op_node>(name, std::move(arg0.result), std::move(arg1.result)));
+    return make_parse_result(arg1.data, knew<binary_op_node>(name, std::move(arg0.result), std::move(arg1.result)));
+}
+
+parse_result<node_ptr> parse_index(parse_state data)
+{
+    // DefIndex := IndexOp BuffPkgStrObj IndexValue Target
+    // BuffPkgStrObj := TermArg => Buffer, Package or String
+    // IndexValue := TermArg => Integer
+    return parse_binary_op(data, "index");
+}
+
+parse_result<node_ptr> parse_type6_opcode(parse_state data) {
+    // Type6Opcode := DefRefOf | DefDerefOf | DefIndex | UserTermObj
+    const auto op = data.consume_opcode();
+    REQUIRE(is_type6_opcode(op));
+    REQUIRE(op == opcode::index);
+    return parse_index(data);
 }
 
 constexpr bool is_type2_opcode(opcode op) {
@@ -801,17 +840,12 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                 // DefDerefOf := DerefOfOp ObjReference
                 // ObjReference := TermArg => ObjectReference | String
                 //dbgout() << "deref_of " << *arg.result << "\n";
-                return make_parse_result(arg.data, knew<op_node>("deref_of", std::move(arg.result)));
+                return make_parse_result(arg.data, knew<unary_op_node>("deref_of", std::move(arg.result)));
             }
         case opcode::size_of:
             return parse_unary_op_no_target(data, "sizeof");
         case opcode::index:
-            {
-                // DefIndex := IndexOp BuffPkgStrObj IndexValue Target
-                // BuffPkgStrObj := TermArg => Buffer, Package or String
-                // IndexValue := TermArg => Integer
-                return parse_binary_op(data, "index");
-            }
+            return parse_index(data);
         case opcode::lnot:
             {
                 // XXX: Should this be handled like extended opcodes (0x5bXY)?
@@ -827,7 +861,7 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                     return parse_logical_op(data, "lnotless");
                 }
                 auto arg = parse_term_arg(data);
-                return make_parse_result(arg.data, knew<op_node>("lot", std::move(arg.result)));
+                return make_parse_result(arg.data, knew<unary_op_node>("lnot", std::move(arg.result)));
             }
         case opcode::lequal:
             return parse_logical_op(data, "lequal");
@@ -841,7 +875,7 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                 auto name   = parse_super_name(data);
                 auto target = parse_target(name.data);
                 //dbgout() << "CondRefOf " << name.result.begin() << " -> " << target.result.begin() << "\n";
-                return make_parse_result(target.data, knew<op_node>("cond_ref_of", make_text_node(name.result), std::move(target.result)));
+                return make_parse_result(target.data, knew<unary_op_node>("cond_ref_of", std::move(name.result), std::move(target.result)));
             }
             break;
         case opcode::acquire:
@@ -849,13 +883,13 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                 // DefAcquire := AcquireOp MutexObject (:= SuperName) Timeout (:= WordData)
                 auto arg = parse_super_name(data);
                 const auto timeout = arg.data.consume_word();
-                return make_parse_result(arg.data, knew<op_node>("acquire", make_text_node(arg.result)));
+                return make_parse_result(arg.data, knew<binary_op_node>("acquire", std::move(arg.result), make_const_node(timeout)));
             }
         case opcode::release:
             {
                 // DefRelease := ReleaseOp MutexObject (:= SuperName)
                 auto arg = parse_super_name(data);
-                return make_parse_result(arg.data, knew<op_node>("release", make_text_node(arg.result)));
+                return make_parse_result(arg.data, knew<unary_op_node>("release", std::move(arg.result)));
             }
         default:
             hexdump(dbgout(), data.begin()-2, std::min(data.size()+2, 64ULL));
@@ -871,8 +905,7 @@ parse_result<node_ptr> parse_term_arg(parse_state data) {
     const uint8_t first = data.peek();
     //dbgout() << "parse_term_arg first = " << as_hex(first) << "\n";
     if (is_arg_or_local(first)) {
-        auto name = parse_arg_or_local(data);
-        return make_parse_result(name.data, make_text_node(name.result));
+        return parse_arg_or_local(data);
     } else if (is_data_object(static_cast<opcode>(first))) {
         return parse_data_object(data);
     } else {
@@ -1157,7 +1190,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto arg  = parse_term_arg(data);
                 auto name = parse_super_name(arg.data);
                 //dbgout() << "Store " << *arg.result << " -> " << name.result.begin() << "\n";
-                return make_parse_result(name.data, knew<op_node>("store", std::move(arg.result), std::move(name.result)));
+                return make_parse_result(name.data, knew<unary_op_node>("store", std::move(arg.result), std::move(name.result)));
             }
         case opcode::create_dword_field:
         case opcode::create_word_field:
@@ -1209,7 +1242,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 // ArgObject := TermArg => DataRefObject
                 auto arg = parse_term_arg(data);
                 //dbgout() << "Return " << *arg.result << "\n";
-                return make_parse_result(arg.data, knew<op_node>("return", std::move(arg.result)));
+                return make_parse_result(arg.data, knew<unary_op_node>("return", std::move(arg.result)));
             }
         case opcode::mutex_:
             {
@@ -1229,7 +1262,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto num_bits      = parse_term_arg(bit_index.data);
                 auto name          = parse_name_string(num_bits.data);
                 // Very hackish
-                return make_parse_result(name.data, knew<op_node>("CreateField", std::move(source_buffer.result), std::move(num_bits.result), std::move(name.result)));
+                return make_parse_result(name.data, knew<binary_op_node>("CreateField", std::move(source_buffer.result), std::move(num_bits.result), make_text_node(name.result)));
             }
         case opcode::op_region:
             {
