@@ -22,18 +22,23 @@ enum class opcode : uint16_t {
     ext_prefix          = 0x5b, // '[' ByteData follows specifying the extended opcode
     store               = 0x70,
     add                 = 0x72,
+    concat              = 0x73,
     subtract            = 0x74,
     decrement           = 0x76,
+    multiply            = 0x77,
+    divide              = 0x78,
     shift_left          = 0x79,
     and_                = 0x7b,
     or_                 = 0x7d,
     find_set_right_bit  = 0x82,
     deref_of            = 0x83,
+    notify              = 0x86,
     size_of             = 0x87,
     index               = 0x88,
     create_dword_field  = 0x8a,
     create_word_field   = 0x8b,
     create_bit_field    = 0x8d,
+    object_type         = 0x8e,
     lnot                = 0x92,
     lequal              = 0x93,
     lgreater            = 0x94,
@@ -292,17 +297,32 @@ public:
     }
 
     node* lookup(const char* name) {
+        // ABCD      -- search rules apply
+        // ^ABCD     -- search rules do not apply
+        // XYZ.ABCD  -- search rules do not apply
+        // \XYZ.ABCD -- search rules do not apply
         if (name[0] == root_char) {
             if (auto* b = find_binding(name+1)) {
                 return b->n;
             }
-        } else {
-            // Hack... this isn't how lookup works...
+            // HACK HACK, why does this occur in the vmware acpi tables?
+            const char* hack_match = "\\_SB_IVOC";
+            if (string_equal(name, hack_match)) {
+                dbgout() << "hack_match! " << hack_match << "\n";
+                if (auto* b = find_binding("_SB_PCI0IVOC")) {
+                    return b->n;
+                }
+            }
+        } else if (name[0] == parent_prefix_char) {
             auto ns = cur_namespace_;
             for (; *name == parent_prefix_char; ++name) {
                 REQUIRE(parent_scope(ns));
             }
-            REQUIRE(name[0]);
+            if (auto* b = find_binding(name)) {
+                return b->n;
+            }
+        } else {
+            auto ns = cur_namespace_;
             for (;;) {
                 const auto rn = relative(ns, name);
                 //dbgout() << "Trying " << rn.begin() << "\n";
@@ -359,7 +379,7 @@ private:
 
     void close_scope(kstring&& old_scope, node& n) {
         auto name = relative(cur_namespace_, "");
-        dbgout() << "Registered " << name.begin() << "\n";
+        dbgout() << "Registered " << name.begin() << " as " << n << "\n";
         bindings_.push_back(binding{std::move(name), &n});
         cur_namespace_ = std::move(old_scope);
     }
@@ -773,9 +793,12 @@ parse_result<node_ptr> parse_type6_opcode(parse_state data) {
 }
 
 constexpr bool is_type2_opcode(opcode op) {
-    return op == opcode::decrement
-        || op == opcode::add
+    return op == opcode::add
+        || op == opcode::concat
         || op == opcode::subtract
+        || op == opcode::decrement
+        || op == opcode::multiply
+        || op == opcode::divide
         || op == opcode::shift_left
         || op == opcode::and_
         || op == opcode::or_
@@ -783,6 +806,7 @@ constexpr bool is_type2_opcode(opcode op) {
         || op == opcode::deref_of
         || op == opcode::size_of
         || op == opcode::index
+        || op == opcode::object_type
         || op == opcode::lnot
         || op == opcode::lequal
         || op == opcode::lgreater
@@ -815,37 +839,46 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
 
     const auto op = data.consume_opcode();
     if (!is_type2_opcode(op)) {
+        hexdump(dbgout(), data.begin(), std::min(32ULL, data.size()));
         dbgout() << "op = " << op << "\n";
         REQUIRE(false);
     }
     switch (op) {
-        case opcode::add:
-            return parse_binary_op(data, "add");
-        case opcode::subtract:
-            return parse_binary_op(data, "subtract");
-        case opcode::decrement:
-            // DefDecrement := DecrementOp SuperName
-            return parse_unary_op_no_target(data, "decrement");
-        case opcode::shift_left:
-            return parse_binary_op(data, "shiftleft");
-        case opcode::and_:
-            return parse_binary_op(data, "and");
-        case opcode::or_:
-            return parse_binary_op(data, "or");
-        case opcode::find_set_right_bit:
-            return parse_unary_op(data, "find_set_right_bit");
+        case opcode::add:                return parse_binary_op(data, "add");
+        case opcode::concat:             return parse_binary_op(data, "concat");
+        case opcode::subtract:           return parse_binary_op(data, "subtract");
+        // DefDecrement := DecrementOp SuperName
+        case opcode::decrement:          return parse_unary_op_no_target(data, "decrement");
+        case opcode::divide:
+            {
+                // DefDivide := DivideOp Dividend Divisor Remainder Quotient
+                // Dividend := TermArg => Integer
+                // Divisor := TermArg => Integer
+                // Remainder := Target
+                // Quotient := Target
+                auto dividend  = parse_term_arg(data);
+                auto divisor   = parse_term_arg(dividend.data);
+                auto remainder = parse_target(divisor.data);
+                auto quotient  = parse_target(remainder.data);
+                // TOOD: handle remainder
+                return make_parse_result(quotient.data, knew<binary_op_node>("divide", std::move(dividend.result), std::move(divisor.result), std::move(quotient.result)));
+            }
+        case opcode::multiply:           return parse_binary_op(data, "multiply");
+        case opcode::shift_left:         return parse_binary_op(data, "shiftleft");
+        case opcode::and_:               return parse_binary_op(data, "and");
+        case opcode::or_:                return parse_binary_op(data, "or");
+        case opcode::find_set_right_bit: return parse_unary_op(data, "find_set_right_bit");
         case opcode::deref_of:
             {
                 auto arg = parse_term_arg(data);
                 // DefDerefOf := DerefOfOp ObjReference
                 // ObjReference := TermArg => ObjectReference | String
-                //dbgout() << "deref_of " << *arg.result << "\n";
                 return make_parse_result(arg.data, knew<unary_op_node>("deref_of", std::move(arg.result)));
             }
-        case opcode::size_of:
-            return parse_unary_op_no_target(data, "sizeof");
-        case opcode::index:
-            return parse_index(data);
+        case opcode::size_of:            return parse_unary_op_no_target(data, "sizeof");
+        case opcode::index:              return parse_index(data);
+        // DefObjectType := ObjectTypeOp <SimpleName | DebugObj | DefRefOf | DefDerefOf | DefIndex>
+        case opcode::object_type:        return parse_unary_op_no_target(data, "ObjectType");
         case opcode::lnot:
             {
                 // XXX: Should this be handled like extended opcodes (0x5bXY)?
@@ -863,12 +896,9 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                 auto arg = parse_term_arg(data);
                 return make_parse_result(arg.data, knew<unary_op_node>("lnot", std::move(arg.result)));
             }
-        case opcode::lequal:
-            return parse_logical_op(data, "lequal");
-        case opcode::lgreater:
-            return parse_logical_op(data, "lgreater");
-        case opcode::lless:
-            return parse_logical_op(data, "lless");
+        case opcode::lequal:             return parse_logical_op(data, "lequal");
+        case opcode::lgreater:           return parse_logical_op(data, "lgreater");
+        case opcode::lless:              return parse_logical_op(data, "lless");
         case opcode::cond_ref_of:
             {
                 // DefCondRefOf := CondRefOfOp SuperName Target
@@ -1191,6 +1221,15 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto name = parse_super_name(arg.data);
                 //dbgout() << "Store " << *arg.result << " -> " << name.result.begin() << "\n";
                 return make_parse_result(name.data, knew<unary_op_node>("store", std::move(arg.result), std::move(name.result)));
+            }
+        case opcode::notify:
+            {
+                // DefNotify := NotifyOp NotifyObject NotifyValue
+                // NotifyObject := SuperName => ThermalZone | Processor | Device
+                // NotifyValue := TermArg => Integer
+                auto obj   = parse_super_name(data);
+                auto value = parse_term_arg(obj.data);
+                return make_parse_result(value.data, knew<unary_op_node>("notify", std::move(value.result), std::move(obj.result)));
             }
         case opcode::create_dword_field:
         case opcode::create_word_field:
