@@ -398,7 +398,7 @@ private:
 
     void close_scope(kstring&& old_scope, node& n) {
         auto name = relative(cur_namespace_, "");
-        dbgout() << "Registered " << name.begin() << " as " << n << "\n";
+        // dbgout() << "Registered " << name.begin() << " as " << n << "\n";
         bindings_.push_back(binding{std::move(name), &n});
         cur_namespace_ = std::move(old_scope);
     }
@@ -448,9 +448,10 @@ auto parse_pkg_length(parse_state data)
 
 parse_state adjust_with_pkg_length(parse_state data)
 {
-    const uint8_t pkg_length_bytes = 1+(data.peek()>>6);
+    const uint8_t pkg_length_bytes = 1+(static_cast<uint8_t>(data.peek())>>6);
     auto pkg_len = parse_pkg_length(data);
     REQUIRE(pkg_len.result >= pkg_length_bytes);
+    REQUIRE(pkg_len.result <= data.size());
     return parse_state(*data.ns_, pkg_len.data.begin(), pkg_len.data.begin() + pkg_len.result-pkg_length_bytes);
 }
 
@@ -1262,10 +1263,12 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
         case opcode::scope:
             {
                 // DefScope := ScopeOp PkgLength NameString TermList
-                auto name      = parse_name_string(adjust_with_pkg_length(data));
+                auto pkg_data  = adjust_with_pkg_length(data);
+                auto name      = parse_name_string(pkg_data);
                 auto scope_reg = data.ns().open_scope(name.result.begin());
                 auto term_list = parse_term_list(name.data);
                 //dbgout() << "DefScope " << name.result.begin() << "\n";
+                REQUIRE(pkg_data.end() == term_list.data.begin());
                 return make_parse_result(data.moved_to(term_list.data.begin()), knew<scope_node>(std::move(scope_reg), std::move(name.result), std::move(term_list.result)));
             }
         case opcode::method:
