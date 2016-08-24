@@ -24,6 +24,7 @@ enum class opcode : uint16_t {
     add                 = 0x72,
     concat              = 0x73,
     subtract            = 0x74,
+    increment           = 0x75,
     decrement           = 0x76,
     multiply            = 0x77,
     divide              = 0x78,
@@ -31,6 +32,7 @@ enum class opcode : uint16_t {
     shift_right         = 0x7a,
     and_                = 0x7b,
     or_                 = 0x7d,
+    xor_                = 0x7f,
     not_                = 0x80,
     find_set_left_bit   = 0x81,
     find_set_right_bit  = 0x82,
@@ -54,6 +56,7 @@ enum class opcode : uint16_t {
     if_                 = 0xa0,
     else_               = 0xa1,
     while_              = 0xa2,
+    noop                = 0xa3,
     return_             = 0xa4,
     ones                = 0xff,
 
@@ -61,12 +64,16 @@ enum class opcode : uint16_t {
     mutex_              = 0x5b01,
     cond_ref_of         = 0x5b12,
     create_field        = 0x5b13,
+    sleep               = 0x5b22,
     acquire             = 0x5b23,
     release             = 0x5b27,
+    fatal               = 0x5b32,
     op_region           = 0x5b80,
     field               = 0x5b81,
     device              = 0x5b82,
     processor           = 0x5b83,
+    power_res           = 0x5b84,
+    thermal_zone        = 0x5b85,
     index_field         = 0x5b86,
 };
 
@@ -206,12 +213,14 @@ public:
     size_t size() const { return data_.size(); }
 
     char peek() const {
+        REQUIRE(!data_.empty());
         return *data_.begin();
     }
 
     opcode peek_opcode() const {
         const uint8_t first_byte = peek();
         if (static_cast<opcode>(first_byte) == opcode::ext_prefix) {
+            REQUIRE(data_.size() >= 2);
             return static_cast<opcode>((first_byte << 8) | data_[1]);
         }
         return static_cast<opcode>(first_byte);
@@ -800,6 +809,7 @@ constexpr bool is_type2_opcode(opcode op) {
     return op == opcode::add
         || op == opcode::concat
         || op == opcode::subtract
+        || op == opcode::increment
         || op == opcode::decrement
         || op == opcode::multiply
         || op == opcode::divide
@@ -807,6 +817,7 @@ constexpr bool is_type2_opcode(opcode op) {
         || op == opcode::shift_right
         || op == opcode::and_
         || op == opcode::or_
+        || op == opcode::xor_
         || op == opcode::not_
         || op == opcode::find_set_left_bit
         || op == opcode::find_set_right_bit
@@ -822,6 +833,7 @@ constexpr bool is_type2_opcode(opcode op) {
         || op == opcode::lless
         || op == opcode::mid
         || op == opcode::cond_ref_of
+        || op == opcode::sleep
         || op == opcode::acquire
         || op == opcode::release
         || (static_cast<unsigned>(op) <= 0xff && is_name_string_start(static_cast<uint8_t>(op))); // Method invocation
@@ -861,6 +873,7 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
         case opcode::add:                return parse_binary_op(data, "add");
         case opcode::concat:             return parse_binary_op(data, "concat");
         case opcode::subtract:           return parse_binary_op(data, "subtract");
+        case opcode::increment:          return parse_unary_op_no_target(data, "increment");
         // DefDecrement := DecrementOp SuperName
         case opcode::decrement:          return parse_unary_op_no_target(data, "decrement");
         case opcode::divide:
@@ -882,6 +895,7 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
         case opcode::shift_right:        return parse_binary_op(data, "shiftright");
         case opcode::and_:               return parse_binary_op(data, "and");
         case opcode::or_:                return parse_binary_op(data, "or");
+        case opcode::xor_:               return parse_binary_op(data, "xor");
         case opcode::not_:               return parse_unary_op(data, "not");
         case opcode::find_set_left_bit:  return parse_unary_op(data, "find_set_left_bit");
         case opcode::find_set_right_bit: return parse_unary_op(data, "find_set_right_bit");
@@ -913,6 +927,9 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                     return parse_logical_op(data, "lnotless");
                 }
                 auto arg = parse_term_arg(data);
+                if (!arg) {
+                    return arg;
+                }
                 return make_parse_result(arg.data, knew<unary_op_node>("lnot", std::move(arg.result)));
             }
         case opcode::lequal:             return parse_logical_op(data, "lequal");
@@ -933,6 +950,12 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                 return make_parse_result(target.data, knew<unary_op_node>("cond_ref_of", std::move(name.result), std::move(target.result)));
             }
             break;
+        case opcode::sleep:
+            {
+                // DefSleep := SleepOp MsecTime (:= TermArg => Integer)
+                auto msectime = parse_term_arg(data);
+                return make_parse_result(msectime.data, knew<unary_op_node>("sleep", std::move(msectime.result)));
+            }
         case opcode::acquire:
             {
                 // DefAcquire := AcquireOp MutexObject (:= SuperName) Timeout (:= WordData)
@@ -1325,7 +1348,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                     return predicate_arg;
                 }
                 data = data.moved_to(pkg_data.end());
-                if (data.peek_opcode() == opcode::else_) {
+                if (data.begin() != data.end() && data.peek_opcode() == opcode::else_) {
                     data.consume_opcode();
                     auto else_pkg = adjust_with_pkg_length(data);
                     if (auto else_term_list = parse_term_list(else_pkg)) {
@@ -1350,6 +1373,10 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 } else {
                     return predicate;
                 }
+            }
+        case opcode::noop:
+            {
+                return make_parse_result(data, make_text_node("noop"));
             }
         case opcode::return_:
             {
@@ -1380,6 +1407,14 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 // Very hackish
                 return make_parse_result(name.data, knew<binary_op_node>("CreateField", std::move(source_buffer.result), std::move(num_bits.result), make_text_node(name.result)));
             }
+        case opcode::fatal:
+            {
+                // DefFatal := FatalOp FatalType (:= ByteData) FatalCode (:= DwordData) FatalArg (:= TermArg => Intger)
+                auto type = data.consume();
+                auto code = data.consume_dword();
+                auto arg  = parse_term_arg(data);
+                return make_parse_result(arg.data, knew<op_node_base<3>>("Fatal", make_const_node(type), make_const_node(code), std::move(arg.result)));
+            }
         case opcode::op_region:
             {
                 // DefOpRegion := OpRegionOp NameString RegionSpace(byte) RegionOffset(term=>int) RegionLen(term=>int)
@@ -1394,21 +1429,23 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
         case opcode::field:
             {
                 // DefField := FieldOp PkgLength NameString FieldFlags FieldList
-                auto name        = parse_name_string(adjust_with_pkg_length(data));
+                auto pkg_data    = adjust_with_pkg_length(data);
+                auto name        = parse_name_string(pkg_data);
                 auto field_flags = parse_field_flags(name.data);
                 //dbgout() << "DefField " << name.result.begin() << " flags " << *field_flags.result << "\n";
                 auto field_list  = parse_field_list(field_flags.data);
-                return make_parse_result(data.moved_to(field_list.data.begin()), knew<field_node>(std::move(name.result), field_flags.result, std::move(field_list.result)));
+                return make_parse_result(data.moved_to(pkg_data.end()), knew<field_node>(std::move(name.result), field_flags.result, std::move(field_list.result)));
             }
         case opcode::device:
             {
                 // DefDevice := DeviceOp PkgLength NameString ObjectList
-                auto name        = parse_name_string(adjust_with_pkg_length(data));
+                auto pkg_data    = adjust_with_pkg_length(data);
+                auto name        = parse_name_string(pkg_data);
                 auto scope_reg   = data.ns().open_scope(name.result.begin());
                 auto object_list = parse_object_list(name.data);
                 //dbgout() << "DefDevice " << name.result.begin() << "\n";
                 //return make_parse_result(parse_state(object_list.data.begin(), data.end()), knew<dummy_node>("device"));
-                return make_parse_result(data.moved_to(object_list.data.begin()), knew<device_node>(std::move(scope_reg), std::move(name.result), std::move(object_list.result)));
+                return make_parse_result(data.moved_to(pkg_data.end()), knew<device_node>(std::move(scope_reg), std::move(name.result), std::move(object_list.result)));
             }
         case opcode::processor:
             {
@@ -1420,7 +1457,27 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 const auto pblk_len  = name.data.consume();
                 auto objs            = parse_object_list(name.data);
                 dbgout() << "Processor " << name.result.begin() << " Id " << as_hex(proc_id) << " Addr " << as_hex(pblk_addr) << " Len " << as_hex(pblk_len) << "\n";
-                return make_parse_result(data.moved_to(objs.data.begin()), make_text_node("Processor"));
+                return make_parse_result(data.moved_to(pkg_data.end()), make_text_node("Processor"));
+            }
+        case opcode::power_res:
+            {
+                // DefPowerRes := PowerResOp PkgLength NameString SystemLevel (:= ByteData) ResourceOrder (:= WordData) ObjectList
+                auto pkg_data        = adjust_with_pkg_length(data);
+                auto name            = parse_name_string(pkg_data);
+                const auto sys_lvl   = name.data.consume();
+                const auto res_order = name.data.consume_word();
+                auto objs            = parse_object_list(name.data);
+                dbgout() << "PowerRes " << name.result.begin() << " SystemLevel " << as_hex(sys_lvl) << " ResourceOrder " << as_hex(res_order) << "\n";
+                return make_parse_result(data.moved_to(pkg_data.end()), make_text_node("PowerRes"));
+            }
+        case opcode::thermal_zone:
+            {
+                // DefThermalZone := ThermalZoneOp PkgLength NameString ObjectList
+                auto pkg_data        = adjust_with_pkg_length(data);
+                auto name            = parse_name_string(pkg_data);
+                auto objs            = parse_object_list(name.data);
+                dbgout() << "ThermalZone " << name.result.begin() << "\n";
+                return make_parse_result(data.moved_to(pkg_data.end()), make_text_node("ThermalZone"));
             }
         case opcode::index_field:
             {
