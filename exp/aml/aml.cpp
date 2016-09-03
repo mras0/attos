@@ -323,14 +323,25 @@ public:
         return scope_registration{*this, std::move(old_scope)};
     }
 
-    node* lookup(const char* name) {
+    constexpr static int unknown_arg_count = -1;
+    int method_arg_count(const char* name) const;
+private:
+    struct binding {
+        kstring name;
+        int     arg_count;
+    };
+
+    kstring          cur_namespace_; // Not NUL-terimnated!
+    kvector<binding> bindings_;
+
+    const binding* lookup(const char* name) const {
         // ABCD      -- search rules apply
         // ^ABCD     -- search rules do not apply
         // XYZ.ABCD  -- search rules do not apply
         // \XYZ.ABCD -- search rules do not apply
         if (name[0] == root_char) {
             if (auto* b = find_binding(name+1)) {
-                return b->n;
+                return b;
             }
         } else if (name[0] == parent_prefix_char) {
             auto ns = cur_namespace_;
@@ -338,7 +349,7 @@ public:
                 REQUIRE(parent_scope(ns));
             }
             if (auto* b = find_binding(name)) {
-                return b->n;
+                return b;
             }
         } else {
             auto ns = cur_namespace_;
@@ -346,25 +357,15 @@ public:
                 const auto rn = relative(ns, name);
                 //dbgout() << "Trying " << rn.begin() << "\n";
                 if (auto* b = find_binding(rn.begin())) {
-                    return b->n;
+                    return b;
                 }
                 if (!parent_scope(ns)) {
                     break;
                 }
             }
         }
-        dbgout() << "!! Lookup of " << name << " failed in " << hack_cur_name() << "\n";
         return nullptr;
     }
-
-private:
-    struct binding {
-        kstring name;
-        node*   n;
-    };
-
-    kstring          cur_namespace_; // Not NUL-terimnated!
-    kvector<binding> bindings_;
 
     const binding* find_binding(const char* name) const {
         for (const auto& b : bindings_) {
@@ -396,12 +397,7 @@ private:
         return format_str((const char*)cur_namespace_.begin()).max_width((int)cur_namespace_.size());
     }
 
-    void close_scope(kstring&& old_scope, node& n) {
-        auto name = relative(cur_namespace_, "");
-        // dbgout() << "Registered " << name.begin() << " as " << n << "\n";
-        bindings_.push_back(binding{std::move(name), &n});
-        cur_namespace_ = std::move(old_scope);
-    }
+    void close_scope(kstring&& old_scope, node& n);
 };
 using scope_reg = name_space::scope_registration;
 
@@ -773,6 +769,28 @@ method_node* method_cast(node& n) {
     return nullptr;
 }
 
+int name_space::method_arg_count(const char* name) const {
+    if (auto b = lookup(name)) {
+        return b->arg_count;
+    }
+    dbgout() << "!! Lookup of " << name << " failed in " << hack_cur_name() << "\n";
+    return unknown_arg_count;
+}
+
+void name_space::close_scope(kstring&& old_scope, node& n) {
+    auto name = relative(cur_namespace_, "");
+    // dbgout() << "Registered " << name.begin() << " as " << n << "\n";
+    int arg_count = 0;
+    if (auto m = method_cast(n)) {
+        arg_count = m->arg_count();
+    }
+    if (auto old = find_binding(name.begin())) {
+        // TODO: Handle this case better. We should actually append to the old node if it's a container node
+        REQUIRE(arg_count == old->arg_count);
+    }
+    bindings_.push_back(binding{std::move(name), arg_count});
+    cur_namespace_ = std::move(old_scope);
+}
 
 parse_result<node_ptr> parse_unary_op(parse_state data, const char* name) {
     return unary_op_node::parse(data, name, true);
@@ -846,21 +864,17 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
         // Is this sometimes a method invocation?
         auto name = parse_name_string(data);
         data = name.data;
-        if (auto n = data.ns().lookup(name.result.begin())) {
-            //dbgout () << "Known name: " << *n << "\n";
-            if (auto m = method_cast(*n)) {
-                //dbgout() << "Method with " << m->arg_count() << " argument(s)\n";
-                for (int i = 0; i < m->arg_count(); ++i) {
-                    auto arg = parse_term_arg(data);
-                    if (!arg) return arg;
-                    //dbgout() << "Arg" << i << ": " << *arg.result << "\n";
-                    data = arg.data;
-                }
-                return make_parse_result(data, make_text_node(name.result));
+        const int arg_count = data.ns().method_arg_count(name.result.begin());
+        if (arg_count >= 0) {
+            for (int i = 0; i < arg_count; ++i) {
+                auto arg = parse_term_arg(data);
+                if (!arg) return arg;
+                //dbgout() << "Arg" << i << ": " << *arg.result << "\n";
+                data = arg.data;
             }
-            // assume object reference
             return make_parse_result(data, make_text_node(name.result));
         }
+        REQUIRE(arg_count == name_space::unknown_arg_count);
         return {data, node_ptr{}};
     }
 
@@ -1541,11 +1555,9 @@ void process(array_view<uint8_t> data)
     }
     auto osi_method = node_ptr{knew<method_node>(ns.open_scope("\\_OSI"), make_kstring("\\_OSI"), uint8_t(1), knew<term_list_node>(kvector<node_ptr>())).release()};
     parse_state state{ns, data};
-#if 1
-    dbgout() << *parse_term_list(state).result << "\n";
-#else
-    parse_term_list(state);
-#endif
+    auto res = parse_term_list(state);
+    REQUIRE(res);
+    dbgout() << *res.result << "\n";
 }
 
 } } // namespace attos::aml
