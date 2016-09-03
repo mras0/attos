@@ -1,4 +1,4 @@
-@call compile.cmd
+@call compile.cmd || exit /b 1
 aml.exe bochs_dsdt.aml>nul || exit/b 1
 aml.exe vmware_dsdt.aml>nul || exit/b 1
 aml.exe x200s_dsdt.aml>nul || exit/b 1
