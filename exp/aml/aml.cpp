@@ -95,6 +95,12 @@ enum class opcode : uint16_t {
     reserved_field      = 0x8000,
     access_field,
     named_field,
+    package_element,
+
+    null_name,
+    constant,
+    name_lookup,
+    method_call,
 
     dead_scope          = 0xfffe,
     invalid             = 0xffff,
@@ -194,6 +200,11 @@ out_stream& operator<<(out_stream& os, opcode op) {
         case opcode::reserved_field:      return os << "ReservedField";
         case opcode::access_field:        return os << "AccessField";
         case opcode::named_field:         return os << "NamedField";
+        case opcode::package_element:     return os << "PackageElement";
+        case opcode::null_name:           return os << "NullName";
+        case opcode::constant:            return os << "Constant";
+        case opcode::name_lookup:         return os << "NameLookup";
+        case opcode::method_call:         return os << "MethodCall";
         case opcode::dead_scope:          return os << "<DeadScope>";
         case opcode::invalid:             return os << "<Unknown>";
     }
@@ -258,6 +269,7 @@ node_ptr make_simple_node(opcode op) {
 class text_node : public node {
 public:
     explicit text_node(opcode op, const char* name) : op_(op), name_(make_kstring(name)) {
+        REQUIRE(op != opcode::name);
     }
 
 private:
@@ -289,7 +301,16 @@ private:
     virtual void do_print(out_stream& os) const override {
         os << "0x" << as_hex(value_);
     }
+
+    virtual opcode do_opcode() const override {
+        return opcode::constant;
+    }
 };
+template<typename T>
+node_ptr make_const_node(T value) {
+    return node_ptr{knew<const_node<T>>(value).release()};
+}
+
 
 class buffer_node : public node {
 public:
@@ -303,6 +324,10 @@ private:
     kvector<uint8_t> data_;
     virtual void do_print(out_stream& os) const override {
         os << "Buffer(Size=" << *buffer_size_ << ", Data[" << data_.size() << "])";
+    }
+
+    virtual opcode do_opcode() const override {
+        return opcode::buffer;
     }
 };
 
@@ -353,11 +378,6 @@ private:
         return opcode::package;
     }
 };
-
-template<typename T>
-node_ptr make_const_node(T value) {
-    return node_ptr{knew<const_node<T>>(value).release()};
-}
 
 class name_space;
 
@@ -499,7 +519,7 @@ public:
         if (auto b = lookup_binding(name)) {
             return b->n;
         }
-        dbgout() << "failing lookup_node(" << name << ") in " << hack_cur_name() << "\n";
+        //dbgout() << "failing lookup_node(" << name << ") in " << hack_cur_name() << "\n";
         return nullptr;
     }
 
@@ -508,17 +528,14 @@ public:
         if (auto b = find_binding(relative(cur_namespace_, name).begin())) {
             return b->n;
         }
-        dbgout() << "failing lookup_node_in_scope(" << name << ") in " << hack_cur_name() << "\n";
+        //dbgout() << "failing lookup_node_in_scope(" << name << ") in " << hack_cur_name() << "\n";
         return nullptr;
     }
 
-    constexpr static int unknown_arg_count = -1;
-    int method_arg_count(const char* name) const;
 private:
     struct binding {
         kstring name;
         node*   n;
-        int     arg_count;
     };
 
     kstring          cur_namespace_; // Not NUL-terimnated!
@@ -591,7 +608,23 @@ private:
         return format_str((const char*)cur_namespace_.begin()).max_width((int)cur_namespace_.size());
     }
 
-    void close_scope(kstring&& old_scope, node& n);
+    void name_space::close_scope(kstring&& old_scope, node& n) {
+        auto name = relative(cur_namespace_, "");
+        cur_namespace_ = std::move(old_scope);
+
+        if (auto old = find_binding(name.begin())) {
+            if (n.op() == opcode::dead_scope) {
+                return;
+            }
+            dbgout() << "Merge\n" << *old->n << "\nwith\n" << n << "\n";
+            dbgout() << "Not implemented: Merge " << old->n->op() << " with " << n.op() << "\n";
+            dbgout() << "Name = " << name.begin() << "\n";
+            REQUIRE(false);
+            return;
+        }
+        //dbgout() << "Registering " << name.begin() << " " << n.op() << "\n";
+        bindings_.push_back(binding{std::move(name), &n});
+    }
 };
 using scope_reg = name_space::scope_registration;
 
@@ -737,7 +770,7 @@ parse_result<node_ptr> parse_super_name(parse_state data)
         return parse_arg_or_local(data);
     } else if (is_name_string_start(first)) {
         auto name = parse_name_string(data);
-        return make_parse_result(name.data, make_text_node(opcode::name, name.result));
+        return make_parse_result(name.data, make_text_node(opcode::name_lookup, name.result));
     } else if (is_type6_opcode(static_cast<opcode>(first))) {
         return parse_type6_opcode(data);
     }
@@ -846,7 +879,7 @@ parse_result<node_ptr> parse_data_object(parse_state data)
                     if (is_name_string_start(data.peek())) {
                         auto name = parse_name_string(data);
                         //dbgout() << "PackageElement NameString " << name.result.begin() << "\n";
-                        return make_parse_result(name.data, make_text_node(opcode::name, name.result));
+                        return make_parse_result(name.data, make_text_node(opcode::package_element, name.result));
                     } else {
                         return parse_data_ref_object(data);
                         //dbgout() << "PackageElement DataRefObject " << *data_ref_object.result << "\n";
@@ -870,7 +903,7 @@ parse_result<node_ptr> parse_target(parse_state data) {
     // Target := SuperName | NullName
     if (data.peek() == 0) {
         data.consume();
-        return make_parse_result(data, make_text_node(opcode::name, ""));
+        return make_parse_result(data, make_simple_node(opcode::null_name));
     } else {
         return parse_super_name(data);
     }
@@ -918,7 +951,7 @@ private:
         for (int i = 0; i < arity; ++i) {
             os << " " << *args_[i];
         }
-        if (args_[arity]) {
+        if (args_[arity] && args_[arity]->op() != opcode::null_name) {
             os << " " << *args_[arity];
         }
     }
@@ -941,6 +974,7 @@ public:
     uint8_t arg_count() const { return flags_ & 0x07; }
     bool    serialized() const { return !!(flags_ & 0x08); }
     uint8_t sync_level() const { return flags_>>4; }
+    const char* name() const { return name_.begin(); }
 
 private:
     kstring        name_;
@@ -960,36 +994,28 @@ private:
     }
 };
 
-int name_space::method_arg_count(const char* name) const {
-    if (auto b = lookup_binding(name)) {
-        return b->arg_count;
+class name_node : public node {
+public:
+    explicit name_node(scope_reg&& ns_reg, kstring&& name, node_ptr&& obj) : name_(std::move(name)), obj_(std::move(obj)) {
+        ns_reg.provide(*this);
+        REQUIRE(obj_);
     }
-    dbgout() << "!! Lookup of " << name << " failed in " << hack_cur_name() << "\n";
-    return unknown_arg_count;
-}
 
-void name_space::close_scope(kstring&& old_scope, node& n) {
-    auto name = relative(cur_namespace_, "");
-    cur_namespace_ = std::move(old_scope);
+    const node& obj() const {
+        return *obj_;
+    }
 
-    if (auto old = find_binding(name.begin())) {
-        if (n.op() == opcode::dead_scope) {
-            return;
-        }
-        dbgout() << "Merge\n" << *old->n << "\nwith\n" << n << "\n";
-        dbgout() << "Not implemented: Merge " << old->n->op() << " with " << n.op() << "\n";
-        dbgout() << "Name = " << name.begin() << "\n";
-        REQUIRE(false);
-        return;
+private:
+    kstring     name_;
+    node_ptr    obj_;
+    virtual void do_print(out_stream& os) const override {
+        os << "Name " << name_.begin() << " " << *obj_;
     }
-    //dbgout() << "Registering " << name.begin() << " " << n.op() << "\n";
-    if (n.op() == opcode::invalid) {
-        dbgout() << "Registering " << name.begin() << " " << n << "\n";
-        REQUIRE(false);
+
+    virtual opcode do_opcode() const override {
+        return opcode::name;
     }
-    const int arg_count = n.op() == opcode::method ? static_cast<const method_node&>(n).arg_count() : 0;
-    bindings_.push_back(binding{std::move(name), &n, arg_count});
-}
+};
 
 parse_result<node_ptr> parse_unary_op(parse_state data, const char* name) {
     return unary_op_node::parse(data, name, true);
@@ -1022,6 +1048,23 @@ parse_result<node_ptr> parse_type6_opcode(parse_state data) {
     REQUIRE(op == opcode::index);
     return parse_index(data);
 }
+
+class method_call_node : public node {
+public:
+    explicit method_call_node(method_node& method, node_container_ptr&& args) : method_(method), args_(std::move(args)) {
+    }
+
+private:
+    method_node&       method_;
+    node_container_ptr args_;
+    virtual void do_print(out_stream& os) const override {
+        os << method_.name() << "(" << *args_ << ")";
+    }
+
+    virtual opcode do_opcode() const override {
+        return opcode::method_call;
+    }
+};
 
 constexpr bool is_type2_opcode(opcode op) {
     return op == opcode::add
@@ -1063,17 +1106,20 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
         // Is this sometimes a method invocation?
         auto name = parse_name_string(data);
         data = name.data;
-        const int arg_count = data.ns().method_arg_count(name.result.begin());
-        if (arg_count >= 0) {
-            for (int i = 0; i < arg_count; ++i) {
+        if (auto n = data.ns().lookup_node(name.result.begin())) {
+            if (n->op() != opcode::method) {
+                return make_parse_result(data, make_text_node(opcode::name_lookup, name.result));
+            }
+            auto& method = static_cast<method_node&>(*n);
+            kvector<node_ptr> args;
+            for (int i = 0; i < method.arg_count(); ++i) {
                 auto arg = parse_term_arg(data);
                 if (!arg) return arg;
-                //dbgout() << "Arg" << i << ": " << *arg.result << "\n";
+                args.push_back(std::move(arg.result));
                 data = arg.data;
             }
-            return make_parse_result(data, make_text_node(opcode::name, name.result)); // TODO: HACK: We're throwing away the arguments
+            return make_parse_result(data, knew<method_call_node>(method, knew<node_container>(std::move(args))));
         }
-        REQUIRE(arg_count == name_space::unknown_arg_count);
         return {data, node_ptr{}};
     }
 
@@ -1356,28 +1402,6 @@ parse_result<node_ptr> parse_data_ref_object(parse_state data)
     return parse_data_object(data); // TODO: ObjectReference | DDBHandle
 }
 
-class name_node : public node {
-public:
-    explicit name_node(scope_reg&& ns_reg, kstring&& name, node_ptr&& obj) : name_(std::move(name)), obj_(std::move(obj)) {
-        ns_reg.provide(*this);
-    }
-
-    const char* name() const {
-        return name_.begin();
-    }
-
-private:
-    kstring     name_;
-    node_ptr    obj_;
-    virtual void do_print(out_stream& os) const override {
-        os << "Name " << name() << " " << *obj_;
-    }
-
-    virtual opcode do_opcode() const override {
-        return opcode::name;
-    }
-};
-
 class scope_node : public node {
 public:
     explicit scope_node(scope_reg&& ns_reg, kstring&& name, node_container_ptr&& statements) : name_(std::move(name)), statements_(std::move(statements)) {
@@ -1645,7 +1669,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto num_bits      = parse_term_arg(bit_index.data);
                 auto name          = parse_name_string(num_bits.data);
                 // Very hackish
-                return make_parse_result(name.data, knew<binary_op_node>("CreateField", std::move(source_buffer.result), std::move(num_bits.result), make_text_node(opcode::name, name.result)));
+                return make_parse_result(name.data, knew<binary_op_node>("CreateField", std::move(source_buffer.result), std::move(num_bits.result), make_text_node(opcode::name_lookup, name.result)));
             }
         case opcode::fatal:
             {
@@ -1706,8 +1730,9 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 const auto pblk_addr = name.data.consume_dword();
                 const auto pblk_len  = name.data.consume();
                 auto objs            = parse_object_list(name.data);
-                dbgout() << "Processor " << name.result.begin() << " Id " << as_hex(proc_id) << " Addr " << as_hex(pblk_addr) << " Len " << as_hex(pblk_len) << "\n";
-                return make_parse_result(data.moved_to(pkg_data.end()), make_simple_node(op));
+                //dbgout() << "Processor " << name.result.begin() << " Id " << as_hex(proc_id) << " Addr " << as_hex(pblk_addr) << " Len " << as_hex(pblk_len) << "\n";
+                REQUIRE(objs);
+                return make_parse_result(data.moved_to(pkg_data.end()), knew<container_node>(op, std::move(objs.result)));
             }
         case opcode::power_res:
             {
@@ -1717,8 +1742,9 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 const auto sys_lvl   = name.data.consume();
                 const auto res_order = name.data.consume_word();
                 auto objs            = parse_object_list(name.data);
-                dbgout() << "PowerRes " << name.result.begin() << " SystemLevel " << as_hex(sys_lvl) << " ResourceOrder " << as_hex(res_order) << "\n";
-                return make_parse_result(data.moved_to(pkg_data.end()), make_simple_node(op));
+                REQUIRE(objs);
+                //dbgout() << "PowerRes " << name.result.begin() << " SystemLevel " << as_hex(sys_lvl) << " ResourceOrder " << as_hex(res_order) << "\n";
+                return make_parse_result(data.moved_to(pkg_data.end()), knew<container_node>(op, std::move(objs.result)));
             }
         case opcode::thermal_zone:
             {
