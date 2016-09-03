@@ -75,6 +75,8 @@ enum class opcode : uint16_t {
     power_res           = 0x5b84,
     thermal_zone        = 0x5b85,
     index_field         = 0x5b86,
+
+    invalid             = 0xffff,
 };
 
 constexpr bool is_extended(opcode op) {
@@ -85,11 +87,6 @@ out_stream& operator<<(out_stream& os, opcode op) {
     return os << as_hex(static_cast<unsigned>(op)).width(is_extended(op) ? 4 : 2);
 }
 
-enum class node_kind {
-    normal,
-    method,
-};
-
 class __declspec(novtable) node {
 public:
     virtual ~node() = 0 {}
@@ -99,14 +96,14 @@ public:
         return os;
     }
 
-    node_kind kind() const {
-        return do_kind();
+    opcode op() const {
+        return do_opcode();
     }
 
 private:
     virtual void do_print(out_stream& os) const = 0;
-    virtual node_kind do_kind() const {
-        return node_kind::normal;
+    virtual opcode do_opcode() const {
+        return opcode::invalid;
     }
 };
 using node_ptr = kowned_ptr<node>;
@@ -169,29 +166,46 @@ void do_newline(out_stream& os) {
     write_many(os, ' ', indent*2);
 }
 
-template<const char* const Name>
-class container_node_impl : public node {
+class node_container {
 public:
-    explicit container_node_impl(kvector<node_ptr>&& elements) : elements_(std::move(elements)) {
+    explicit node_container() = default;
+    explicit node_container(kvector<node_ptr>&& elements) : elements_(std::move(elements)) {
     }
 
-private:
-    kvector<node_ptr> elements_;
-    virtual void do_print(out_stream& os) const override {
-        os << Name << " [";
+    kvector<node_ptr>& elements() { return elements_; }
+    const kvector<node_ptr>& elements() const { return elements_; }
+
+    friend out_stream& operator<<(out_stream& os, const node_container& n) {
+        os << "[";
         ++indent;
-        for (const auto& p : elements_) {
+        for (const auto& p : n.elements_) {
             do_newline(os);
             os << *p;
         }
         --indent;
         do_newline(os);
         os << "]";
+        return os;
+    }
+private:
+    kvector<node_ptr> elements_;
+};
+using node_container_ptr = kowned_ptr<node_container>;
+
+class package_node : public node {
+public:
+    explicit package_node(node_container_ptr&& nodes) : nodes_(std::move(nodes)) {
+    }
+private:
+    node_container_ptr nodes_;
+
+    virtual void do_print(out_stream& os) const override {
+        os << "Package " << *nodes_;
+    }
+    virtual opcode do_opcode() const override {
+        return opcode::package;
     }
 };
-
-extern const char package_node_tag[] = "Package";
-using package_node = container_node_impl<package_node_tag>;
 
 template<typename T>
 node_ptr make_const_node(T value) {
@@ -323,18 +337,26 @@ public:
         return scope_registration{*this, std::move(old_scope)};
     }
 
+    node* lookup_node(const char* name) const {
+        if (auto b = lookup_binding(name)) {
+            return b->n;
+        }
+        return nullptr;
+    }
+
     constexpr static int unknown_arg_count = -1;
     int method_arg_count(const char* name) const;
 private:
     struct binding {
         kstring name;
+        node*   n;
         int     arg_count;
     };
 
     kstring          cur_namespace_; // Not NUL-terimnated!
     kvector<binding> bindings_;
 
-    const binding* lookup(const char* name) const {
+    const binding* lookup_binding(const char* name) const {
         // ABCD      -- search rules apply
         // ^ABCD     -- search rules do not apply
         // XYZ.ABCD  -- search rules do not apply
@@ -566,13 +588,24 @@ parse_result<node_ptr> parse_super_name(parse_state data)
     REQUIRE(false);
 }
 
-extern const char term_list_node_tag[] = "TermList";
-using term_list_node = container_node_impl<term_list_node_tag>;
-using term_list_node_ptr = kowned_ptr<term_list_node>;
-
-parse_result<term_list_node_ptr> parse_term_list(parse_state data);
+parse_result<node_container_ptr> parse_term_list(parse_state data);
 parse_result<node_ptr> parse_data_ref_object(parse_state data);
 parse_result<node_ptr> parse_term_arg(parse_state data);
+
+template<typename P>
+parse_result<node_container_ptr> parse_list(parse_state state, P p)
+{
+    kvector<node_ptr> objs;
+    while (state.begin() != state.end()) {
+        auto res = p(state);
+        state = res.data;
+        if (!res) {
+            return {state, node_container_ptr{}};
+        }
+        objs.push_back(std::move(res.result));
+    }
+    return {state, knew<node_container>(std::move(objs))};
+}
 
 constexpr bool is_data_object(opcode op) {
     return op == opcode::zero
@@ -649,22 +682,22 @@ parse_result<node_ptr> parse_data_object(parse_state data)
                 //PackageElement := DataRefObject | NameString
                 auto pkg_data = adjust_with_pkg_length(data);
                 const uint8_t num_elements = pkg_data.consume();
-                kvector<node_ptr> elements;
-                while (pkg_data.begin() != pkg_data.end()) {
-                    if (is_name_string_start(pkg_data.peek())) {
-                        auto name = parse_name_string(pkg_data);
+                auto list = parse_list(pkg_data, [](parse_state data) -> parse_result<node_ptr> {
+                    if (is_name_string_start(data.peek())) {
+                        auto name = parse_name_string(data);
                         //dbgout() << "PackageElement NameString " << name.result.begin() << "\n";
-                        elements.push_back(make_text_node(name.result.begin()));
-                        pkg_data = name.data;
+                        return make_parse_result(name.data, make_text_node(name.result.begin()));
                     } else {
-                        auto data_ref_object = parse_data_ref_object(pkg_data);
+                        return parse_data_ref_object(data);
                         //dbgout() << "PackageElement DataRefObject " << *data_ref_object.result << "\n";
-                        elements.push_back(std::move(data_ref_object.result));
-                        pkg_data = data_ref_object.data;
                     }
-                }
+                });
+                REQUIRE(list.result);
+                auto& elements = list.result->elements();
+                //dbgout()<<"elements.size() = " << elements.size() << "\n";
+                //dbgout()<<"num_elements = " << num_elements << "\n";
                 REQUIRE(elements.empty() || num_elements == elements.size()); // Local0 = Package(0x02){} is legal ==> PackageElementList is empty
-                return make_parse_result(data.moved_to(pkg_data.begin()), knew<package_node>(std::move(elements)));
+                return make_parse_result(data.moved_to(pkg_data.end()), knew<package_node>(std::move(list.result)));
             }
         default:
             hexdump(dbgout(), data.begin()-2, std::min(data.size()+2, 64ULL));
@@ -736,7 +769,7 @@ using binary_op_node = op_node_base<2>;
 
 class method_node : public node {
 public:
-    explicit method_node(scope_reg&& ns_reg, kstring&& name, uint8_t flags, term_list_node_ptr&& statements) : name_(std::move(name)), flags_(flags), statements_(std::move(statements)) {
+    explicit method_node(scope_reg&& ns_reg, kstring&& name, uint8_t flags, node_container_ptr&& statements) : name_(std::move(name)), flags_(flags), statements_(std::move(statements)) {
         ns_reg.provide(*this);
     }
     /* MethodFlags := ByteData // bit 0-2: ArgCount (0-7)
@@ -750,27 +783,25 @@ public:
     uint8_t sync_level() const { return flags_>>4; }
 
 private:
-    kstring            name_;
-    uint8_t            flags_;
-    term_list_node_ptr statements_;
+    kstring        name_;
+    uint8_t        flags_;
+    node_container_ptr statements_;
     virtual void do_print(out_stream& os) const override {
-        os << "Method " << name_.begin() << " Flags " << as_hex(flags_) << " " << *statements_;
+        os << "Method " << name_.begin() << " Flags " << as_hex(flags_) << " ";
+        if (statements_) {
+            os << *statements_;
+        } else {
+            os << "[Parse failed]";
+        }
     }
 
-    virtual node_kind do_kind() const {
-        return node_kind::method;
+    virtual opcode do_opcode() const override {
+        return opcode::method;
     }
 };
 
-method_node* method_cast(node& n) {
-    if (n.kind() == node_kind::method) {
-        return static_cast<method_node*>(&n);
-    }
-    return nullptr;
-}
-
 int name_space::method_arg_count(const char* name) const {
-    if (auto b = lookup(name)) {
+    if (auto b = lookup_binding(name)) {
         return b->arg_count;
     }
     dbgout() << "!! Lookup of " << name << " failed in " << hack_cur_name() << "\n";
@@ -779,17 +810,15 @@ int name_space::method_arg_count(const char* name) const {
 
 void name_space::close_scope(kstring&& old_scope, node& n) {
     auto name = relative(cur_namespace_, "");
-    // dbgout() << "Registered " << name.begin() << " as " << n << "\n";
-    int arg_count = 0;
-    if (auto m = method_cast(n)) {
-        arg_count = m->arg_count();
-    }
-    if (auto old = find_binding(name.begin())) {
-        // TODO: Handle this case better. We should actually append to the old node if it's a container node
-        REQUIRE(arg_count == old->arg_count);
-    }
-    bindings_.push_back(binding{std::move(name), arg_count});
     cur_namespace_ = std::move(old_scope);
+
+    // dbgout() << "Registered " << name.begin() << " as " << n << "\n";
+    if (auto old = find_binding(name.begin())) {
+        // TODO: Merge old with n
+        return;
+    }
+    const int arg_count = n.op() == opcode::method ? static_cast<const method_node&>(n).arg_count() : 0;
+    bindings_.push_back(binding{std::move(name), &n, arg_count});
 }
 
 parse_result<node_ptr> parse_unary_op(parse_state data, const char* name) {
@@ -1027,19 +1056,16 @@ private:
         os << "NamedField " << name_.begin() << " Length " << as_hex(len_).width(0);
     }
 };
-extern const char field_list_node_tag[] = "FieldList";
-using field_list_node = container_node_impl<field_list_node_tag>;
-using field_list_node_ptr = kowned_ptr<field_list_node>;
 
 class field_node : public node {
 public:
-    explicit field_node(kstring&& name, uint8_t flags, field_list_node_ptr&& fields) : name_(std::move(name)), flags_(flags), fields_(std::move(fields)) {
+    explicit field_node(kstring&& name, uint8_t flags, node_container_ptr&& fields) : name_(std::move(name)), flags_(flags), fields_(std::move(fields)) {
     }
 
 private:
-    kstring             name_;
-    uint8_t             flags_;
-    field_list_node_ptr fields_;
+    kstring        name_;
+    uint8_t        flags_;
+    node_container_ptr fields_;
     virtual void do_print(out_stream& os) const override {
         os << "Field " << name_.begin() << " Flags " << as_hex(flags_) << " " << *fields_;
     }
@@ -1063,10 +1089,11 @@ parse_result<node_ptr> parse_named_field(parse_state data)
     return make_parse_result(len.data, knew<named_field_node>(std::move(scope_reg), std::move(name), len.result));
 }
 
-parse_result<field_list_node_ptr> parse_field_list(parse_state data)
+parse_result<node_container_ptr> parse_field_list(parse_state data)
 {
     // FieldList := Nothing | <FieldElement FieldList>
     kvector<node_ptr> elements;
+    // TODO: Use parse_list
     while (data.begin() != data.end()) {
         // FieldElement  := NamedField | ReservedField | AccessField | ExtendedAccessField | ConnectField
         // NamedField    := NameSeg PkgLength
@@ -1095,26 +1122,27 @@ parse_result<field_list_node_ptr> parse_field_list(parse_state data)
             REQUIRE(false);
         }
     }
-    return {data, knew<field_list_node>(std::move(elements))};
+    return {data, knew<node_container>(std::move(elements))};
 }
 
-extern const char obj_list_node_tag[] = "ObjectList";
-using obj_list_node = container_node_impl<obj_list_node_tag>;
-using obj_list_node_ptr = kowned_ptr<obj_list_node>;
-
-parse_result<obj_list_node_ptr> parse_object_list(parse_state data);
+parse_result<node_container_ptr> parse_object_list(parse_state data);
 
 class device_node : public node {
 public:
-    explicit device_node(scope_reg&& ns_reg, kstring&& name, obj_list_node_ptr&& objs) : name_(std::move(name)), objs_(std::move(objs)) {
+    explicit device_node(scope_reg&& ns_reg, kstring&& name, node_container_ptr&& objs) : name_(std::move(name)), objs_(std::move(objs)) {
         ns_reg.provide(*this);
     }
 
 private:
-    kstring            name_;
-    obj_list_node_ptr objs_;
+    kstring        name_;
+    node_container_ptr objs_;
+
     virtual void do_print(out_stream& os) const override {
         os << "Device " << name_.begin() << " " << *objs_;
+    }
+
+    virtual opcode do_opcode() const override {
+        return opcode::device;
     }
 };
 
@@ -1164,30 +1192,34 @@ private:
 
 class scope_node : public node {
 public:
-    explicit scope_node(scope_reg&& ns_reg, kstring&& name, term_list_node_ptr&& statements) : name_(std::move(name)), statements_(std::move(statements)) {
+    explicit scope_node(scope_reg&& ns_reg, kstring&& name, node_container_ptr&& statements) : name_(std::move(name)), statements_(std::move(statements)) {
         ns_reg.provide(*this);
     }
 
 private:
-    kstring            name_;
-    term_list_node_ptr statements_;
+    kstring        name_;
+    node_container_ptr statements_;
     virtual void do_print(out_stream& os) const override {
         os << "Scope " << name_.begin() << " " << *statements_;
+    }
+
+    virtual opcode do_opcode() const override {
+        return opcode::scope;
     }
 };
 
 class if_node : public node {
 public:
-    explicit if_node(node_ptr&& predicate, term_list_node_ptr&& if_statements, term_list_node_ptr&& else_statements)
+    explicit if_node(node_ptr&& predicate, node_container_ptr&& if_statements, node_container_ptr&& else_statements)
         : predicate_(std::move(predicate))
         , if_statements_(std::move(if_statements))
         , else_statements_(std::move(else_statements)) {
     }
 
 private:
-    node_ptr           predicate_;
-    term_list_node_ptr if_statements_;
-    term_list_node_ptr else_statements_;
+    node_ptr       predicate_;
+    node_container_ptr if_statements_;
+    node_container_ptr else_statements_;
     virtual void do_print(out_stream& os) const override {
         os << "If (" << *predicate_ << ") { " << *if_statements_ << "}";
         if (else_statements_) {
@@ -1198,14 +1230,14 @@ private:
 
 class while_node : public node {
 public:
-    explicit while_node(node_ptr&& predicate, term_list_node_ptr&& statements)
+    explicit while_node(node_ptr&& predicate, node_container_ptr&& statements)
         : predicate_(std::move(predicate))
         , statements_(std::move(statements)) {
     }
 
 private:
-    node_ptr           predicate_;
-    term_list_node_ptr statements_;
+    node_ptr       predicate_;
+    node_container_ptr statements_;
     virtual void do_print(out_stream& os) const override {
         os << "While (" << *predicate_ << ") { " << *statements_ << "}";
     }
@@ -1283,6 +1315,9 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto term_list = parse_term_list(name.data);
                 //dbgout() << "DefScope " << name.result.begin() << "\n";
                 REQUIRE(pkg_data.end() == term_list.data.begin());
+                if (auto n = data.ns().lookup_node(name.result.begin())) {
+                    dbgout() << "Reopening scope " << name.result.begin() << "\n";
+                }
                 return make_parse_result(data.moved_to(term_list.data.begin()), knew<scope_node>(std::move(scope_reg), std::move(name.result), std::move(term_list.result)));
             }
         case opcode::method:
@@ -1293,13 +1328,12 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto scope_reg = data.ns().open_scope(name.result.begin());
                 pkg_data = name.data;
                 uint8_t method_flags = pkg_data.consume();
-                term_list_node_ptr term_list;
+                node_container_ptr term_list;
                 auto term_list_parsed = parse_term_list(pkg_data);
-                if (term_list_parsed.result) {
+                if (term_list_parsed) {
                     data = data.moved_to(term_list_parsed.data.begin());
                     term_list = std::move(term_list_parsed.result);
                 } else {
-                    term_list = knew<term_list_node>(kvector<node_ptr>());
                     data = data.moved_to(pkg_data.end());
                 }
                 //dbgout() << "DefMethod " << name.result.begin() << " Flags " << as_hex(method_flags) << "\n";
@@ -1352,8 +1386,8 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 // DefElse := Nothing | <ElseOp PkgLength TermList>
                 auto pkg_data  = adjust_with_pkg_length(data);
                 node_ptr predicate;
-                term_list_node_ptr if_statements;
-                term_list_node_ptr else_statements;
+                node_container_ptr if_statements;
+                node_container_ptr else_statements;
                 if (auto predicate_arg = parse_term_arg(pkg_data)) {
                     predicate = std::move(predicate_arg.result);
                     if (auto term_list = parse_term_list(predicate_arg.data)) {
@@ -1514,32 +1548,17 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
     }
 }
 
-template<typename T, typename P>
-parse_result<kowned_ptr<T>> parse_list(parse_state state, P p)
-{
-    kvector<node_ptr> objs;
-    while (state.begin() != state.end()) {
-        auto res = p(state);
-        state = res.data;
-        if (!res) {
-            return {state, kowned_ptr<T>{}};
-        }
-        objs.push_back(std::move(res.result));
-    }
-    return {state, knew<T>(std::move(objs))};
-}
-
-parse_result<obj_list_node_ptr> parse_object_list(parse_state state)
+parse_result<node_container_ptr> parse_object_list(parse_state state)
 {
     // ObjectList := Nothing | <Object ObjectList>
     // Object := NameSpaceModifierObj | NamedObj
-    return parse_list<obj_list_node>(state, &parse_term_obj); // TODO: Type1Opcode | Type2Opcode not allowed in ObjectList
+    return parse_list(state, &parse_term_obj); // TODO: Type1Opcode | Type2Opcode not allowed in ObjectList
 }
 
-parse_result<term_list_node_ptr> parse_term_list(parse_state state)
+parse_result<node_container_ptr> parse_term_list(parse_state state)
 {
     // TermList := Nothing | <TermObj TermList>
-    return parse_list<term_list_node>(state, &parse_term_obj);
+    return parse_list(state, &parse_term_obj);
 }
 
 void process(array_view<uint8_t> data)
@@ -1553,7 +1572,7 @@ void process(array_view<uint8_t> data)
         auto reg = ns.open_scope("\\_OS_");
         reg.provide(*os_string);
     }
-    auto osi_method = node_ptr{knew<method_node>(ns.open_scope("\\_OSI"), make_kstring("\\_OSI"), uint8_t(1), knew<term_list_node>(kvector<node_ptr>())).release()};
+    auto osi_method = node_ptr{knew<method_node>(ns.open_scope("\\_OSI"), make_kstring("\\_OSI"), uint8_t(1), knew<node_container>()).release()};
     parse_state state{ns, data};
     auto res = parse_term_list(state);
     REQUIRE(res);
