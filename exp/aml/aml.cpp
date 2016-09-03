@@ -363,26 +363,6 @@ private:
 };
 using node_container_ptr = kowned_ptr<node_container>;
 
-class container_node : public node {
-public:
-    explicit container_node(opcode op, node_container_ptr&& nodes) : op_(op), nodes_(std::move(nodes)) {
-    }
-private:
-    opcode             op_;
-    node_container_ptr nodes_;
-
-    virtual void do_print(out_stream& os) const override {
-        os << op_ << " " << *nodes_;
-    }
-    virtual opcode do_opcode() const override {
-        return opcode::package;
-    }
-};
-
-node_ptr make_container_node(opcode op, node_container_ptr&& nodes) {
-    return node_ptr{knew<container_node>(op, std::move(nodes)).release()};
-}
-
 class name_space;
 
 class parse_state {
@@ -477,8 +457,16 @@ public:
         REQUIRE(cur_namespace_.empty());
     }
 
+    struct binding {
+        kstring name;
+        node*   n;
+    };
     class scope_registration {
     public:
+        scope_registration(scope_registration&& other) : ns_(other.ns_), old_scope_(std::move(other.old_scope_)), state_(other.state_) {
+            other.state_ = states::ignore;
+        }
+
         node_ptr mark_dead() {
             class dead_scope_node : public node {
             public:
@@ -490,19 +478,31 @@ public:
             provide(*dead_scope);
             return dead_scope;
         }
+
         void provide(node& node) {
-            REQUIRE(!node_);
-            node_ = &node;
+            REQUIRE(state_ == states::unbound);
+            std::swap(ns_.cur_namespace_, old_scope_);
+            old_scope_.push_back('\0');
+            state_ = ns_.close_scope(old_scope_, node) ? states::bound : states::ignore;
         }
+
         ~scope_registration() {
-            REQUIRE(node_);
-            ns_.close_scope(std::move(old_scope_), *node_);
+            if (state_ == states::unbound) {
+                old_scope_.push_back('\0');
+                dbgout() << "No binding provided for " << old_scope_.begin() << "\n";
+                REQUIRE(false);
+            } else if (state_ == states::bound) {
+                //dbgout() << "Erasing " << old_scope_.begin() << "\n";
+                auto b = ns_.find_binding(old_scope_.begin());
+                REQUIRE(b);
+                ns_.bindings_.erase(const_cast<binding*>(b));
+            }
         }
     private:
         friend name_space;
         name_space& ns_;
         kstring     old_scope_;
-        node*       node_ = nullptr;
+        enum class states { unbound, bound, ignore } state_ = states::unbound;
         explicit scope_registration(name_space& ns, kstring&& old_scope) : ns_(ns), old_scope_(std::move(old_scope)) {}
     };
 
@@ -539,11 +539,6 @@ public:
         return nullptr;
     }
 
-    struct binding {
-        kstring name;
-        node*   n;
-    };
-
     const kvector<binding>& bindings() const {
         return bindings_;
     }
@@ -551,6 +546,8 @@ public:
 private:
     kstring          cur_namespace_; // Not NUL-terimnated!
     kvector<binding> bindings_;
+
+    constexpr static binding* dead_scope_binding = (binding*)42;
 
     const binding* lookup_binding(const char* name) const {
         // (1) ABCD      -- search rules apply
@@ -619,22 +616,20 @@ private:
         return format_str((const char*)cur_namespace_.begin()).max_width((int)cur_namespace_.size());
     }
 
-    void name_space::close_scope(kstring&& old_scope, node& n) {
-        auto name = relative(cur_namespace_, "");
-        cur_namespace_ = std::move(old_scope);
-
+    bool close_scope(const kstring& name, node& n) {
         if (auto old = find_binding(name.begin())) {
             if (n.op() == opcode::dead_scope) {
-                return;
+                return false;
             }
             dbgout() << "Merge\n" << *old->n << "\nwith\n" << n << "\n";
             dbgout() << "Not implemented: Merge " << old->n->op() << " with " << n.op() << "\n";
             dbgout() << "Name = " << name.begin() << "\n";
             REQUIRE(false);
-            return;
+            return false;
         }
         //dbgout() << "Registering " << name.begin() << " " << n.op() << "\n";
         bindings_.push_back(binding{std::move(name), &n});
+        return true;
     }
 };
 using scope_reg = name_space::scope_registration;
@@ -824,6 +819,22 @@ constexpr bool is_data_object(opcode op) {
         || op == opcode::package;
 }
 
+class package_node : public node {
+public:
+    explicit package_node(node_container_ptr&& nodes) : nodes_(std::move(nodes)) {
+    }
+
+private:
+    node_container_ptr nodes_;
+
+    virtual void do_print(out_stream& os) const override {
+        os << "Package " << *nodes_;
+    }
+    virtual opcode do_opcode() const override {
+        return opcode::package;
+    }
+};
+
 parse_result<node_ptr> parse_data_object(parse_state data)
 {
     // DataObject := ComputationalData | DefPackage | DefVarPackage
@@ -901,7 +912,7 @@ parse_result<node_ptr> parse_data_object(parse_state data)
                 //dbgout()<<"elements.size() = " << elements.size() << "\n";
                 //dbgout()<<"num_elements = " << num_elements << "\n";
                 REQUIRE(elements.empty() || num_elements == elements.size()); // Local0 = Package(0x02){} is legal ==> PackageElementList is empty
-                return make_parse_result(data.moved_to(pkg_data.end()), make_container_node(op, std::move(list.result)));
+                return make_parse_result(data.moved_to(pkg_data.end()), knew<package_node>(std::move(list.result)));
             }
         default:
             hexdump(dbgout(), data.begin()-2, std::min(data.size()+2, 64ULL));
@@ -973,8 +984,8 @@ using binary_op_node = op_node_base<2>;
 
 class method_node : public node {
 public:
-    explicit method_node(scope_reg&& ns_reg, kstring&& name, uint8_t flags, node_container_ptr&& statements) : name_(std::move(name)), flags_(flags), statements_(std::move(statements)) {
-        ns_reg.provide(*this);
+    explicit method_node(scope_reg&& ns_reg, kstring&& name, uint8_t flags, node_container_ptr&& statements) : reg_(std::move(ns_reg)), name_(std::move(name)), flags_(flags), statements_(std::move(statements)) {
+        reg_.provide(*this);
     }
     /* MethodFlags := ByteData // bit 0-2: ArgCount (0-7)
      *                         // bit 3: SerializeFlag
@@ -988,6 +999,7 @@ public:
     const char* name() const { return name_.begin(); }
 
 private:
+    scope_reg      reg_;
     kstring        name_;
     uint8_t        flags_;
     node_container_ptr statements_;
@@ -1007,8 +1019,8 @@ private:
 
 class name_node : public node {
 public:
-    explicit name_node(scope_reg&& ns_reg, kstring&& name, node_ptr&& obj) : name_(std::move(name)), obj_(std::move(obj)) {
-        ns_reg.provide(*this);
+    explicit name_node(scope_reg&& ns_reg, kstring&& name, node_ptr&& obj) : reg_(std::move(ns_reg)), name_(std::move(name)), obj_(std::move(obj)) {
+        reg_.provide(*this);
         REQUIRE(obj_);
     }
 
@@ -1017,6 +1029,7 @@ public:
     }
 
 private:
+    scope_reg   reg_;
     kstring     name_;
     node_ptr    obj_;
     virtual void do_print(out_stream& os) const override {
@@ -1271,13 +1284,14 @@ parse_result<uint8_t> parse_field_flags(parse_state data) {
 
 class named_field_node : public node {
 public:
-    explicit named_field_node(scope_reg&& ns_reg, kstring&& name, uint32_t len) : name_(std::move(name)), len_(len) {
-        ns_reg.provide(*this);
+    explicit named_field_node(scope_reg&& ns_reg, kstring&& name, uint32_t len) : reg_(std::move(ns_reg)), name_(std::move(name)), len_(len) {
+        reg_.provide(*this);
     }
 
 private:
-    kstring  name_;
-    uint32_t len_;
+    scope_reg reg_;
+    kstring   name_;
+    uint32_t  len_;
 
     virtual void do_print(out_stream& os) const override {
         os << "NamedField " << name_.begin() << " Length " << as_hex(len_).width(0);
@@ -1365,11 +1379,12 @@ parse_result<node_container_ptr> parse_object_list(parse_state data);
 
 class device_node : public node {
 public:
-    explicit device_node(scope_reg&& ns_reg, kstring&& name, node_container_ptr&& objs) : name_(std::move(name)), objs_(std::move(objs)) {
-        ns_reg.provide(*this);
+    explicit device_node(scope_reg&& ns_reg, kstring&& name, node_container_ptr&& objs) : reg_(std::move(ns_reg)), name_(std::move(name)), objs_(std::move(objs)) {
+        reg_.provide(*this);
     }
 
 private:
+    scope_reg          reg_;
     kstring            name_;
     node_container_ptr objs_;
 
@@ -1415,11 +1430,12 @@ parse_result<node_ptr> parse_data_ref_object(parse_state data)
 
 class scope_node : public node {
 public:
-    explicit scope_node(scope_reg&& ns_reg, kstring&& name, node_container_ptr&& statements) : name_(std::move(name)), statements_(std::move(statements)) {
-        ns_reg.provide(*this);
+    explicit scope_node(scope_reg&& ns_reg, kstring&& name, node_container_ptr&& statements) : reg_(std::move(ns_reg)), name_(std::move(name)), statements_(std::move(statements)) {
+        reg_.provide(*this);
     }
 
 private:
+    scope_reg      reg_;
     kstring        name_;
     node_container_ptr statements_;
     virtual void do_print(out_stream& os) const override {
@@ -1487,18 +1503,20 @@ private:
 
 class create_field_node : public node {
 public:
-    explicit create_field_node(scope_reg&& ns_reg, opcode type, kstring&& name, node_ptr&& buffer, node_ptr&& index)
-        : type_(type)
+    explicit create_field_node(scope_reg&& reg, opcode type, kstring&& name, node_ptr&& buffer, node_ptr&& index)
+        : reg_(std::move(reg))
+        , type_(type)
         , name_(std::move(name))
         , buffer_(std::move(buffer))
         , index_(std::move(index)) {
-        ns_reg.provide(*this);
+        reg_.provide(*this);
     }
 private:
-    opcode   type_;
-    kstring  name_;
-    node_ptr buffer_;
-    node_ptr index_;
+    scope_reg reg_;
+    opcode    type_;
+    kstring   name_;
+    node_ptr  buffer_;
+    node_ptr  index_;
     virtual void do_print(out_stream& os) const override {
         // DefCreateBitField   := CreateBitFieldOp SourceBuff BitIndex NameString
         // DefCreateDWordField := CreateDWordFieldOp SourceBuff ByteIndex NameString
@@ -1511,11 +1529,29 @@ private:
     }
 };
 
+class container_node : public node {
+public:
+    explicit container_node(scope_reg&& reg, opcode op, node_container_ptr&& nodes) : reg_(std::move(reg)), op_(op), nodes_(std::move(nodes)) {
+        reg_.provide(*this);
+    }
+
+private:
+    scope_reg          reg_;
+    opcode             op_;
+    node_container_ptr nodes_;
+
+    virtual void do_print(out_stream& os) const override {
+        os << op_ << " " << *nodes_;
+    }
+    virtual opcode do_opcode() const override {
+        return op_;
+    }
+};
+
 node_ptr make_container_node(scope_reg&& ns_reg, opcode op, node_container_ptr&& nodes) {
-    auto n = make_container_node(op, std::move(nodes));
-    ns_reg.provide(*n);
-    return n;
+    return node_ptr{knew<container_node>(std::move(ns_reg), op, std::move(nodes)).release()};
 }
+
 
 parse_result<node_ptr> parse_term_obj(parse_state data)
 {
@@ -1822,11 +1858,9 @@ void process(array_view<uint8_t> data)
     auto res = parse_term_list(state);
     REQUIRE(res);
     dbgout() << *res.result << "\n";
-#if 0
     for (const auto& b : ns.bindings()) {
         dbgout() << b.name.begin() << " " << b.n->op() << "\n";
     }
-#endif
 }
 
 } } // namespace attos::aml
