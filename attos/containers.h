@@ -149,6 +149,7 @@ public:
     template<typename It>
     void insert(T* where, It first, It last) {
         if (where != end()) __debugbreak(); // Lazy implementation
+#if 0
         const auto insert_count = last - first;
         ensure_room(size() + insert_count);
         static_assert(sizeof(*first) == sizeof(T), "Implementation is too lazy");
@@ -156,6 +157,12 @@ public:
         static_assert(std::is_trivially_copyable_v<T>, "Implementation is too lazy");
         memcpy(end_, first, insert_count * sizeof(T));
         end_ += insert_count;
+#else
+        while (first != last) {
+            push_back(*first);
+            ++first;
+        }
+#endif
     }
 
 private:

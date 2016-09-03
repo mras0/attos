@@ -20,6 +20,21 @@ enum class opcode : uint16_t {
     package             = 0x12,
     method              = 0x14,
     ext_prefix          = 0x5b, // '[' ByteData follows specifying the extended opcode
+    local_0             = 0x60,
+    local_1             = 0x61,
+    local_2             = 0x62,
+    local_3             = 0x63,
+    local_4             = 0x64,
+    local_5             = 0x65,
+    local_6             = 0x66,
+    local_7             = 0x67,
+    arg_0               = 0x68,
+    arg_1               = 0x69,
+    arg_2               = 0x6a,
+    arg_3               = 0x6b,
+    arg_4               = 0x6c,
+    arg_5               = 0x6d,
+    arg_6               = 0x6e,
     store               = 0x70,
     add                 = 0x72,
     concat              = 0x73,
@@ -76,6 +91,11 @@ enum class opcode : uint16_t {
     thermal_zone        = 0x5b85,
     index_field         = 0x5b86,
 
+    // HACKS:
+    reserved_field      = 0x8000,
+    access_field,
+
+    dead_scope          = 0xfffe,
     invalid             = 0xffff,
 };
 
@@ -84,6 +104,99 @@ constexpr bool is_extended(opcode op) {
 }
 
 out_stream& operator<<(out_stream& os, opcode op) {
+    switch (op) {
+        case opcode::zero:                return os << "Zero";
+        case opcode::one:                 return os << "One";
+        case opcode::name:                return os << "Name";
+        case opcode::byte:                return os << "Byte";
+        case opcode::word:                return os << "Word";
+        case opcode::dword:               return os << "Dword";
+        case opcode::string_:             return os << "String";
+        case opcode::qword:               return os << "Qword";
+        case opcode::scope:               return os << "Scope";
+        case opcode::buffer:              return os << "Buffer";
+        case opcode::package:             return os << "Package";
+        case opcode::method:              return os << "Method";
+        case opcode::ext_prefix:          return os << "ExtPrefix";
+        case opcode::local_0:             return os << "Local0";
+        case opcode::local_1:             return os << "Local1";
+        case opcode::local_2:             return os << "Local2";
+        case opcode::local_3:             return os << "Local3";
+        case opcode::local_4:             return os << "Local4";
+        case opcode::local_5:             return os << "Local5";
+        case opcode::local_6:             return os << "Local6";
+        case opcode::local_7:             return os << "Local7";
+        case opcode::arg_0:               return os << "Arg0";
+        case opcode::arg_1:               return os << "Arg1";
+        case opcode::arg_2:               return os << "Arg2";
+        case opcode::arg_3:               return os << "Arg3";
+        case opcode::arg_4:               return os << "Arg4";
+        case opcode::arg_5:               return os << "Arg5";
+        case opcode::arg_6:               return os << "Arg6";
+        case opcode::store:               return os << "Store";
+        case opcode::add:                 return os << "Add";
+        case opcode::concat:              return os << "Concat";
+        case opcode::subtract:            return os << "Subtract";
+        case opcode::increment:           return os << "Increment";
+        case opcode::decrement:           return os << "Decrement";
+        case opcode::multiply:            return os << "Multiply";
+        case opcode::divide:              return os << "Divide";
+        case opcode::shift_left:          return os << "ShiftLeft";
+        case opcode::shift_right:         return os << "ShiftRight";
+        case opcode::and_:                return os << "And";
+        case opcode::or_:                 return os << "Or";
+        case opcode::xor_:                return os << "Xor";
+        case opcode::not_:                return os << "Not";
+        case opcode::find_set_left_bit:   return os << "FindSetLeftBit";
+        case opcode::find_set_right_bit:  return os << "FindSetRightBit";
+        case opcode::deref_of:            return os << "DerefOf";
+        case opcode::notify:              return os << "Notify";
+        case opcode::size_of:             return os << "SizeOf";
+        case opcode::index:               return os << "Index";
+        case opcode::create_dword_field:  return os << "DwordField";
+        case opcode::create_word_field:   return os << "WordField";
+        case opcode::create_byte_field:   return os << "ByteField";
+        case opcode::create_bit_field:    return os << "BitField";
+        case opcode::object_type:         return os << "ObjectType";
+        case opcode::create_qword_field:  return os << "CreateQwordField";
+        case opcode::land:                return os << "LAnd";
+        case opcode::lor:                 return os << "LOr";
+        case opcode::lnot:                return os << "LNot";
+        case opcode::lequal:              return os << "LEqual";
+        case opcode::lgreater:            return os << "LGreater";
+        case opcode::lless:               return os << "LLess";
+        case opcode::mid:                 return os << "Mid";
+        case opcode::if_:                 return os << "If";
+        case opcode::else_:               return os << "Else";
+        case opcode::while_:              return os << "While";
+        case opcode::noop:                return os << "Noop";
+        case opcode::return_:             return os << "Return";
+        case opcode::ones:                return os << "Ones";
+
+        // Extended opcodes
+        case opcode::mutex_:              return os << "Mutex";
+        case opcode::cond_ref_of:         return os << "CondRefOf";
+        case opcode::create_field:        return os << "CreateField";
+        case opcode::sleep:               return os << "Sleep";
+        case opcode::acquire:             return os << "Acquire";
+        case opcode::release:             return os << "Release";
+        case opcode::fatal:               return os << "Fatal";
+        case opcode::op_region:           return os << "OpRegion";
+        case opcode::field:               return os << "Field";
+        case opcode::device:              return os << "Device";
+        case opcode::processor:           return os << "Processor";
+        case opcode::power_res:           return os << "PowerRes";
+        case opcode::thermal_zone:        return os << "ThermalZone";
+        case opcode::index_field:         return os << "IndexField";
+
+        // HACKS:
+        case opcode::reserved_field:      return os << "ReservedField";
+        case opcode::access_field:        return os << "AccessField";
+        case opcode::dead_scope:          return os << "<DeadScope>";
+        case opcode::invalid:             return os << "<Unknown>";
+    }
+    dbgout() << as_hex(static_cast<unsigned>(op)).width(is_extended(op) ? 4 : 2);
+    REQUIRE(false);
     return os << as_hex(static_cast<unsigned>(op)).width(is_extended(op) ? 4 : 2);
 }
 
@@ -100,10 +213,21 @@ public:
         return do_opcode();
     }
 
+    void merge(kvector<kowned_ptr<node>>&& nodes) {
+        do_merge(std::move(nodes));
+    }
+
 private:
-    virtual void do_print(out_stream& os) const = 0;
+    virtual void do_print(out_stream& os) const {
+        os << op();
+    }
     virtual opcode do_opcode() const {
         return opcode::invalid;
+    }
+    virtual void do_merge(kvector<kowned_ptr<node>>&& nodes) {
+        (void)nodes;
+        dbgout() << "Cannot merge new nodes into " << *this << "\n";
+        REQUIRE(false);
     }
 };
 using node_ptr = kowned_ptr<node>;
@@ -113,24 +237,44 @@ kstring make_kstring(const char* str) {
     return kstring{str, str+string_length(str)+1};
 }
 
-class dummy_node : public node {
+class simple_node : public node {
 public:
-    explicit dummy_node(const char* name) : name_(make_kstring(name)) {
+    explicit simple_node(opcode op) : op_(op) {
     }
 
 private:
-    kstring name_;
-    virtual void do_print(out_stream& os) const override {
-        os << name_.begin();
+    opcode op_;
+    virtual opcode do_opcode() const override {
+        return op_;
     }
 };
 
-node_ptr make_text_node(const char* name) {
-    return node_ptr{knew<dummy_node>(name).release()};
+node_ptr make_simple_node(opcode op) {
+    return node_ptr{knew<simple_node>(op).release()};
 }
 
-node_ptr make_text_node(const kstring& s) {
-   return make_text_node(s.begin());
+class text_node : public node {
+public:
+    explicit text_node(opcode op, const char* name) : op_(op), name_(make_kstring(name)) {
+    }
+
+private:
+    opcode  op_;
+    kstring name_;
+    virtual void do_print(out_stream& os) const override {
+        os << op_ << " " << name_.begin();
+    }
+    virtual opcode do_opcode() const override {
+        return op_;
+    }
+};
+
+node_ptr make_text_node(opcode op, const char* name) {
+    return node_ptr{knew<text_node>(op, name).release()};
+}
+
+node_ptr make_text_node(opcode op, const kstring& s) {
+   return make_text_node(op, s.begin());
 }
 
 template<typename T>
@@ -192,15 +336,16 @@ private:
 };
 using node_container_ptr = kowned_ptr<node_container>;
 
-class package_node : public node {
+class container_node : public node {
 public:
-    explicit package_node(node_container_ptr&& nodes) : nodes_(std::move(nodes)) {
+    explicit container_node(opcode op, node_container_ptr&& nodes) : op_(op), nodes_(std::move(nodes)) {
     }
 private:
+    opcode             op_;
     node_container_ptr nodes_;
 
     virtual void do_print(out_stream& os) const override {
-        os << "Package " << *nodes_;
+        os << op_ << " " << *nodes_;
     }
     virtual opcode do_opcode() const override {
         return opcode::package;
@@ -308,6 +453,17 @@ public:
 
     class scope_registration {
     public:
+        node_ptr mark_dead() {
+            class dead_scope_node : public node {
+            public:
+                explicit dead_scope_node() {}
+            private:
+                virtual opcode do_opcode() const override { return opcode::dead_scope; }
+            };
+            node_ptr dead_scope{knew<dead_scope_node>().release()};
+            provide(*dead_scope);
+            return dead_scope;
+        }
         void provide(node& node) {
             REQUIRE(!node_);
             node_ = &node;
@@ -341,6 +497,16 @@ public:
         if (auto b = lookup_binding(name)) {
             return b->n;
         }
+        dbgout() << "failing lookup_node(" << name << ") in " << hack_cur_name() << "\n";
+        return nullptr;
+    }
+
+    node* lookup_node_in_scope(const char* name) const {
+        REQUIRE(name[0] != root_char && name[1] != parent_prefix_char && !name[5]);
+        if (auto b = find_binding(relative(cur_namespace_, name).begin())) {
+            return b->n;
+        }
+        dbgout() << "failing lookup_node_in_scope(" << name << ") in " << hack_cur_name() << "\n";
         return nullptr;
     }
 
@@ -357,15 +523,15 @@ private:
     kvector<binding> bindings_;
 
     const binding* lookup_binding(const char* name) const {
-        // ABCD      -- search rules apply
-        // ^ABCD     -- search rules do not apply
-        // XYZ.ABCD  -- search rules do not apply
-        // \XYZ.ABCD -- search rules do not apply
-        if (name[0] == root_char) {
+        // (1) ABCD      -- search rules apply
+        // (2) ^ABCD     -- search rules do not apply
+        // (3) XYZ.ABCD  -- search rules do not apply
+        // (4) \XYZ.ABCD -- search rules do not apply
+        if (name[0] == root_char) { // (4)
             if (auto* b = find_binding(name+1)) {
                 return b;
             }
-        } else if (name[0] == parent_prefix_char) {
+        } else if (name[0] == parent_prefix_char) { // (2)
             auto ns = cur_namespace_;
             for (; *name == parent_prefix_char; ++name) {
                 REQUIRE(parent_scope(ns));
@@ -373,7 +539,11 @@ private:
             if (auto* b = find_binding(name)) {
                 return b;
             }
-        } else {
+        } else if (name[4]) { // (3)
+            if (auto* b = find_binding(name)) {
+                return b;
+            }
+        } else { // (1)
             auto ns = cur_namespace_;
             for (;;) {
                 const auto rn = relative(ns, name);
@@ -490,13 +660,8 @@ constexpr bool is_name_string_start(char c) {
     return c == root_char || c == parent_prefix_char || c == dual_name_path_start || c == multi_name_path_start || is_lead_name_char(c);
 }
 
-constexpr char local_0               = 0x60;
-constexpr char local_7               = 0x67;
-constexpr char arg_0                 = 0x68;
-constexpr char arg_6                 = 0x6e;
-
 constexpr bool is_arg_or_local(char c) {
-    return c >= local_0 && c <= arg_6;
+    return c >= static_cast<char>(opcode::local_0) && c <= static_cast<char>(opcode::arg_6);
 }
 
 auto parse_name_string(parse_state data)
@@ -548,18 +713,9 @@ auto parse_name_string(parse_state data)
 
 parse_result<node_ptr> parse_arg_or_local(parse_state data)
 {
-    const auto c = data.consume();
-    if (c >= local_0 && c <= local_7) { // LocalObj
-        char buffer[] = "Local0";
-        buffer[sizeof(buffer)-2] += c-local_0;
-        return make_parse_result(data, make_text_node(buffer));
-    } else if (c >= arg_0 && c <= arg_6) { // ArgObj
-        char buffer[] = "Arg0";
-        buffer[sizeof(buffer)-2] += c-arg_0;
-        return make_parse_result(data, make_text_node(buffer));
-    } else {
-        REQUIRE(false);
-    }
+    const auto op = data.consume_opcode();
+    REQUIRE(!is_extended(op) && is_arg_or_local(static_cast<char>(op)));
+    return make_parse_result(data, make_simple_node(op));
 }
 
 constexpr bool is_type6_opcode(opcode op) {
@@ -579,7 +735,7 @@ parse_result<node_ptr> parse_super_name(parse_state data)
         return parse_arg_or_local(data);
     } else if (is_name_string_start(first)) {
         auto name = parse_name_string(data);
-        return make_parse_result(name.data, make_text_node(name.result));
+        return make_parse_result(name.data, make_text_node(opcode::name, name.result));
     } else if (is_type6_opcode(static_cast<opcode>(first))) {
         return parse_type6_opcode(data);
     }
@@ -602,7 +758,9 @@ parse_result<node_container_ptr> parse_list(parse_state state, P p)
         if (!res) {
             return {state, node_container_ptr{}};
         }
-        objs.push_back(std::move(res.result));
+        if (res.result->op() != opcode::dead_scope) {
+            objs.push_back(std::move(res.result));
+        }
     }
     return {state, knew<node_container>(std::move(objs))};
 }
@@ -662,7 +820,7 @@ parse_result<node_ptr> parse_data_object(parse_state data)
             {
                 const char* text = reinterpret_cast<const char*>(data.begin());
                 data.consume(static_cast<uint32_t>(string_length(text) + 1));
-                return make_parse_result(data, make_text_node(text));
+                return make_parse_result(data, make_text_node(op, text));
             }
         case opcode::buffer:
             {
@@ -686,7 +844,7 @@ parse_result<node_ptr> parse_data_object(parse_state data)
                     if (is_name_string_start(data.peek())) {
                         auto name = parse_name_string(data);
                         //dbgout() << "PackageElement NameString " << name.result.begin() << "\n";
-                        return make_parse_result(name.data, make_text_node(name.result.begin()));
+                        return make_parse_result(name.data, make_text_node(opcode::name, name.result));
                     } else {
                         return parse_data_ref_object(data);
                         //dbgout() << "PackageElement DataRefObject " << *data_ref_object.result << "\n";
@@ -697,7 +855,7 @@ parse_result<node_ptr> parse_data_object(parse_state data)
                 //dbgout()<<"elements.size() = " << elements.size() << "\n";
                 //dbgout()<<"num_elements = " << num_elements << "\n";
                 REQUIRE(elements.empty() || num_elements == elements.size()); // Local0 = Package(0x02){} is legal ==> PackageElementList is empty
-                return make_parse_result(data.moved_to(pkg_data.end()), knew<package_node>(std::move(list.result)));
+                return make_parse_result(data.moved_to(pkg_data.end()), knew<container_node>(op, std::move(list.result)));
             }
         default:
             hexdump(dbgout(), data.begin()-2, std::min(data.size()+2, 64ULL));
@@ -710,7 +868,7 @@ parse_result<node_ptr> parse_target(parse_state data) {
     // Target := SuperName | NullName
     if (data.peek() == 0) {
         data.consume();
-        return make_parse_result(data, make_text_node("null_name"));
+        return make_parse_result(data, make_text_node(opcode::name, ""));
     } else {
         return parse_super_name(data);
     }
@@ -812,11 +970,17 @@ void name_space::close_scope(kstring&& old_scope, node& n) {
     auto name = relative(cur_namespace_, "");
     cur_namespace_ = std::move(old_scope);
 
-    // dbgout() << "Registered " << name.begin() << " as " << n << "\n";
     if (auto old = find_binding(name.begin())) {
-        // TODO: Merge old with n
+        if (n.op() == opcode::dead_scope) {
+            return;
+        }
+        dbgout() << "Merge\n" << *old->n << "\nwith\n" << n << "\n";
+        dbgout() << "Not implemented: Merge " << old->n->op() << " with " << n.op() << "\n";
+        dbgout() << "Name = " << name.begin() << "\n";
+        REQUIRE(false);
         return;
     }
+    //dbgout() << "Registering " << name.begin() << " " << n.op() << "\n";
     const int arg_count = n.op() == opcode::method ? static_cast<const method_node&>(n).arg_count() : 0;
     bindings_.push_back(binding{std::move(name), &n, arg_count});
 }
@@ -901,7 +1065,7 @@ parse_result<node_ptr> parse_type2_opcode(parse_state data) {
                 //dbgout() << "Arg" << i << ": " << *arg.result << "\n";
                 data = arg.data;
             }
-            return make_parse_result(data, make_text_node(name.result));
+            return make_parse_result(data, make_text_node(opcode::name, name.result)); // TODO: HACK: We're throwing away the arguments
         }
         REQUIRE(arg_count == name_space::unknown_arg_count);
         return {data, node_ptr{}};
@@ -1106,13 +1270,13 @@ parse_result<node_container_ptr> parse_field_list(parse_state data)
             data.consume();
             const auto len = parse_pkg_length(data);
             //dbgout() << "ReservedField " << " PkgLen 0x" <<  as_hex(len.result).width(0) << "\n";
-            elements.push_back(make_text_node("ReservedField"));
+            elements.push_back(make_simple_node(opcode::reserved_field));
             data = len.data;
         } else if (first == 1) {
             data.consume();
             const uint8_t access_type   = data.consume();
             const uint8_t access_attrib = data.consume();
-            elements.push_back(make_text_node("AccessField"));
+            elements.push_back(make_simple_node(opcode::access_field));
         } else if (is_lead_name_char(first)) {
             auto named_field = parse_named_field(data);
             elements.push_back(std::move(named_field.result));
@@ -1134,7 +1298,7 @@ public:
     }
 
 private:
-    kstring        name_;
+    kstring            name_;
     node_container_ptr objs_;
 
     virtual void do_print(out_stream& os) const override {
@@ -1143,6 +1307,11 @@ private:
 
     virtual opcode do_opcode() const override {
         return opcode::device;
+    }
+
+    virtual void do_merge(kvector<node_ptr>&& nodes) override {
+        auto& es = objs_->elements();
+        es.insert(es.end(), std::make_move_iterator(nodes.begin()), std::make_move_iterator(nodes.end()));
     }
 };
 
@@ -1205,6 +1374,11 @@ private:
 
     virtual opcode do_opcode() const override {
         return opcode::scope;
+    }
+
+    virtual void do_merge(kvector<node_ptr>&& nodes) override {
+        auto& es = statements_->elements();
+        es.insert(es.end(), std::make_move_iterator(nodes.begin()), std::make_move_iterator(nodes.end()));
     }
 };
 
@@ -1276,14 +1450,10 @@ private:
         // DefCreateDWordField := CreateDWordFieldOp SourceBuff ByteIndex NameString
         // DefCreateQWordField := CreateQWordFieldOp SourceBuff ByteIndex NameString
         // DefCreateWordField  := CreateWordFieldOp SourceBuff ByteIndex NameString
-        const char* text = nullptr;
-        if (type_ == opcode::create_dword_field)      text = "CreateDWordField";
-        else if (type_ == opcode::create_word_field)  text = "CreateWordField";
-        else if (type_ == opcode::create_byte_field)  text = "CreateByteField";
-        else if (type_ == opcode::create_bit_field)   text = "CreateBitField";
-        else if (type_ == opcode::create_qword_field) text = "CreateQWordField";
-        REQUIRE(text);
-        os << text << " " << name_.begin() << " " << *buffer_ << " " << *index_;
+        os << type_ << " " << name_.begin() << " " << *buffer_ << " " << *index_;
+    }
+    virtual opcode do_opcode() const override {
+        return type_;
     }
 };
 
@@ -1313,10 +1483,10 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto name      = parse_name_string(pkg_data);
                 auto scope_reg = data.ns().open_scope(name.result.begin());
                 auto term_list = parse_term_list(name.data);
-                //dbgout() << "DefScope " << name.result.begin() << "\n";
                 REQUIRE(pkg_data.end() == term_list.data.begin());
                 if (auto n = data.ns().lookup_node(name.result.begin())) {
-                    dbgout() << "Reopening scope " << name.result.begin() << "\n";
+                    n->merge(std::move(term_list.result->elements()));
+                    return make_parse_result(data.moved_to(pkg_data.end()), scope_reg.mark_dead());
                 }
                 return make_parse_result(data.moved_to(term_list.data.begin()), knew<scope_node>(std::move(scope_reg), std::move(name.result), std::move(term_list.result)));
             }
@@ -1427,7 +1597,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
             }
         case opcode::noop:
             {
-                return make_parse_result(data, make_text_node("noop"));
+                return make_parse_result(data, make_simple_node(op));
             }
         case opcode::return_:
             {
@@ -1456,7 +1626,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto num_bits      = parse_term_arg(bit_index.data);
                 auto name          = parse_name_string(num_bits.data);
                 // Very hackish
-                return make_parse_result(name.data, knew<binary_op_node>("CreateField", std::move(source_buffer.result), std::move(num_bits.result), make_text_node(name.result)));
+                return make_parse_result(name.data, knew<binary_op_node>("CreateField", std::move(source_buffer.result), std::move(num_bits.result), make_text_node(opcode::name, name.result)));
             }
         case opcode::fatal:
             {
@@ -1496,6 +1666,16 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto object_list = parse_object_list(name.data);
                 //dbgout() << "DefDevice " << name.result.begin() << "\n";
                 //return make_parse_result(parse_state(object_list.data.begin(), data.end()), knew<dummy_node>("device"));
+                if (auto n = data.ns().lookup_node_in_scope(name.result.begin())) {
+                    if (n->op() != opcode::device) {
+                        dbgout() << "name = " << name.result.begin() << "\n";
+                        dbgout() << "n = " << *n << "\n";
+                        exit(1);
+                    }
+                    REQUIRE(n->op() == opcode::device); // TODO: Handle n->op()==opcode::scope
+                    n->merge(std::move(object_list.result->elements()));
+                    return make_parse_result(data.moved_to(pkg_data.end()), scope_reg.mark_dead());
+                }
                 return make_parse_result(data.moved_to(pkg_data.end()), knew<device_node>(std::move(scope_reg), std::move(name.result), std::move(object_list.result)));
             }
         case opcode::processor:
@@ -1508,7 +1688,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 const auto pblk_len  = name.data.consume();
                 auto objs            = parse_object_list(name.data);
                 dbgout() << "Processor " << name.result.begin() << " Id " << as_hex(proc_id) << " Addr " << as_hex(pblk_addr) << " Len " << as_hex(pblk_len) << "\n";
-                return make_parse_result(data.moved_to(pkg_data.end()), make_text_node("Processor"));
+                return make_parse_result(data.moved_to(pkg_data.end()), make_simple_node(op));
             }
         case opcode::power_res:
             {
@@ -1519,16 +1699,19 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 const auto res_order = name.data.consume_word();
                 auto objs            = parse_object_list(name.data);
                 dbgout() << "PowerRes " << name.result.begin() << " SystemLevel " << as_hex(sys_lvl) << " ResourceOrder " << as_hex(res_order) << "\n";
-                return make_parse_result(data.moved_to(pkg_data.end()), make_text_node("PowerRes"));
+                return make_parse_result(data.moved_to(pkg_data.end()), make_simple_node(op));
             }
         case opcode::thermal_zone:
             {
                 // DefThermalZone := ThermalZoneOp PkgLength NameString ObjectList
                 auto pkg_data        = adjust_with_pkg_length(data);
                 auto name            = parse_name_string(pkg_data);
+                auto scope_reg       = data.ns().open_scope(name.result.begin());
                 auto objs            = parse_object_list(name.data);
-                dbgout() << "ThermalZone " << name.result.begin() << "\n";
-                return make_parse_result(data.moved_to(pkg_data.end()), make_text_node("ThermalZone"));
+                REQUIRE(objs);
+                auto n = knew<container_node>(op, std::move(objs.result));
+                scope_reg.provide(*n);
+                return make_parse_result(data.moved_to(pkg_data.end()), std::move(n));
             }
         case opcode::index_field:
             {
@@ -1567,7 +1750,7 @@ void process(array_view<uint8_t> data)
     // See ACPI 6.1: 5.7.2 
     // \_OS Name of the operating system
     // \_OSI (Operating System Interfaces)
-    auto os_string  = make_text_node("\\_OS_");
+    auto os_string  = make_text_node(opcode::string_, "\\_OS_");
     {
         auto reg = ns.open_scope("\\_OS_");
         reg.provide(*os_string);
