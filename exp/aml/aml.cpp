@@ -379,6 +379,10 @@ private:
     }
 };
 
+node_ptr make_container_node(opcode op, node_container_ptr&& nodes) {
+    return node_ptr{knew<container_node>(op, std::move(nodes)).release()};
+}
+
 class name_space;
 
 class parse_state {
@@ -502,9 +506,12 @@ public:
         explicit scope_registration(name_space& ns, kstring&& old_scope) : ns_(ns), old_scope_(std::move(old_scope)) {}
     };
 
-    scope_registration open_scope(const char* name) {
+    scope_registration open_scope(const char* name, opcode op) {
         auto old_scope = cur_namespace_;
-        //dbgout() << "open_scope " << name << " in " << hack_cur_name() << "\n";
+#if 0
+        dbgout() << "open_scope " << name << " " << op << " in " << hack_cur_name() << "\n";
+#endif
+        (void)op;
         REQUIRE(name[0] != parent_prefix_char);
         if (name[0] == root_char) {
             ++name;
@@ -532,12 +539,16 @@ public:
         return nullptr;
     }
 
-private:
     struct binding {
         kstring name;
         node*   n;
     };
 
+    const kvector<binding>& bindings() const {
+        return bindings_;
+    }
+
+private:
     kstring          cur_namespace_; // Not NUL-terimnated!
     kvector<binding> bindings_;
 
@@ -890,7 +901,7 @@ parse_result<node_ptr> parse_data_object(parse_state data)
                 //dbgout()<<"elements.size() = " << elements.size() << "\n";
                 //dbgout()<<"num_elements = " << num_elements << "\n";
                 REQUIRE(elements.empty() || num_elements == elements.size()); // Local0 = Package(0x02){} is legal ==> PackageElementList is empty
-                return make_parse_result(data.moved_to(pkg_data.end()), knew<container_node>(op, std::move(list.result)));
+                return make_parse_result(data.moved_to(pkg_data.end()), make_container_node(op, std::move(list.result)));
             }
         default:
             hexdump(dbgout(), data.begin()-2, std::min(data.size()+2, 64ULL));
@@ -1310,7 +1321,7 @@ parse_result<node_ptr> parse_named_field(parse_state data)
     name.push_back('\0');
     const auto len = parse_pkg_length(data);
     //dbgout() << "NamedField " << name.begin() << " PkgLen 0x" <<  as_hex(len.result).width(0) << "\n";
-    auto scope_reg = data.ns().open_scope(name.begin());
+    auto scope_reg = data.ns().open_scope(name.begin(), opcode::named_field);
     return make_parse_result(len.data, knew<named_field_node>(std::move(scope_reg), std::move(name), len.result));
 }
 
@@ -1500,6 +1511,12 @@ private:
     }
 };
 
+node_ptr make_container_node(scope_reg&& ns_reg, opcode op, node_container_ptr&& nodes) {
+    auto n = make_container_node(op, std::move(nodes));
+    ns_reg.provide(*n);
+    return n;
+}
+
 parse_result<node_ptr> parse_term_obj(parse_state data)
 {
     // TermObj := NameSpaceModifierObject | NamedObj | Type1Opcode | Type2Opcode
@@ -1514,7 +1531,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
             {
                 // DefName := NameOp NameString DataRefOjbect
                 auto name            = parse_name_string(data);
-                auto scope_reg       = data.ns().open_scope(name.result.begin());
+                auto scope_reg       = data.ns().open_scope(name.result.begin(), op);
                 auto data_ref_object = parse_data_ref_object(name.data);
                 //dbgout() << "DefName " << name.result.begin() << " " << *data_ref_object.result << "\n";
                 return make_parse_result(data_ref_object.data, knew<name_node>(std::move(scope_reg), std::move(name.result), std::move(data_ref_object.result)));
@@ -1524,7 +1541,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 // DefScope := ScopeOp PkgLength NameString TermList
                 auto pkg_data  = adjust_with_pkg_length(data);
                 auto name      = parse_name_string(pkg_data);
-                auto scope_reg = data.ns().open_scope(name.result.begin());
+                auto scope_reg = data.ns().open_scope(name.result.begin(), op);
                 auto term_list = parse_term_list(name.data);
                 REQUIRE(pkg_data.end() == term_list.data.begin());
                 if (auto n = data.ns().lookup_node(name.result.begin())) {
@@ -1538,7 +1555,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 // DefMethod := MethodOp PkgLength NameString MethodFlags TermList
                 auto pkg_data = adjust_with_pkg_length(data);
                 auto name = parse_name_string(pkg_data);
-                auto scope_reg = data.ns().open_scope(name.result.begin());
+                auto scope_reg = data.ns().open_scope(name.result.begin(), op);
                 pkg_data = name.data;
                 uint8_t method_flags = pkg_data.consume();
                 node_container_ptr term_list;
@@ -1588,7 +1605,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto source_buffer = parse_term_arg(data);
                 auto byte_index    = parse_term_arg(source_buffer.data); // bit_index for CreateBitField
                 auto name          = parse_name_string(byte_index.data);
-                auto scope_reg     = data.ns().open_scope(name.result.begin());
+                auto scope_reg     = data.ns().open_scope(name.result.begin(), op);
                 return make_parse_result(name.data, knew<create_field_node>(std::move(scope_reg), op, std::move(name.result), std::move(source_buffer.result), std::move(byte_index.result)));
             }
             break;
@@ -1705,7 +1722,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 // DefDevice := DeviceOp PkgLength NameString ObjectList
                 auto pkg_data    = adjust_with_pkg_length(data);
                 auto name        = parse_name_string(pkg_data);
-                auto scope_reg   = data.ns().open_scope(name.result.begin());
+                auto scope_reg   = data.ns().open_scope(name.result.begin(), op);
                 auto object_list = parse_object_list(name.data);
                 //dbgout() << "DefDevice " << name.result.begin() << "\n";
                 //return make_parse_result(parse_state(object_list.data.begin(), data.end()), knew<dummy_node>("device"));
@@ -1729,10 +1746,11 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 const auto proc_id   = name.data.consume();
                 const auto pblk_addr = name.data.consume_dword();
                 const auto pblk_len  = name.data.consume();
+                auto scope_reg       = data.ns().open_scope(name.result.begin(), op);
                 auto objs            = parse_object_list(name.data);
-                //dbgout() << "Processor " << name.result.begin() << " Id " << as_hex(proc_id) << " Addr " << as_hex(pblk_addr) << " Len " << as_hex(pblk_len) << "\n";
                 REQUIRE(objs);
-                return make_parse_result(data.moved_to(pkg_data.end()), knew<container_node>(op, std::move(objs.result)));
+                //dbgout() << "Processor " << name.result.begin() << " Id " << as_hex(proc_id) << " Addr " << as_hex(pblk_addr) << " Len " << as_hex(pblk_len) << "\n";
+                return make_parse_result(data.moved_to(pkg_data.end()), make_container_node(std::move(scope_reg), op, std::move(objs.result)));
             }
         case opcode::power_res:
             {
@@ -1741,22 +1759,21 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto name            = parse_name_string(pkg_data);
                 const auto sys_lvl   = name.data.consume();
                 const auto res_order = name.data.consume_word();
+                auto scope_reg       = data.ns().open_scope(name.result.begin(), op);
                 auto objs            = parse_object_list(name.data);
                 REQUIRE(objs);
                 //dbgout() << "PowerRes " << name.result.begin() << " SystemLevel " << as_hex(sys_lvl) << " ResourceOrder " << as_hex(res_order) << "\n";
-                return make_parse_result(data.moved_to(pkg_data.end()), knew<container_node>(op, std::move(objs.result)));
+                return make_parse_result(data.moved_to(pkg_data.end()), make_container_node(std::move(scope_reg), op, std::move(objs.result)));
             }
         case opcode::thermal_zone:
             {
                 // DefThermalZone := ThermalZoneOp PkgLength NameString ObjectList
                 auto pkg_data        = adjust_with_pkg_length(data);
                 auto name            = parse_name_string(pkg_data);
-                auto scope_reg       = data.ns().open_scope(name.result.begin());
+                auto scope_reg       = data.ns().open_scope(name.result.begin(), op);
                 auto objs            = parse_object_list(name.data);
                 REQUIRE(objs);
-                auto n = knew<container_node>(op, std::move(objs.result));
-                scope_reg.provide(*n);
-                return make_parse_result(data.moved_to(pkg_data.end()), std::move(n));
+                return make_parse_result(data.moved_to(pkg_data.end()), make_container_node(std::move(scope_reg), op, std::move(objs.result)));
             }
         case opcode::index_field:
             {
@@ -1797,14 +1814,19 @@ void process(array_view<uint8_t> data)
     // \_OSI (Operating System Interfaces)
     auto os_string  = make_text_node(opcode::string_, "\\_OS_");
     {
-        auto reg = ns.open_scope("\\_OS_");
+        auto reg = ns.open_scope("\\_OS_", opcode::string_);
         reg.provide(*os_string);
     }
-    auto osi_method = node_ptr{knew<method_node>(ns.open_scope("\\_OSI"), make_kstring("\\_OSI"), uint8_t(1), knew<node_container>()).release()};
+    auto osi_method = node_ptr{knew<method_node>(ns.open_scope("\\_OSI", opcode::method), make_kstring("\\_OSI"), uint8_t(1), knew<node_container>()).release()};
     parse_state state{ns, data};
     auto res = parse_term_list(state);
     REQUIRE(res);
     dbgout() << *res.result << "\n";
+#if 0
+    for (const auto& b : ns.bindings()) {
+        dbgout() << b.name.begin() << " " << b.n->op() << "\n";
+    }
+#endif
 }
 
 } } // namespace attos::aml
