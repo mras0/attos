@@ -94,6 +94,7 @@ enum class opcode : uint16_t {
     // HACKS:
     reserved_field      = 0x8000,
     access_field,
+    named_field,
 
     dead_scope          = 0xfffe,
     invalid             = 0xffff,
@@ -192,6 +193,7 @@ out_stream& operator<<(out_stream& os, opcode op) {
         // HACKS:
         case opcode::reserved_field:      return os << "ReservedField";
         case opcode::access_field:        return os << "AccessField";
+        case opcode::named_field:         return os << "NamedField";
         case opcode::dead_scope:          return os << "<DeadScope>";
         case opcode::invalid:             return os << "<Unknown>";
     }
@@ -981,6 +983,10 @@ void name_space::close_scope(kstring&& old_scope, node& n) {
         return;
     }
     //dbgout() << "Registering " << name.begin() << " " << n.op() << "\n";
+    if (n.op() == opcode::invalid) {
+        dbgout() << "Registering " << name.begin() << " " << n << "\n";
+        REQUIRE(false);
+    }
     const int arg_count = n.op() == opcode::method ? static_cast<const method_node&>(n).arg_count() : 0;
     bindings_.push_back(binding{std::move(name), &n, arg_count});
 }
@@ -1219,6 +1225,10 @@ private:
     virtual void do_print(out_stream& os) const override {
         os << "NamedField " << name_.begin() << " Length " << as_hex(len_).width(0);
     }
+
+    virtual opcode do_opcode() const override {
+        return opcode::named_field;
+    }
 };
 
 class field_node : public node {
@@ -1230,8 +1240,13 @@ private:
     kstring        name_;
     uint8_t        flags_;
     node_container_ptr fields_;
+
     virtual void do_print(out_stream& os) const override {
         os << "Field " << name_.begin() << " Flags " << as_hex(flags_) << " " << *fields_;
+    }
+
+    virtual opcode do_opcode() const override {
+        return opcode::field;
     }
 };
 
@@ -1356,6 +1371,10 @@ private:
     node_ptr    obj_;
     virtual void do_print(out_stream& os) const override {
         os << "Name " << name() << " " << *obj_;
+    }
+
+    virtual opcode do_opcode() const override {
+        return opcode::name;
     }
 };
 
