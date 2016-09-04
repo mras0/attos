@@ -215,9 +215,15 @@ out_stream& operator<<(out_stream& os, opcode op) {
 
 using kstring  = kvector<char>;
 
+class name_space;
 class context {
 public:
-    explicit context() {}
+    explicit context(name_space& ns) : ns_(ns) {}
+
+    name_space& ns() { return ns_; }
+
+private:
+    name_space& ns_;
 };
 
 enum class value_type { nil, integer, string };
@@ -555,16 +561,15 @@ public:
             other.node_ = ignore_node;
         }
 
-        node_ptr mark_dead() {
+        void mark_dead() {
             class dead_scope_node : public node {
             public:
                 explicit dead_scope_node() {}
             private:
                 virtual opcode do_opcode() const override { return opcode::dead_scope; }
             };
-            node_ptr dead_scope{knew<dead_scope_node>().release()};
-            provide(*dead_scope);
-            return dead_scope;
+            static dead_scope_node dead_scope;
+            provide(dead_scope);
         }
 
         bool ignored() {
@@ -1148,7 +1153,7 @@ using binary_op_node = op_node_base<2>;
 
 class method_node : public node {
 public:
-    explicit method_node(scope_reg&& ns_reg, kstring&& name, uint8_t flags, node_container_ptr&& statements) : reg_(std::move(ns_reg)), name_(std::move(name)), flags_(flags), statements_(std::move(statements)) {
+    explicit method_node(scope_reg&& ns_reg, kstring&& name, uint8_t flags, array_view<uint8_t> statements) : reg_(std::move(ns_reg)), name_(std::move(name)), flags_(flags), statements_(std::move(statements)) {
         reg_.provide(*this);
     }
     /* MethodFlags := ByteData // bit 0-2: ArgCount (0-7)
@@ -1163,25 +1168,24 @@ public:
     const char* name() const { return name_.begin(); }
 
 private:
-    scope_reg      reg_;
-    kstring        name_;
-    uint8_t        flags_;
-    node_container_ptr statements_;
+    scope_reg           reg_;
+    kstring             name_;
+    uint8_t             flags_;
+    array_view<uint8_t> statements_;
     virtual void do_print(out_stream& os) const override {
-        os << "Method " << name_.begin() << " Flags " << as_hex(flags_) << " ";
-        if (statements_) {
-            os << *statements_;
-        } else {
-            os << "[Parse failed]";
-        }
+        os << "Method " << name_.begin() << " Flags " << as_hex(flags_);
     }
 
     virtual opcode do_opcode() const override {
         return opcode::method;
     }
 
-    virtual value do_eval(context&) const override {
+    virtual value do_eval(context& ctx) const override {
         dbgout() << "Not calling " << *this << "\n";
+        parse_state state{ctx.ns(), statements_};
+        auto res = parse_term_list(state);
+        REQUIRE(res);
+        dbgout() << *res.result;
         return value{};
     }
 };
@@ -1767,16 +1771,7 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto scope_reg = data.ns().open_scope(name.result.begin(), op);
                 pkg_data = name.data;
                 uint8_t method_flags = pkg_data.consume();
-                node_container_ptr term_list;
-                auto term_list_parsed = parse_term_list(pkg_data);
-                if (term_list_parsed) {
-                    data = data.moved_to(term_list_parsed.data.begin());
-                    term_list = std::move(term_list_parsed.result);
-                } else {
-                    data = data.moved_to(pkg_data.end());
-                }
-                //dbgout() << "DefMethod " << name.result.begin() << " Flags " << as_hex(method_flags) << "\n";
-                return make_parse_result(data, knew<method_node>(std::move(scope_reg), std::move(name.result), method_flags, std::move(term_list)));
+                return make_parse_result(data.moved_to(pkg_data.end()), knew<method_node>(std::move(scope_reg), std::move(name.result), method_flags, array_view<uint8_t>(pkg_data.begin(), pkg_data.end())));
             }
         case opcode::store:
             {
@@ -2024,7 +2019,7 @@ void process(array_view<uint8_t> data)
     auto os_string  = make_text_node(opcode::string, "\\_OS_");
     auto reg = ns.open_scope("\\_OS_", opcode::string);
     reg.provide(*os_string);
-    auto osi_method = node_ptr{knew<method_node>(ns.open_scope("\\_OSI", opcode::method), make_kstring("\\_OSI"), uint8_t(1), knew<node_container>()).release()};
+    auto osi_method = node_ptr{knew<method_node>(ns.open_scope("\\_OSI", opcode::method), make_kstring("\\_OSI"), uint8_t(1), array_view<uint8_t>(nullptr,nullptr)).release()};
     parse_state state{ns, data};
     auto res = parse_term_list(state);
     REQUIRE(res);
@@ -2058,8 +2053,10 @@ void process(array_view<uint8_t> data)
         name.insert(name.end(), prop, prop + 5);
         if (auto n = ns.lookup_node(name.begin())) {
             dbgout() << name.begin() << " ";
-            context ctx{};
+            context ctx{ns};
+            auto r = ns.open_scope(name.begin(), opcode::dead_scope); // Make sure the function is properly scoped...
             auto val = n->eval(ctx);
+            r.mark_dead();
             if (val.type() == value_type::integer) {
                 if (prop[1] == 'H') { // Monster hack for _HID
                     auto uint = val.as_uint();
