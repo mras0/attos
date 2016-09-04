@@ -9,7 +9,7 @@ extern "C" int main();
 namespace attos {
 
 namespace {
-alignas(16) uint8_t stupid_heap[4096*8];
+alignas(16) uint8_t stupid_heap[8<<20];
 default_heap* heap_ptr;
 } // unnamed namespace
 

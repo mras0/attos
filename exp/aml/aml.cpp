@@ -4,7 +4,7 @@
 #include <attos/array_view.h>
 #include <attos/string.h>
 
-namespace attos { namespace aml {
+namespace attos { namespace acpi {
 
 enum class opcode : uint16_t {
     zero                = 0x00,
@@ -562,14 +562,7 @@ public:
         }
 
         void mark_dead() {
-            class dead_scope_node : public node {
-            public:
-                explicit dead_scope_node() {}
-            private:
-                virtual opcode do_opcode() const override { return opcode::dead_scope; }
-            };
-            static dead_scope_node dead_scope;
-            provide(dead_scope);
+            provide(ns_.dead_scope_);
         }
 
         bool ignored() {
@@ -712,7 +705,10 @@ private:
     kstring          cur_namespace_; // Not NUL-terimnated!
     kvector<binding> bindings_;
 
-    constexpr static binding* dead_scope_binding = (binding*)42;
+    class dead_scope_node : public node {
+    private:
+        virtual opcode do_opcode() const override { return opcode::dead_scope; }
+    } dead_scope_;
 
     const binding* lookup_binding(const char* name) const {
         // (1) ABCD      -- search rules apply
@@ -2091,32 +2087,4 @@ void process(array_view<uint8_t> data)
     }
 }
 
-} } // namespace attos::aml
-
-using namespace attos;
-
-#include <fstream>
-bool read_file(const char* filename, kvector<uint8_t>& data)
-{
-    std::ifstream in(filename, std::ifstream::binary);
-    if (!in.is_open()) {
-        return false;
-    }
-    in.seekg(0, std::ios::end);
-    data.resize(in.tellg());
-    in.seekg(0, std::ios::beg);
-    in.read(reinterpret_cast<char*>(&data[0]), data.size());
-    return true;
-}
-
-int main(int argc, char* argv[])
-{
-    kvector<uint8_t> data;
-    //const char* filename = "vmware_dsdt.aml";
-    const char* filename = argc >= 2 ? argv[1] : "bochs_dsdt.aml";
-    if (!read_file(filename, data)) {
-        dbgout() << "Could not read " << filename << "\n";
-        return 1;
-    }
-    aml::process(make_array_view(data.begin(), data.size()));
-}
+} } // namespace attos::acpi
