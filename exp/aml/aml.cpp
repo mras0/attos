@@ -344,7 +344,6 @@ public:
     }
 
     kvector<node_ptr>& elements() { return elements_; }
-    const kvector<node_ptr>& elements() const { return elements_; }
 
     friend out_stream& operator<<(out_stream& os, const node_container& n) {
         os << "[";
@@ -445,6 +444,8 @@ private:
 constexpr char root_char             = '\\';
 constexpr char parent_prefix_char    = '^';
 
+int nsindent = 0;
+
 class name_space {
 public:
     explicit name_space() {
@@ -456,12 +457,11 @@ public:
     ~name_space() {
         REQUIRE(cur_namespace_.empty());
         if (!bindings_.empty()) {
-            int n = 0;
-            dbgout() << "WARNING:\n";
+            int n=0;
             for (const auto& b : bindings_) {
-                dbgout() << b.name.begin() << " still bound\n";
+                dbgout() << b.name.begin() << " still bound to " << *b.n << "\n";
                 if (++n == 10) {
-                    dbgout() << " " << bindings_.size() - n << " more\n";
+                    dbgout() << bindings_.size()-n << " left\n";
                     break;
                 }
             }
@@ -492,16 +492,21 @@ public:
             return dead_scope;
         }
 
+        bool ignored() {
+            return node_ == ignore_node;
+        }
+
         void provide(node& node) {
             REQUIRE(!node_);
             std::swap(ns_.cur_namespace_, old_scope_);
+            --nsindent;
             if (node.op() != opcode::dead_scope) {
                 node_ = &node;
                 old_scope_.push_back('\0');
+                //dbgout() << "close_scope " << old_scope_.begin() << "\n";
+                write_many(dbgout(), ' ', 2*nsindent); dbgout() << old_scope_.begin() << "\n";
                 ns_.close_scope(std::move(old_scope_), node);
             } else {
-                //old_scope_.push_back('\0');
-                //dbgout() << "Mark dead: " << old_scope_.begin() << "\n";
                 node_ = ignore_node;
             }
         }
@@ -524,7 +529,8 @@ public:
         kstring     old_scope_;
         node*       node_ = nullptr;
         constexpr static node* ignore_node = (node*)42;
-        explicit scope_registration(name_space& ns, kstring&& old_scope) : ns_(ns), old_scope_(std::move(old_scope)) {}
+        explicit scope_registration(name_space& ns, kstring&& old_scope) : ns_(ns), old_scope_(std::move(old_scope)) {
+        }
     };
 
     scope_registration open_scope(const char* name, opcode op) {
@@ -540,6 +546,8 @@ public:
         }
         REQUIRE(string_length(name) % 4 == 0);
         cur_namespace_.insert(cur_namespace_.end(), name, name + string_length(name));
+        write_many(dbgout(), ' ', 2*nsindent); dbgout() << relative(cur_namespace_, "").begin() << " " << op << "\n";
+        ++nsindent;
         return scope_registration{*this, std::move(old_scope)};
     }
 
@@ -1508,7 +1516,14 @@ private:
 class container_node : public node {
 public:
     explicit container_node(scope_reg&& reg, opcode op, node_container_ptr&& nodes) : reg_(std::move(reg)), op_(op), nodes_(std::move(nodes)) {
-        reg_.provide(*this);
+        if (!reg_.ignored()) {
+            reg_.provide(*this);
+        } else {
+            dbgout() << op << " ignoring registration\n";
+        }
+    }
+
+    ~container_node() {
     }
 
 private:
@@ -1523,8 +1538,9 @@ private:
         return op_;
     }
     virtual void do_merge(kvector<node_ptr>&& nodes) override {
-        auto& es = nodes_->elements();
-        es.insert(es.end(), std::make_move_iterator(nodes.begin()), std::make_move_iterator(nodes.end()));
+        for (auto& n : nodes) {
+            nodes_->elements().push_back(std::move(n));
+        }
     }
 };
 
@@ -1559,11 +1575,13 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto name      = parse_name_string(pkg_data);
                 auto scope_reg = data.ns().open_scope(name.result.begin(), op);
                 auto term_list = parse_term_list(name.data);
+                REQUIRE(term_list);
                 REQUIRE(pkg_data.end() == term_list.data.begin());
-                if (auto n = data.ns().lookup_node(name.result.begin())) {
-                    n->merge(std::move(term_list.result->elements()));
-                    //dbgout() << "Merging " << op << " into " << n->op() << " " << name.result.begin() << "\n";
-                    return make_parse_result(data.moved_to(pkg_data.end()), scope_reg.mark_dead());
+                if (auto* n = data.ns().lookup_node(name.result.begin())) {
+                    //n->merge(std::move(term_list.result->elements()));
+                    dbgout() << "TODO: Handle merging " << op << " into " << n->op() << " " << name.result.begin() << "\n";
+                    //return make_parse_result(data.moved_to(pkg_data.end()), scope_reg.mark_dead());
+                    scope_reg.mark_dead();
                 }
                 return make_parse_result(data.moved_to(term_list.data.begin()), make_container_node(std::move(scope_reg), op, std::move(term_list.result)));
             }
@@ -1825,10 +1843,12 @@ void process(array_view<uint8_t> data)
     parse_state state{ns, data};
     auto res = parse_term_list(state);
     REQUIRE(res);
-    //dbgout() << *res.result << "\n";
-#if 0
+#if 1
+    dbgout() << *res.result << "\n";
+#endif
+#if 1
     for (const auto& b : ns.bindings()) {
-        dbgout() << b.name.begin() << " " << b.n->op() << "\n";
+        dbgout() << b.name.begin() << " " << b.n->op () << "\n";
     }
 #endif
 }

@@ -50,11 +50,13 @@ public:
     }
 
     kvector& operator=(const kvector& other) {
+        if (this == &other) __debugbreak();
         clear();
         return *this = kvector(other.begin(), other.end());
     }
 
     kvector& operator=(kvector&& other) {
+        if (this == &other) __debugbreak();
         std::swap(begin_, other.begin_);
         std::swap(end_, other.end_);
         std::swap(real_end_, other.real_end_);
@@ -79,12 +81,11 @@ public:
     }
 
     void erase(T* elem) {
-        elem->~T();
-        while (elem + 1 < end_) {
-            *elem = std::move(*(elem + 1));
-            ++elem;
-        }
         --end_;
+        if (elem != end_) {
+            *elem = std::move(*end_);
+        }
+        end_->~T();
     }
 
     void resize(size_t new_size) {
@@ -149,7 +150,6 @@ public:
     template<typename It>
     void insert(T* where, It first, It last) {
         if (where != end()) __debugbreak(); // Lazy implementation
-#if 0
         const auto insert_count = last - first;
         ensure_room(size() + insert_count);
         static_assert(sizeof(*first) == sizeof(T), "Implementation is too lazy");
@@ -157,12 +157,6 @@ public:
         static_assert(std::is_trivially_copyable_v<T>, "Implementation is too lazy");
         memcpy(end_, first, insert_count * sizeof(T));
         end_ += insert_count;
-#else
-        while (first != last) {
-            push_back(*first);
-            ++first;
-        }
-#endif
     }
 
 private:
