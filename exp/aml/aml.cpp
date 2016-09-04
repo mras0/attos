@@ -13,7 +13,7 @@ enum class opcode : uint16_t {
     byte                = 0x0a, // BytedData
     word                = 0x0b, // WordData
     dword               = 0x0c, // DWordData
-    string_             = 0x0d,
+    string              = 0x0d,
     qword               = 0x0e, // QWordData
     scope               = 0x10,
     buffer              = 0x11,
@@ -118,7 +118,7 @@ out_stream& operator<<(out_stream& os, opcode op) {
         case opcode::byte:                return os << "Byte";
         case opcode::word:                return os << "Word";
         case opcode::dword:               return os << "Dword";
-        case opcode::string_:             return os << "String";
+        case opcode::string:              return os << "String";
         case opcode::qword:               return os << "Qword";
         case opcode::scope:               return os << "Scope";
         case opcode::buffer:              return os << "Buffer";
@@ -213,12 +213,14 @@ out_stream& operator<<(out_stream& os, opcode op) {
     return os << as_hex(static_cast<unsigned>(op)).width(is_extended(op) ? 4 : 2);
 }
 
+using kstring  = kvector<char>;
+
 class context {
 public:
     explicit context() {}
 };
 
-enum class value_type { nil, integer };
+enum class value_type { nil, integer, string };
 out_stream& operator<<(out_stream& os, value_type t) {
     return os << "value_type{" << static_cast<int>(t) << "}";
 }
@@ -231,6 +233,12 @@ public:
     explicit value(uint64_t val, uint8_t bits) : type_(value_type::integer) {
         val_.uint.val = val;
         val_.uint.bits = bits;
+    }
+
+    explicit value(const kstring& str) : type_(value_type::string) {
+        REQUIRE(str.size() <= string_max);
+        REQUIRE(!str.empty() && str.back() == '\0');
+        memcpy(val_.str, str.begin(), str.size());
     }
 
     value_type type() const {
@@ -246,6 +254,7 @@ public:
         switch (v.type_) {
             case value_type::nil:     return os << "(nil)";
             case value_type::integer: return os << "0x" << as_hex(v.val_.uint.val).width((3+v.val_.uint.bits)/4);
+            case value_type::string:  return os << '"' << v.val_.str << '"';
         }
         dbgout() << __func__ << " Unhandled: " << v.type_ << "\n";
         REQUIRE(false);
@@ -253,11 +262,14 @@ public:
 
 private:
     value_type type_;
+
+    static constexpr int string_max = 64;
     union {
         struct {
             uint64_t val;
             uint8_t  bits;
         } uint;
+        char str[string_max];
     } val_;
 };
 
@@ -300,7 +312,6 @@ private:
     }
 };
 using node_ptr = kowned_ptr<node>;
-using kstring  = kvector<char>;
 
 kstring make_kstring(const char* str) {
     return kstring{str, str+string_length(str)+1};
@@ -338,8 +349,8 @@ private:
         return op_;
     }
     virtual value do_eval(context&) const override {
-        dbgout() << "Not evaluating " << *this << "\n";
-        return value{};
+        REQUIRE(op_ == opcode::string);
+        return value{name_};
     }
 };
 
@@ -966,7 +977,7 @@ constexpr bool is_data_object(opcode op) {
         || op == opcode::byte
         || op == opcode::word
         || op == opcode::dword
-        || op == opcode::string_
+        || op == opcode::string
         || op == opcode::qword
         || op == opcode::buffer
         || op == opcode::package;
@@ -1026,7 +1037,7 @@ parse_result<node_ptr> parse_data_object(parse_state data)
                 const uint64_t q = data.consume_qword();
                 return make_parse_result(data, make_const_node(q));
             }
-        case opcode::string_:
+        case opcode::string:
             {
                 const char* text = reinterpret_cast<const char*>(data.begin());
                 data.consume(static_cast<uint32_t>(string_length(text) + 1));
@@ -2010,8 +2021,8 @@ void process(array_view<uint8_t> data)
     // See ACPI 6.1: 5.7.2 
     // \_OS Name of the operating system
     // \_OSI (Operating System Interfaces)
-    auto os_string  = make_text_node(opcode::string_, "\\_OS_");
-    auto reg = ns.open_scope("\\_OS_", opcode::string_);
+    auto os_string  = make_text_node(opcode::string, "\\_OS_");
+    auto reg = ns.open_scope("\\_OS_", opcode::string);
     reg.provide(*os_string);
     auto osi_method = node_ptr{knew<method_node>(ns.open_scope("\\_OSI", opcode::method), make_kstring("\\_OSI"), uint8_t(1), knew<node_container>()).release()};
     parse_state state{ns, data};
@@ -2057,14 +2068,17 @@ void process(array_view<uint8_t> data)
                     //   bits[15:0] - three character compressed ASCII EISA ID.
                     //   bits[31:16] - binary number
                     //    Compressed ASCII is 5 bits per character 0b00001 = 'A' 0b11010 = 'Z'
-                    const uint16_t eisa_id = ((uint.val&0xff)<<8) | ((uint.val&0xff00)>>8); // EISA ID is big-endian
+                    auto swap16 = [](uint64_t val) -> uint16_t { return ((val&0xff)<<8) | ((val&0xff00)>>8); };
+                    const uint16_t eisa_id = swap16(uint.val); // EISA ID is big-endian
                     const char c0 = '@' + (eisa_id & 0x1f);
                     const char c1 = '@' + ((eisa_id>>5) & 0x1f);
                     const char c2 = '@' + ((eisa_id>>10) & 0x1f);
-                    dbgout() << c0 << c1 << c2 << as_hex(uint.val>>16).width(4);
+                    dbgout() << c0 << c1 << c2 << as_hex(swap16(uint.val>>16)).width(4);
                 } else {
                     dbgout() << val;
                 }
+            } else if (val.type() == value_type::string) {
+                dbgout() << val;
             } else {
                 dbgout() << "UNHANDLED: " << val;
             }
