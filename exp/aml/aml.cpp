@@ -226,8 +226,8 @@ public:
         return do_opcode();
     }
 
-    void merge(kvector<kowned_ptr<node>>&& nodes) {
-        do_merge(std::move(nodes));
+    bool is_container() const {
+        return do_is_container();
     }
 
 private:
@@ -237,10 +237,8 @@ private:
     virtual opcode do_opcode() const {
         return opcode::invalid;
     }
-    virtual void do_merge(kvector<kowned_ptr<node>>&& nodes) {
-        (void)nodes;
-        dbgout() << "Cannot merge new nodes into " << *this << "\n";
-        REQUIRE(false);
+    virtual bool do_is_container() const {
+        return false;
     }
 };
 using node_ptr = kowned_ptr<node>;
@@ -444,8 +442,6 @@ private:
 constexpr char root_char             = '\\';
 constexpr char parent_prefix_char    = '^';
 
-int nsindent = 0;
-
 class name_space {
 public:
     explicit name_space() {
@@ -499,16 +495,20 @@ public:
         void provide(node& node) {
             REQUIRE(!node_);
             std::swap(ns_.cur_namespace_, old_scope_);
-            --nsindent;
             if (node.op() != opcode::dead_scope) {
                 node_ = &node;
                 old_scope_.push_back('\0');
                 //dbgout() << "close_scope " << old_scope_.begin() << "\n";
-                write_many(dbgout(), ' ', 2*nsindent); dbgout() << old_scope_.begin() << "\n";
                 ns_.close_scope(std::move(old_scope_), node);
             } else {
                 node_ = ignore_node;
             }
+        }
+
+        kstring name() const {
+            REQUIRE(node_ != ignore_node && node_);
+            auto b = ns_.find_binding(node_);
+            return b->name;
         }
 
         ~scope_registration() {
@@ -546,8 +546,6 @@ public:
         }
         REQUIRE(string_length(name) % 4 == 0);
         cur_namespace_.insert(cur_namespace_.end(), name, name + string_length(name));
-        write_many(dbgout(), ' ', 2*nsindent); dbgout() << relative(cur_namespace_, "").begin() << " " << op << "\n";
-        ++nsindent;
         return scope_registration{*this, std::move(old_scope)};
     }
 
@@ -570,6 +568,60 @@ public:
 
     const kvector<binding>& bindings() const {
         return bindings_;
+    }
+
+    class scope_iterator {
+    public:
+        scope_iterator& operator++() {
+            ++pos_;
+            move_next();
+            return *this;
+        }
+
+        bool operator==(const scope_iterator& rhs) const {
+            REQUIRE(ns_ == rhs.ns_);
+            return pos_ == rhs.pos_;
+        }
+
+        bool operator!=(const scope_iterator& rhs) const {
+            return !(*this == rhs);
+        }
+
+        binding* operator->() const {
+            return &ns_->bindings_[pos_];
+        }
+
+        binding& operator*() const {
+            return ns_->bindings_[pos_];
+        }
+
+    private:
+        name_space* ns_;
+        kstring     prefix_;
+        size_t      pos_;
+        friend class name_space;
+
+        void move_next() {
+            for (; pos_ < ns_->bindings_.size(); ++pos_) {
+                const auto& n = this->operator*().name;
+                if (n.size() == prefix_.size() + 4 && memcmp(n.begin(), prefix_.begin(), prefix_.size()-1) == 0) {
+                    break;
+                }
+            }
+        }
+
+        explicit scope_iterator(name_space& ns, kstring&& prefix, size_t pos) : ns_(&ns), prefix_(std::move(prefix)), pos_(pos) {
+            move_next();
+        }
+    };
+
+    scope_iterator scope_iter_begin(const char* prefix) {
+        REQUIRE(string_length(prefix) % 4 == 0);
+        return scope_iterator{*this, make_kstring(prefix), 0};
+    }
+
+    scope_iterator scope_iter_end() {
+        return scope_iterator{*this, kstring(), bindings_.size()};
     }
 
 private:
@@ -1518,29 +1570,60 @@ public:
     explicit container_node(scope_reg&& reg, opcode op, node_container_ptr&& nodes) : reg_(std::move(reg)), op_(op), nodes_(std::move(nodes)) {
         if (!reg_.ignored()) {
             reg_.provide(*this);
-        } else {
-            dbgout() << op << " ignoring registration\n";
         }
     }
 
     ~container_node() {
+        REQUIRE(prev_ == nullptr || reg_.ignored());
+        if (prev_) {
+            REQUIRE(prev_->next_ == this);
+            prev_->next_ = next_;
+        }
+        if (next_) {
+            REQUIRE(next_->prev_ == this);
+            next_->prev_ = prev_;
+        }
+    }
+
+    void merge(node& other_) {
+        REQUIRE(other_.is_container());
+        REQUIRE(other_.op() == opcode::scope || other_.op() == opcode::device);
+        REQUIRE(op() == opcode::scope || op() == opcode::device);
+        auto& other = static_cast<container_node&>(other_);
+        REQUIRE(!prev_);
+        REQUIRE(!other.prev_);
+        REQUIRE(!other.next_);
+        container_node* before = this;
+        while (before->next_ != nullptr) {
+            before = before->next_;
+        }
+        before->next_ = &other;
+        other.prev_   = before;
     }
 
 private:
     scope_reg          reg_;
     opcode             op_;
     node_container_ptr nodes_;
+    container_node*    next_ = nullptr;
+    container_node*    prev_ = nullptr;
 
     virtual void do_print(out_stream& os) const override {
-        os << op_ << " " << *nodes_;
+        if (prev_) {
+            os << "Helper " << op_;
+            return;
+        }
+        os << op_ << " " << reg_.name().begin() << " " << *nodes_;
+        for (auto* c = next_; c; c = c->next_) {
+            os << " " << *c->nodes_;
+        }
     }
     virtual opcode do_opcode() const override {
         return op_;
     }
-    virtual void do_merge(kvector<node_ptr>&& nodes) override {
-        for (auto& n : nodes) {
-            nodes_->elements().push_back(std::move(n));
-        }
+
+    virtual bool do_is_container() const override {
+        return true;
     }
 };
 
@@ -1577,13 +1660,16 @@ parse_result<node_ptr> parse_term_obj(parse_state data)
                 auto term_list = parse_term_list(name.data);
                 REQUIRE(term_list);
                 REQUIRE(pkg_data.end() == term_list.data.begin());
-                if (auto* n = data.ns().lookup_node(name.result.begin())) {
-                    //n->merge(std::move(term_list.result->elements()));
-                    dbgout() << "TODO: Handle merging " << op << " into " << n->op() << " " << name.result.begin() << "\n";
-                    //return make_parse_result(data.moved_to(pkg_data.end()), scope_reg.mark_dead());
+                node* n = data.ns().lookup_node(name.result.begin());
+                if (n) {
                     scope_reg.mark_dead();
                 }
-                return make_parse_result(data.moved_to(term_list.data.begin()), make_container_node(std::move(scope_reg), op, std::move(term_list.result)));
+                auto scope_node = make_container_node(std::move(scope_reg), op, std::move(term_list.result));
+                if (n) {
+                    REQUIRE(n->is_container());
+                    static_cast<container_node&>(*n).merge(*scope_node);
+                }
+                return make_parse_result(data.moved_to(pkg_data.end()), std::move(scope_node));
             }
         case opcode::method:
             {
@@ -1830,6 +1916,17 @@ parse_result<node_container_ptr> parse_term_list(parse_state state)
     return parse_list(state, &parse_term_obj);
 }
 
+void recursive_print(name_space& ns, const kstring& prefix, int nested = 0)
+{
+    for (auto it = ns.scope_iter_begin(prefix.begin()), end = ns.scope_iter_end(); it != end; ++it) {
+        write_many(dbgout(), ' ', nested*2);
+        dbgout() << it->name.begin()+prefix.size()-1 << " " << it->n->op() << "\n";
+        if (it->n->is_container()) {
+            recursive_print(ns, it->name, nested+1);
+        }
+    }
+}
+
 void process(array_view<uint8_t> data)
 {
     name_space ns;
@@ -1843,14 +1940,17 @@ void process(array_view<uint8_t> data)
     parse_state state{ns, data};
     auto res = parse_term_list(state);
     REQUIRE(res);
-#if 1
+#if 0
+    // Printing this only prints the _parse tree_
+    // things belonging in the root scope may be nested inside "helper nodes"
     dbgout() << *res.result << "\n";
 #endif
-#if 1
+#if 0
     for (const auto& b : ns.bindings()) {
         dbgout() << b.name.begin() << " " << b.n->op () << "\n";
     }
 #endif
+    recursive_print(ns, make_kstring(""));
 }
 
 } } // namespace attos::aml
