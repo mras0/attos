@@ -213,6 +213,54 @@ out_stream& operator<<(out_stream& os, opcode op) {
     return os << as_hex(static_cast<unsigned>(op)).width(is_extended(op) ? 4 : 2);
 }
 
+class context {
+public:
+    explicit context() {}
+};
+
+enum class value_type { nil, integer };
+out_stream& operator<<(out_stream& os, value_type t) {
+    return os << "value_type{" << static_cast<int>(t) << "}";
+}
+
+class value {
+public:
+    explicit value() : type_(value_type::nil) {
+    }
+
+    explicit value(uint64_t val, uint8_t bits) : type_(value_type::integer) {
+        val_.uint.val = val;
+        val_.uint.bits = bits;
+    }
+
+    value_type type() const {
+        return type_;
+    }
+
+    auto as_uint() const {
+        REQUIRE(type_ == value_type::integer);
+        return val_.uint;
+    }
+
+    friend out_stream& operator<<(out_stream& os, const value& v) {
+        switch (v.type_) {
+            case value_type::nil:     return os << "(nil)";
+            case value_type::integer: return os << "0x" << as_hex(v.val_.uint.val).width((3+v.val_.uint.bits)/4);
+        }
+        dbgout() << __func__ << " Unhandled: " << v.type_ << "\n";
+        REQUIRE(false);
+    }
+
+private:
+    value_type type_;
+    union {
+        struct {
+            uint64_t val;
+            uint8_t  bits;
+        } uint;
+    } val_;
+};
+
 class __declspec(novtable) node {
 public:
     virtual ~node() = 0 {}
@@ -230,6 +278,10 @@ public:
         return do_is_container();
     }
 
+    value eval(context& ctx) const {
+        return do_eval(ctx);
+    }
+
 private:
     virtual void do_print(out_stream& os) const {
         os << op();
@@ -239,6 +291,12 @@ private:
     }
     virtual bool do_is_container() const {
         return false;
+    }
+    virtual value do_eval(context& ctx) const {
+        (void)ctx;
+        dbgout() << "eval not implemented for " << op() << "\n";
+        REQUIRE(!"Not implemented");
+        return value{};
     }
 };
 using node_ptr = kowned_ptr<node>;
@@ -279,6 +337,10 @@ private:
     virtual opcode do_opcode() const override {
         return op_;
     }
+    virtual value do_eval(context&) const override {
+        dbgout() << "Not evaluating " << *this << "\n";
+        return value{};
+    }
 };
 
 node_ptr make_text_node(opcode op, const char* name) {
@@ -289,24 +351,30 @@ node_ptr make_text_node(opcode op, const kstring& s) {
    return make_text_node(op, s.begin());
 }
 
-template<typename T>
 class const_node : public node {
 public:
-    explicit const_node(T value) : value_(value) {
+    template<typename T>
+    explicit const_node(T value) : value_(value), size_(sizeof(T)) {
     }
 private:
-    T value_;
+    uint64_t value_;
+    uint8_t  size_;
+
     virtual void do_print(out_stream& os) const override {
-        os << "0x" << as_hex(value_);
+        os << "0x" << as_hex(value_).width(2*size_);
     }
 
     virtual opcode do_opcode() const override {
         return opcode::constant;
     }
+
+    virtual value do_eval(context&) const override {
+        return value{value_, static_cast<uint8_t>(size_*8)};
+    }
 };
 template<typename T>
 node_ptr make_const_node(T value) {
-    return node_ptr{knew<const_node<T>>(value).release()};
+    return node_ptr{knew<const_node>(value).release()};
 }
 
 
@@ -1100,6 +1168,11 @@ private:
     virtual opcode do_opcode() const override {
         return opcode::method;
     }
+
+    virtual value do_eval(context&) const override {
+        dbgout() << "Not calling " << *this << "\n";
+        return value{};
+    }
 };
 
 class name_node : public node {
@@ -1123,6 +1196,10 @@ private:
 
     virtual opcode do_opcode() const override {
         return opcode::name;
+    }
+
+    virtual value do_eval(context& ctx) const override {
+        return obj_->eval(ctx);
     }
 };
 
@@ -1950,7 +2027,57 @@ void process(array_view<uint8_t> data)
         dbgout() << b.name.begin() << " " << b.n->op () << "\n";
     }
 #endif
+#if 0
     recursive_print(ns, make_kstring(""));
+#endif
+
+    auto concat = [](const kstring& a, const char* sf) {
+        REQUIRE(!a.empty());
+        REQUIRE(string_length(sf) == 4);
+        auto n = a;
+        n.pop_back();
+        n.insert(n.end(), sf, sf + 5);
+        return n;
+    };
+    auto print = [&ns](const kstring& name_, const char* prop) {
+        REQUIRE(!name_.empty());
+        REQUIRE(string_length(prop) == 4);
+        auto name = name_;
+        name.pop_back();
+        name.insert(name.end(), prop, prop + 5);
+        if (auto n = ns.lookup_node(name.begin())) {
+            dbgout() << name.begin() << " ";
+            context ctx{};
+            auto val = n->eval(ctx);
+            if (val.type() == value_type::integer) {
+                if (prop[1] == 'H') { // Monster hack for _HID
+                    auto uint = val.as_uint();
+                    REQUIRE(uint.bits >= 16 && uint.bits <= 32);
+                    //  EISA ID Definition 32-bits
+                    //   bits[15:0] - three character compressed ASCII EISA ID.
+                    //   bits[31:16] - binary number
+                    //    Compressed ASCII is 5 bits per character 0b00001 = 'A' 0b11010 = 'Z'
+                    const uint16_t eisa_id = ((uint.val&0xff)<<8) | ((uint.val&0xff00)>>8); // EISA ID is big-endian
+                    const char c0 = '@' + (eisa_id & 0x1f);
+                    const char c1 = '@' + ((eisa_id>>5) & 0x1f);
+                    const char c2 = '@' + ((eisa_id>>10) & 0x1f);
+                    dbgout() << c0 << c1 << c2 << as_hex(uint.val>>16).width(4);
+                } else {
+                    dbgout() << val;
+                }
+            } else {
+                dbgout() << "UNHANDLED: " << val;
+            }
+            dbgout() << "\n";
+            return true;
+        }
+        return false;
+    };
+
+    for (const auto& b : ns.bindings()) {
+        if (b.n->op() != opcode::device) continue;
+        print(b.name, "_HID") || print(b.name, "_ADR");
+    }
 }
 
 } } // namespace attos::aml
