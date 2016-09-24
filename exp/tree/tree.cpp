@@ -78,7 +78,7 @@ vt V(const T&... ts) {
 
 #undef CONTAINING_RECORD
 #define CATCH_CONFIG_MAIN
-#include "catch.hpp"
+#include "../catch.hpp"
 TEST_CASE("tree") {
     test a{42}, b{12}, c{30}, d{7}, e{31};
 

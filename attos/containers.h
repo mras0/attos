@@ -81,11 +81,12 @@ public:
     }
 
     void erase(T* elem) {
-        --end_;
-        if (elem != end_) {
-            *elem = std::move(*end_);
+        elem->~T();
+        while (elem + 1 < end_) {
+            *elem = std::move(*(elem + 1));
+            ++elem;
         }
-        end_->~T();
+        --end_;
     }
 
     void resize(size_t new_size) {
